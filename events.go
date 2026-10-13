@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"time"
 )
 
@@ -21,9 +20,8 @@ type hookInput struct {
 	NotificationType string `json:"notification_type"`
 }
 type claudeCycle struct {
-	Cycle         string `json:"cycle"`
-	InputSequence uint64 `json:"input_sequence"`
-	Updated       int64  `json:"updated"`
+	Cycle   string `json:"cycle"`
+	Updated int64  `json:"updated"`
 }
 
 func parseEvent(ctx context.Context, s Store, source string, payload []byte) (kind, identity string, err error) {
@@ -50,6 +48,20 @@ func parseEvent(ctx context.Context, s Store, source string, payload []byte) (ki
 		if p.HookEventName != "UserPromptSubmit" && p.HookEventName != "Notification" {
 			return "", "", nil
 		}
+		key := digest(p.SessionID)
+		if p.HookEventName == "Notification" {
+			switch p.NotificationType {
+			case "permission_prompt", "elicitation_dialog":
+				// A native human wait does not depend on a recorded prompt cycle.
+				// Upstream has no occurrence ID: each invocation gets a fresh identity,
+				// held in the bounded envelope cache before any HTTP retries.
+				return "needs_input", digest("claude\x00" + key + "\x00input\x00" + randomID()), nil
+			case "idle_prompt":
+				// Completion still requires a live prompt association below.
+			default:
+				return "", "", nil
+			}
+		}
 		unlock, err := s.lock(ctx)
 		if err != nil {
 			return "", "", err
@@ -66,7 +78,6 @@ func parseEvent(ctx context.Context, s Store, source string, payload []byte) (ki
 				delete(sessions, k)
 			}
 		}
-		key := digest(p.SessionID)
 		cycle := sessions[key]
 		switch p.HookEventName {
 		case "UserPromptSubmit":
@@ -80,21 +91,7 @@ func parseEvent(ctx context.Context, s Store, source string, payload []byte) (ki
 			if cycle.Cycle == "" {
 				return "", "", nil
 			}
-			switch p.NotificationType {
-			case "idle_prompt":
-				return "turn_completed", digest("claude\x00" + key + "\x00" + cycle.Cycle + "\x00completed"), nil
-			case "permission_prompt", "elicitation_dialog":
-				// Upstream exposes no notification occurrence ID or tool ID. Each native invocation
-				// is a distinct wait. Persist its sequence before HTTP retries; do not merge parallel tools.
-				cycle.InputSequence++
-				cycle.Updated = now
-				sessions[key] = cycle
-				if err := s.writeJSON("claude-cycles.json", sessions); err != nil {
-					return "", "", err
-				}
-				return "needs_input", digest("claude\x00" + key + "\x00" + cycle.Cycle + "\x00input\x00" + strconv.FormatUint(cycle.InputSequence, 10)), nil
-			}
-			return "", "", nil
+			return "turn_completed", digest("claude\x00" + key + "\x00" + cycle.Cycle + "\x00completed"), nil
 		}
 	}
 	return "", "", errors.New("unsupported event source")

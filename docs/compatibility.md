@@ -9,8 +9,8 @@ an optimistic version range.
 | --- | --- | --- | --- |
 | Codex | 0.162.1 | `notify: agent-turn-complete` | `turn_completed`; requires both `thread-id` and `turn-id` |
 | Codex | 0.162.1 | `PermissionRequest`, `Stop`, TUI approval alerts | Not forwarded: not proof of a completed turn or unresolved human wait |
-| Claude Code | 2.1.282 | `Notification: idle_prompt` | `turn_completed`; native delayed completion after a recorded user prompt |
-| Claude Code | 2.1.282 | `Notification: permission_prompt`, `elicitation_dialog` | `needs_input`; native human-wait notifications |
+| Claude Code | 2.1.282 | `Notification: idle_prompt` | `turn_completed`; native delayed completion requires an unexpired recorded user prompt |
+| Claude Code | 2.1.282 | `Notification: permission_prompt`, `elicitation_dialog` | `needs_input`; native human-wait notifications, independent of prompt-cycle association |
 | Claude Code | 2.1.282 | All other Notification/Stop/SubagentStop events | Ignored |
 | Herdr | 0.9.1, 0.9.3, protocol 22 | Native Agent hooks inside the terminal | Same event mapping as above, plus explicit snapshot/socket verification |
 | tmux | Structured `list-panes` format support | Exact inherited socket + pane | Stable session/window/pane and `pid:start_time:session_created`; linked membership ambiguity rejected |
@@ -26,12 +26,26 @@ an early completion. URL elicitation and background agent-view notifications are
 not enabled because their target/event ownership has not been established here.
 
 `UserPromptSubmit` stores only a random cycle and timestamp keyed by a session
-digest. Native human-wait hooks lack an occurrence ID: each invocation receives a
-monotonic per-cycle sequence. This preserves two separate waits even within one
-tool, or across parallel tools. HTTP retries reuse the resulting event envelope;
-duplicate upstream invocations can duplicate alerts. Claude real interactive
-human-wait/idle delivery has not been exercised in this implementation environment;
-mapping is covered by narrow lifecycle fixtures and official version-era semantics.
+digest. Completion associations expire after 86400 seconds; absent or expired
+associations suppress `idle_prompt` completion. Native human-wait notifications
+remain eligible without an association, including long-running or resumed sessions.
+They still require a supported version, valid session identity and an unambiguous
+verified terminal target; they neither create nor refresh a completion association.
+
+Native human-wait hooks lack an occurrence ID: each invocation receives a fresh
+random identity, scoped by session digest, independent of prompt cycles. This
+preserves separate waits even within one tool or across parallel tools without
+another persistent occurrence store. The existing encrypted retry cache remains
+bounded to 512 envelopes: a full cache rejects new events until expiry permits
+cleanup, while cached retries remain usable. The one-hour envelope TTL and
+one-day expired-cache retention are unchanged. HTTP retries within that invocation
+reuse its exact event ID, nonce and ciphertext. Duplicate upstream invocations can
+duplicate alerts; cross-invocation deduplication is not promised for Claude waits.
+
+Claude real interactive human-wait/idle delivery has not been exercised in this
+implementation environment. Fixtures cover both wait types with missing, expired
+and valid cycles through the actual CLI notify path, encryption and controlled
+HTTP retries; Agent-version/terminal command outputs are synthetic in these tests.
 
 Herdr's effective `done`/`blocked` display status alone is not an authoritative
 Agent lifecycle signal. In the pinned socket schema `PaneAgentStatusChangedEvent`

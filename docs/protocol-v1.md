@@ -118,10 +118,21 @@ routes below. Management requests use the same ID grammar and JSON conventions:
 | --- | --- |
 | `POST /v1/devices` | `{device_id,apns_token,environment}` with the new management bearer; an owned registration retry retains the existing token |
 | `GET /v1/devices/{device}` | `{device_id,environment,token_generation,sendable}`; sendable is service configuration/known token validity, not a delivery receipt |
-| `PUT /v1/devices/{device}/token` | `{apns_token,environment}`; advances token generation, including explicit same-token registration |
+| `PUT /v1/devices/{device}/token` | `{apns_token,environment,token_generation}`; atomically updates only the expected generation, then increments it, including explicit same-token registration |
 | `POST /v1/devices/{device}/pairs` | `{pair_id,installation_id,send_token_hash,policy}`; pending claim expires after 600 seconds; same binding/credential retry returns current state |
 | `DELETE /v1/pairs/{pair}` | Returns `{pair_id,status:"revoked"}` for this owner's pair |
 | `PATCH /v1/pairs/{pair}/policy` | `{turn_completed:boolean,needs_input:boolean}`; disables subsequent authorization for disabled event types |
+
+Token PUT requires a nonnegative safe integer `token_generation` from the device
+POST/GET response (new devices start at 1). A stale generation returns HTTP 409
+`token_generation_conflict` without changing the token; a missing or invalid
+generation returns HTTP 400 `invalid_token_generation`. After conflict, reread
+device state and use the latest locally owned token, checking ownership after
+each await before writing or publishing readiness. All registration callers must
+share this ownership, including pairing and token refresh. Cancellation alone
+does not prevent an already sent request from executing on the server. Owned
+POST retries do not overwrite the existing token. App and API must both support
+this required conditional-write field; no database migration is needed.
 
 `send_token_hash` is lowercase SHA-256 hex of the **UTF-8 bearer string**, not of
 its base64-decoded bytes. The device management bearer can also read its own pair
@@ -140,12 +151,14 @@ decryption keys, or arbitrary webhook destinations.
 ## Retry identity
 
 Codex identity is the hash of source + thread + turn. Claude native idle completion
-uses the minimal random cycle created at `UserPromptSubmit`. Input notifications
-have no upstream occurrence/tool ID: each actual invocation gets a persisted
-per-cycle sequence, avoiding loss of separate parallel or repeated waits. HTTP
-retries within that invocation retain it; separately duplicated upstream calls
-cannot be distinguished and can duplicate alerts. This limitation is not hidden
-behind a time-window heuristic.
+requires the unexpired random cycle created at `UserPromptSubmit`. Human-wait
+notifications are independent of that association and never create or refresh it.
+They have no upstream occurrence/tool ID: each actual invocation gets a fresh
+random identity scoped by session digest, avoiding loss of separate parallel or
+repeated waits without another persistent occurrence store. HTTP retries within
+that invocation retain the identity and encrypted envelope; separately duplicated
+upstream calls cannot be distinguished and can duplicate alerts. This limitation
+is not hidden behind a time-window heuristic.
 
 The local retry cache contains ciphertext and a locator digest, never hook content.
 Same pair/source identity keeps nonce, expiry and ciphertext identical across

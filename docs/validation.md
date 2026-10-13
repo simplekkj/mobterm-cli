@@ -80,3 +80,54 @@ Both versions' fixed source restore paths allocate fresh opaque terminal IDs.
 
 See [compatibility](compatibility.md) for event delays, unsupported combinations,
 source references and the Claude occurrence-ID limitation.
+
+## Round 2 v2.0 — JT-R2 repair validation
+
+The checks below ran on 2026-10-13 against the JT-R2 source changes. Native human
+waits now use a fresh invocation identity independent of completion associations;
+the existing 512-envelope bound and expiry policy are unchanged.
+
+The regression was reproduced before the implementation change with
+`go test -count=1 -run 'TestClaudeWaitWithoutCompletionAssociation|TestClaudeWaitNotifyEncryptedRetries' ./...`
+(FAIL, exit 1). Both `permission_prompt` and `elicitation_dialog` returned no event
+for missing/expired cycles; their full notify tests sent zero HTTP requests instead
+of four. Valid-cycle parse tests also exposed that waits changed the completion
+association timestamp/state. This was the expected pre-fix failure, not an
+unresolved validation failure.
+
+| Executed check | Result |
+| --- | --- |
+| `go test -count=1 -run 'TestClaudeWait\|TestClaudeSemantics\|TestCodexStableIdentityAndIgnoreApproval' ./...` | PASS after repair |
+| `test -z "$(gofmt -l .)"` | PASS |
+| `go test -count=1 ./...` | PASS, 25 top-level tests |
+| `go vet ./...` | PASS |
+| `go test -race -count=1 ./...` | PASS |
+| `python3 scripts/package.py --version v0.0.0 --commit 0000000000000000000000000000000000000000 --output .cache/jt-r2-package` | PASS, all four CGO-disabled Linux/macOS amd64/arm64 archives |
+| Repeat the identical package command and compare `checksums.txt` | PASS, all four SHA-256 values identical |
+| `shasum -a 256 -c checksums.txt` in `.cache/jt-r2-package` | PASS, all four archives |
+| Python archive/metadata inspection; extract native binary and execute `version` and `status --installation-json` twice with isolated `MOBTERM_CONFIG_DIR` | PASS, archive layout/mode/version/fixture commit correct; native darwin/amd64 executable and stable installation identity |
+| `go test -count=1 -run 'TestUpgradeFailurePreservesOldBinary\|TestReleaseVerification' -v ./...` | PASS, checksum/path rejection and old-executable preservation |
+
+The new regression matrix covers both human-wait event types with missing,
+expired (>86400 seconds) and valid completion associations at both parsing and
+the actual CLI `run` → `notify` → AES-GCM → controlled HTTP boundary. Every case
+sends two separate native invocations; each receives a simulated HTTP 503 followed
+by success. Retries have byte-identical bodies (event ID, nonce and ciphertext),
+while the two waits have distinct IDs, nonces and ciphertext. Decryption verifies
+the exact terminal locator. Raw session/message/tool/transcript fields and pairing
+secrets are absent from request bodies and hook output; raw hook fields are also
+absent from the cycle/envelope cache.
+
+Additional checks prove waits do not create or refresh completion associations,
+missing/expired cycles do not produce `idle_prompt` completion, unsupported versions
+and missing session/target or ambiguous terminal contexts remain blocked, and
+the cache refuses a 513th live event while allowing existing retries and expiry
+cleanup. Existing Stop/SubagentStop/unknown-notification and Codex
+PermissionRequest filters remain covered.
+
+The version/terminal command outputs and HTTP service in these regressions are
+controlled fixtures. This is not evidence of real interactive Claude events,
+APNs delivery, phone Jump to, or a live service result. The all-zero commit and
+`v0.0.0` identify local packaging fixtures; no tag/release/deployment was created.
+Non-native architectures were built and inspected, not executed. Upgrade failure
+contracts were tested locally; an upgrade from a published release was not run.
