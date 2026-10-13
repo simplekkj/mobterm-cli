@@ -1,0 +1,15 @@
+{
+  "fixture_version": 1,
+  "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "plaintext": "{\"v\":1,\"installation_id\":\"install_fixture_0000000000000001\",\"backend\":\"tmux\",\"namespace\":\"/tmp/tmux-1000/default\",\"server_identity\":\"1234:1700000000:1700000001\",\"workspace_id\":\"$1\",\"view_id\":\"@2\",\"pane_id\":\"%3\"}",
+  "aad": "mobterm/1\npair_fixture_000000000000000001\nevent_fixture_00000000000000001\nturn_completed\n2000000000",
+  "envelope": {
+    "v": 1,
+    "pair_id": "pair_fixture_000000000000000001",
+    "event_id": "event_fixture_00000000000000001",
+    "kind": "turn_completed",
+    "expires_at": 2000000000,
+    "nonce": "ICEiIyQlJicoKSor",
+    "ciphertext": "qRjQUlapNixzEjG6oHSYmKQgg/LY6QfMVtQFfDr+P2UZ0YNt9lFAqHGiXqJoOS/40hrcvqoMHVH+U10xbtBrvrNDo2+0rcfi5h+RBZd/VwC48kB01pjjPPVt7V53bLGobyFWe/l0rsPm+MFhwoOhZ1K9rTH0rNloIq1ua5Dp9kFInV+kGd8xglG1k10+DyyW5/obBemp7boAOI0fuuPg7/XXS0CumAT8gNSs489OOZGJl42mZeG5VA63sc2CGOmIo5FUOlb2pTEwQtzazemJ6f4HiBfnrVpOsXff3+HZKCVCwEE="
+  }
+}

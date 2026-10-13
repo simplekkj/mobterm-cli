@@ -1,0 +1,59 @@
+name: Versioned release
+on:
+  push:
+    tags: ['v*.*.*']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.1'
+      - name: Verify exact stable tag and checked out commit
+        shell: bash
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
+      - run: test -z "$(gofmt -l .)"
+      - run: go test ./...
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: python3 scripts/package.py --version "$GITHUB_REF_NAME" --commit "$(git rev-parse HEAD)"
+      - name: Verify complete distribution before upload
+        working-directory: dist
+        run: |
+          test "$(find . -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 4
+          sha256sum --check checksums.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets
+          path: dist/*
+          if-no-files-found: error
+  release:
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'simplekkj/mobterm-cli'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-assets
+          path: dist
+      - name: Publish complete assets once, without replacing an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          cd dist
+          test "$(find . -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 4
+          sha256sum --check checksums.txt
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo 'Release already exists; refusing to overwrite it.' >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "mobterm-cli $GITHUB_REF_NAME" --notes "Linux and macOS, amd64 and arm64. Verify checksums.txt before installation. macOS binaries are unsigned and not notarized." ./*.tar.gz checksums.txt

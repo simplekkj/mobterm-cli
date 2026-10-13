@@ -1,0 +1,322 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/pelletier/go-toml/v2"
+	"github.com/pelletier/go-toml/v2/unstable"
+)
+
+type HookRecord struct {
+	Agent    string   `json:"agent"`
+	Path     string   `json:"path"`
+	Original string   `json:"original,omitempty"`
+	Managed  string   `json:"managed"`
+	Chain    []string `json:"chain,omitempty"`
+}
+
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
+func configPath(agent string) (string, error) {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	switch agent {
+	case "codex":
+		base := os.Getenv("CODEX_HOME")
+		if base == "" {
+			base = filepath.Join(h, ".codex")
+		}
+		return filepath.Join(base, "config.toml"), nil
+	case "claude":
+		base := os.Getenv("CLAUDE_CONFIG_DIR")
+		if base == "" {
+			base = filepath.Join(h, ".claude")
+		}
+		return filepath.Join(base, "settings.json"), nil
+	}
+	return "", errors.New("agent must be codex or claude")
+}
+func hookVersions(ctx context.Context, agent string) error {
+	want := map[string]string{"codex": "codex-cli 0.162.1", "claude": "2.1.282 (Claude Code)"}
+	out, err := commandOutput(ctx, agent, "--version")
+	if err != nil {
+		return errors.New("agent unavailable; hook configuration unchanged")
+	}
+	if strings.TrimSpace(string(out)) != want[agent] {
+		return errors.New("unsupported agent version; see docs/compatibility.md")
+	}
+	return nil
+}
+func changeHooks(ctx context.Context, s Store, agent, action, path, executable string, checkVersion bool) error {
+	if agent != "codex" && agent != "claude" {
+		return errors.New("agent must be codex or claude")
+	}
+	if action != "install" && action != "uninstall" {
+		return errors.New("use hooks install or uninstall")
+	}
+	if checkVersion && action == "install" {
+		if err := hookVersions(ctx, agent); err != nil {
+			return err
+		}
+	}
+	if path == "" {
+		var err error
+		path, err = configPath(agent)
+		if err != nil {
+			return err
+		}
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	if err = ensureDir(filepath.Dir(path), false); err != nil {
+		return err
+	}
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	// A second, adjacent lock serializes separate Mobterm state directories targeting the same agent config.
+	configUnlock, err := lockFile(ctx, path+".mobterm-lock")
+	if err != nil {
+		return err
+	}
+	defer configUnlock()
+	data, err := secureRead(path, 2*1024*1024)
+	mode := os.FileMode(0600)
+	if errors.Is(err, os.ErrNotExist) {
+		data = nil
+	} else if err != nil {
+		return err
+	} else {
+		info, _ := os.Stat(path)
+		mode = info.Mode().Perm()
+	}
+	recordName := "hooks-" + agent + ".json"
+	var record HookRecord
+	readErr := s.readJSON(recordName, &record)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return readErr
+	}
+	if readErr == nil && record.Path != path {
+		return errors.New("agent already managed at another path")
+	}
+	var result []byte
+	if agent == "codex" {
+		result, record, err = editCodex(data, action, path, executable, record)
+	} else {
+		result, record, err = editClaude(data, action, path, executable, record)
+	}
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(result, data) {
+		return nil
+	}
+	if action == "install" {
+		if err = s.writeJSON(recordName, record); err != nil {
+			return err
+		}
+	}
+	// Compare immediately before rename so an unrelated editor is never silently overwritten.
+	current, readAgain := secureRead(path, 2*1024*1024)
+	if readAgain != nil && !errors.Is(readAgain, os.ErrNotExist) {
+		return readAgain
+	}
+	if !bytes.Equal(current, data) {
+		return errors.New("agent config changed concurrently; retry")
+	}
+	if err = atomicWrite(path, result, mode); err != nil {
+		return err
+	}
+	if action == "uninstall" {
+		if err = os.Remove(filepath.Join(s.Dir, recordName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+func rootNotify(data []byte) (start, end int, argv []string, err error) {
+	var decoded map[string]any
+	if err = toml.Unmarshal(data, &decoded); err != nil {
+		return 0, 0, nil, errors.New("invalid TOML; config unchanged")
+	}
+	value, exists := decoded["notify"]
+	if !exists {
+		return -1, -1, nil, nil
+	}
+	items, ok := value.([]any)
+	if !ok || len(items) == 0 {
+		return 0, 0, nil, errors.New("existing notify must be an argv array")
+	}
+	for _, item := range items {
+		s, ok := item.(string)
+		if !ok {
+			return 0, 0, nil, errors.New("notify argv contains non-string")
+		}
+		argv = append(argv, s)
+	}
+	var parser unstable.Parser
+	parser.Reset(data)
+	inTable := false
+	for parser.NextExpression() {
+		n := parser.Expression()
+		if n.Kind == unstable.Table || n.Kind == unstable.ArrayTable {
+			inTable = true
+		}
+		if inTable || n.Kind != unstable.KeyValue {
+			continue
+		}
+		keys := n.Key()
+		if !keys.Next() || string(keys.Node().Data) != "notify" {
+			continue
+		}
+		key := keys.Node()
+		if keys.Next() {
+			continue
+		}
+		start = int(key.Raw.Offset)
+		for start > 0 && data[start-1] != '\n' {
+			start--
+		}
+		for end = start; end <= len(data); end++ {
+			if end < len(data) && data[end] != '\n' {
+				continue
+			}
+			finish := end
+			if end < len(data) {
+				finish++
+			}
+			var candidate map[string]any
+			if toml.Unmarshal(data[start:finish], &candidate) == nil {
+				if _, found := candidate["notify"]; found {
+					return start, finish, argv, nil
+				}
+			}
+		}
+		return 0, 0, nil, errors.New("cannot isolate notify safely")
+	}
+	return 0, 0, nil, errors.New("root notify cannot be safely edited")
+}
+func editCodex(data []byte, action, path, executable string, r HookRecord) ([]byte, HookRecord, error) {
+	if r.Managed != "" {
+		if bytes.Count(data, []byte(r.Managed)) == 1 {
+			if action == "install" {
+				return data, r, nil
+			}
+			return bytes.Replace(data, []byte(r.Managed), []byte(r.Original), 1), r, nil
+		}
+		if action == "uninstall" || strings.Contains(string(data), "# mobterm-cli managed notify") {
+			return nil, r, errors.New("managed notify was edited; config left unchanged")
+		}
+	}
+	if action == "uninstall" {
+		return data, r, nil
+	}
+	start, end, chain, err := rootNotify(data)
+	if err != nil {
+		return nil, r, err
+	}
+	for _, arg := range chain {
+		if arg == "--mobterm-chain" || filepath.Base(arg) == "mobterm-cli" {
+			return nil, r, errors.New("refusing recursive notify wrapper")
+		}
+	}
+	args := []string{executable, "notify", "--source", "codex", "--mobterm-chain"}
+	encoded, _ := json.Marshal(args)
+	managed := "# mobterm-cli managed notify v1\nnotify = " + string(encoded) + "\n# end mobterm-cli managed notify\n"
+	r = HookRecord{Agent: "codex", Path: path, Managed: managed, Chain: chain}
+	if start >= 0 {
+		r.Original = string(data[start:end])
+		return append(append(append([]byte{}, data[:start]...), managed...), data[end:]...), r, nil
+	}
+	return append([]byte(managed), data...), r, nil
+}
+func editClaude(data []byte, action, path, executable string, r HookRecord) ([]byte, HookRecord, error) {
+	var root map[string]json.RawMessage
+	if len(data) == 0 {
+		root = map[string]json.RawMessage{}
+	} else if json.Unmarshal(data, &root) != nil || root == nil {
+		return nil, r, errors.New("invalid Claude JSON; config unchanged")
+	}
+	hooks := map[string][]map[string]json.RawMessage{}
+	if raw, ok := root["hooks"]; ok {
+		if json.Unmarshal(raw, &hooks) != nil {
+			return nil, r, errors.New("unsupported Claude hook shape")
+		}
+	}
+	command := shellQuote(executable) + " notify --source claude"
+	if r.Managed != "" {
+		command = r.Managed
+	}
+	events := map[string]string{"UserPromptSubmit": "", "Notification": "^(permission_prompt|elicitation_dialog|idle_prompt)$"}
+	changed := false
+	for event, matcher := range events {
+		entries := hooks[event]
+		found := false
+		out := make([]map[string]json.RawMessage, 0, len(entries))
+		for _, entry := range entries {
+			var commands []map[string]json.RawMessage
+			if json.Unmarshal(entry["hooks"], &commands) != nil {
+				return nil, r, errors.New("unsupported Claude hook entry")
+			}
+			kept := make([]map[string]json.RawMessage, 0, len(commands))
+			for _, cmd := range commands {
+				var text string
+				_ = json.Unmarshal(cmd["command"], &text)
+				if text == command {
+					found = true
+					if action == "uninstall" {
+						changed = true
+						continue
+					}
+				}
+				kept = append(kept, cmd)
+			}
+			if len(kept) == 0 && len(commands) > 0 {
+				continue
+			}
+			if len(kept) != len(commands) {
+				entry["hooks"], _ = json.Marshal(kept)
+			}
+			out = append(out, entry)
+		}
+		if action == "install" && !found {
+			entry := map[string]json.RawMessage{}
+			if matcher != "" {
+				entry["matcher"], _ = json.Marshal(matcher)
+			}
+			entry["hooks"], _ = json.Marshal([]any{map[string]any{"type": "command", "command": command, "timeout": 10}})
+			out = append(out, entry)
+			changed = true
+		}
+		if len(out) == 0 {
+			delete(hooks, event)
+		} else {
+			hooks[event] = out
+		}
+	}
+	if !changed {
+		return data, r, nil
+	}
+	if len(hooks) == 0 {
+		delete(root, "hooks")
+	} else {
+		root["hooks"], _ = json.Marshal(hooks)
+	}
+	result, err := json.MarshalIndent(root, "", "  ")
+	return append(result, '\n'), HookRecord{Agent: "claude", Path: path, Managed: command}, err
+}
+func hooksContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 10*time.Second)
+}
