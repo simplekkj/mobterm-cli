@@ -28,6 +28,9 @@ func TestTmuxExactInactiveAndAmbiguity(t *testing.T) {
 func TestLiveTmuxIdentity(t *testing.T) {
 	binary, err := exec.LookPath("tmux")
 	if err != nil {
+		if os.Getenv("MOBTERM_REQUIRE_TMUX") == "1" {
+			t.Fatal("tmux required but unavailable; live fixture must execute")
+		}
 		t.Skip("tmux unavailable; live fixture not executed")
 	}
 	socket := filepath.Join(t.TempDir(), "tmux.sock")

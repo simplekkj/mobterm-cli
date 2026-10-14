@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Linux black-box lifecycle checks using real, pinned Agent executables.
+"""Black-box lifecycle checks using real, pinned Agent executables.
 
 Run as an ordinary user with --binary PATH. No Agent credentials are read:
 each test has a disposable HOME. Pairing uses a loopback HTTPS fixture, not APNs.
 Requires Python 3.11+, openssl, Codex 0.162.1 and Claude Code 2.1.282 on PATH.
+The full suite requires Linux; --config-only also runs on macOS and excludes
+the HTTPS fixture, which relies on Linux's SSL_CERT_FILE trust loading.
 """
 import argparse
 import base64
@@ -48,6 +50,8 @@ class LifecycleTests(unittest.TestCase):
         # Allowlist ordinary process settings; never inherit real Agent credentials.
         self.env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL') if key in os.environ}
         self.env.update(HOME=str(self.home), PATH=AGENT_PATH,
+                        DISABLE_UPDATES='1', DISABLE_AUTOUPDATER='1',
+                        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1',
                         MOBTERM_CONFIG_DIR=str(self.home / '.config/mobterm'),
                         CODEX_HOME=str(self.home / '.codex'),
                         CLAUDE_CONFIG_DIR=str(self.home / '.claude'))
@@ -311,13 +315,26 @@ class LifecycleTests(unittest.TestCase):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', required=True)
+    parser.add_argument('--config-only', action='store_true',
+                        help='run hook/configuration checks without the Linux HTTPS fixture')
     args, remaining = parser.parse_known_args()
-    if platform.system() != 'Linux':
-        parser.error('These checks require actual Linux execution')
+    if platform.system() not in ('Linux', 'Darwin'):
+        parser.error('These checks require Linux or macOS')
+    if platform.system() != 'Linux' and not args.config_only:
+        parser.error('The HTTPS fixture requires Linux; use --config-only on macOS')
     BINARY = str(Path(args.binary).resolve(strict=True))
     AGENT_PATH = os.environ['PATH']
-    for agent, expected in (('codex', 'codex-cli 0.162.1'), ('claude', '2.1.282 (Claude Code)')):
-        result = subprocess.run([agent, '--version'], capture_output=True, text=True, timeout=20)
-        if result.returncode or result.stdout.strip() != expected:
-            parser.error('Real supported Agent version required: ' + expected)
-    unittest.main(argv=[__file__, *remaining])
+    with tempfile.TemporaryDirectory(prefix='mobterm-agent-versions-') as home:
+        env = dict(PATH=AGENT_PATH, HOME=home, CODEX_HOME=home + '/.codex',
+                   CLAUDE_CONFIG_DIR=home + '/.claude', DISABLE_UPDATES='1',
+                   DISABLE_AUTOUPDATER='1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1')
+        for agent, expected in (('codex', 'codex-cli 0.162.1'), ('claude', '2.1.282 (Claude Code)')):
+            result = subprocess.run([agent, '--version'], env=env,
+                                    capture_output=True, text=True, timeout=20)
+            if result.returncode or result.stdout.strip() != expected:
+                parser.error('Real supported Agent version required: ' + expected)
+    tests = unittest.defaultTestLoader.getTestCaseNames(LifecycleTests)
+    if args.config_only:
+        tests.remove('test_setup_https_repeat_failure_and_credentials_retained_on_hook_removal')
+    unittest.main(argv=[__file__, *remaining],
+                  defaultTest=['LifecycleTests.' + name for name in tests])

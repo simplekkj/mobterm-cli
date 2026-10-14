@@ -9,10 +9,22 @@ permissions:
 jobs:
   test:
     name: Native ${{ matrix.goos }}/${{ matrix.goarch }} (${{ matrix.runner }})
+    env:
+      MOBTERM_REQUIRE_TMUX: '1'
     strategy:
       fail-fast: false
       matrix:
         include:
+          - runner: ubuntu-22.04
+            goos: linux
+            goarch: amd64
+            kernel: Linux
+            machine: x86_64
+          - runner: ubuntu-22.04-arm
+            goos: linux
+            goarch: arm64
+            kernel: Linux
+            machine: aarch64
           - runner: ubuntu-24.04
             goos: linux
             goarch: amd64
@@ -28,6 +40,16 @@ jobs:
             goarch: amd64
             kernel: Darwin
             machine: x86_64
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+            kernel: Darwin
+            machine: x86_64
+          - runner: macos-15
+            goos: darwin
+            goarch: arm64
+            kernel: Darwin
+            machine: arm64
           - runner: macos-26
             goos: darwin
             goarch: arm64
@@ -39,6 +61,12 @@ jobs:
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: '1.27.1'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
       - name: Verify native runner and Go host architecture
         shell: bash
         env:
@@ -59,14 +87,38 @@ jobs:
           if [[ "$EXPECTED_GOOS" == darwin ]]; then
             test "$(sysctl -in sysctl.proc_translated)" != 1
           fi
+      - name: Install live tmux test dependency
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sudo apt-get update
+            sudo apt-get install -y tmux
+          elif ! command -v tmux >/dev/null 2>&1; then
+            brew install tmux
+          fi
+          tmux -V
       - run: test -z "$(gofmt -l .)"
-      - run: go test ./...
+      - run: go test -count=1 -v ./...
       - run: go vet ./...
-      - run: go test -race ./...
+      - run: go test -race -count=1 -v ./...
       - name: Build and run native binary
         run: |
           go build -trimpath -o mobterm-cli .
           ./mobterm-cli version
+      - name: Install pinned native Agents in an isolated prefix
+        shell: bash
+        run: |
+          npm install --global --prefix "$RUNNER_TEMP/mobterm-agents" --no-audit --no-fund \
+            @openai/codex@0.162.1 @anthropic-ai/claude-code@2.1.282
+          echo "$RUNNER_TEMP/mobterm-agents/bin" >> "$GITHUB_PATH"
+      - name: Real Agent lifecycle and configuration regression
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli -v
+          else
+            python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli --config-only -v
+          fi
       - run: sh -n install.sh
       - name: Package all supported targets without publishing
         run: python3 scripts/package.py --version v0.0.0 --commit "$GITHUB_SHA"

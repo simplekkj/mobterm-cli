@@ -191,20 +191,23 @@ python3 tests/install_test.py --dist dist --commit FULL_40_CHARACTER_COMMIT_SHA
 
 The package script builds all four targets with `CGO_ENABLED=0`, records the
 source SHA/platform/version, normalizes tar/gzip metadata, and writes SHA-256
-checksums. Branch pushes and pull requests run the same native CI on all four
-targets:
+checksums. Branch pushes and pull requests run eight native CI jobs covering
+all four targets on two OS versions each:
 
 | Target | Native GitHub-hosted Runner |
 | --- | --- |
-| Linux amd64 | `ubuntu-24.04` |
-| Linux arm64 | `ubuntu-24.04-arm` |
-| macOS amd64 | `macos-26-intel` |
-| macOS arm64 | `macos-26` |
+| Linux amd64 | `ubuntu-22.04`, `ubuntu-24.04` |
+| Linux arm64 | `ubuntu-22.04-arm`, `ubuntu-24.04-arm` |
+| macOS amd64 | `macos-15-intel`, `macos-26-intel` |
+| macOS arm64 | `macos-15`, `macos-26` |
 
 Each job checks the OS/CPU and Go host/target architecture, rejects Rosetta,
-runs the Go checks above, builds and executes the native binary, and cross-builds
-all four packages for offline installer regression and native installation smoke
-tests. Release tag pushes reuse this CI from the same commit. All four native
+installs/checks tmux, and runs uncached, verbose Go tests and race checks with
+`MOBTERM_REQUIRE_TMUX=1`: a missing tmux fails instead of skipping its live test.
+Jobs also build and execute the native binary and cross-build all four packages
+for offline installer regression and native installation smoke tests. This matrix
+does not establish compatibility with other Linux distributions or OS versions.
+Release tag pushes reuse this CI from the same commit. All eight native
 jobs must succeed before the Ubuntu release build cross-compiles the four assets;
 only that successful build can reach the separately privileged Release job.
 Only stable `vX.Y.Z` tags in the official repository can publish, and existing
@@ -217,16 +220,27 @@ archives without network access. With `--dist`, they additionally install and
 check all four real packages and run the native installed binary's `version`;
 this is not a download test against a public Release.
 
-On Linux with Python 3.11+, OpenSSL, real Codex 0.162.1 and Claude Code 2.1.282
-on PATH, run the black-box lifecycle checks against a built executable:
+Every CI job installs real Codex 0.162.1 and Claude Code 2.1.282 into an isolated
+npm prefix, using Node.js 22 and Python 3.12. The test runner rejects unexpected
+Agent versions. Linux runs all 11 black-box lifecycle checks; macOS runs the 10
+hook/configuration checks with `--config-only`. Both include native Agent
+configuration loading before and after hook/executable removal. The Linux HTTPS
+fixture relies on `SSL_CERT_FILE` and is excluded from the macOS suite, without
+changing system certificate trust.
+
+Locally, with Python 3.11+, OpenSSL and those exact real Agent versions on PATH,
+run the black-box checks against a built executable:
 
 ```sh
 python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli -v
+# macOS: run the hook/configuration suite
+python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli --config-only -v
 ```
 
-These checks create disposable HOME/config directories, verify native Agent
-configuration loading, and exercise setup over a loopback HTTPS fixture. They
-do not use Agent login credentials or send real model/APNs requests.
+These checks create disposable HOME/config directories, disable Claude updates
+and nonessential traffic, and use no Agent login credentials or real model/APNs
+requests. Linux setup requests use a loopback HTTPS fixture. Native runtime
+notification events and phone delivery/navigation remain separate verification.
 
 See [protocol v1](docs/protocol-v1.md), [security](docs/security.md), and the
 honest scope of [validation](docs/validation.md). Secrets, transcripts, caches,
