@@ -1,5 +1,71 @@
 # Validation records
 
+## Linux Agent lifecycle and config preservation — 2026-10-14
+
+Final source validation ran on a disposable Linode (`108108945`) in `us-lax`:
+Ubuntu 24.04.4 LTS, kernel 6.8.0-134-generic, amd64, tmux 3.4, Node 18.19.1,
+npm 9.2.0 and temporary 2 GiB swap. Provisioning reused the sibling App's
+protected Linode configuration loader. Credentials stayed local; SSH pinned
+the host key supplied through cloud-init, and the dedicated firewall admitted
+only measured client IPv4 /32 sources.
+
+Real Codex `0.162.1` was installed with npm `@openai/codex@0.162.1`; real
+Claude Code `2.1.282` used the official `https://claude.ai/install.sh` installer
+with that explicit version. Both actual version checks passed. Agent login
+credentials were not transferred or used.
+
+The tested binary includes the final working-tree hook fixes on base commit
+`c6961ce769aebd03eb9eed375dad174b79fe022d`, built with Go 1.27.1 and
+`CGO_ENABLED=0 GOOS=linux GOARCH=amd64`, version `linux-e2e`. Its SHA-256 is
+`c5463bef7f73f76098c53473aaf6947006ceeb4b0722eb2ad84df5ce2a96cdd1`.
+This is a source-build result; the fixes have not been published.
+
+| Check | Result |
+| --- | --- |
+| Linux `tests/linux_lifecycle_test.py --binary ./mobterm-cli -v` | PASS, 11 tests, no skips |
+| Go test executable cross-built with the Linux target and executed on Linode | PASS, 30 tests / 51 including subtests, no skips; real tmux checks executed |
+| Linux `tests/install_test.py --dist dist --commit <base SHA>` | PASS, 14 tests, no skips; actual installed Linux package executed |
+| Local formatting, Go tests, vet and race checks | PASS on final Go source |
+| Four-target package build, version `v0.0.0`, base SHA above | PASS; arm64 archives built/inspected, not executed |
+| Shell syntax, Python compilation and final diff whitespace | PASS |
+
+The black-box tests use disposable HOME directories, including spaces and a
+single quote, plus default/custom config paths and actual Agent executables.
+They cover stable installation identity, repeated bounded stdin setup over a
+loopback HTTPS fixture, malformed/wrong-identity setup, credential permissions,
+repeated hook installation/removal, original Codex notifier argv/payload/exit
+codes, existing Claude Stop/Notification hooks, later user settings and hooks,
+pre-existing identical commands, managed-entry edits, null/malformed settings
+and symlink refusal. TOML restoration is checked byte-for-byte, Claude values
+semantically, and existing config mode 0640 is preserved. Hook removal retains
+pairing credentials. Both native Agents load their configuration with `mcp list`
+before and after hook and executable removal.
+
+These checks fixed Claude `hooks:null` panics and command-only ownership that
+could remove existing or later-edited hooks. New records retain the entries
+actually inserted. Changes to managed commands, timeout, matcher or metadata
+cause a conflict without overwriting config. Legacy records without ownership
+metadata now reject installation/removal and require manual review; both their
+configuration and record remain byte-for-byte unchanged. See README for migration.
+
+The unchanged installer also downloaded the actual public GitHub stable Release
+`v0.1.0` twice into an isolated HOME, preserving existing Agent/Mobterm/shell
+configuration. Both downloads produced executable mode 0755 and SHA-256
+`88d93d30f5ae390068baf0935eadc88964bd507bbe992b967616dd16a0cc7d02`;
+the actual executable reported `mobterm-cli v0.1.0` and the base SHA above.
+Its hook behavior is separate from the fixed source build. The package matrix
+uses controlled GitHub responses and local `v0.0.0` archives that include the
+working-tree changes; base-SHA metadata does not imply a clean tagged release.
+
+Sanitized logs and source hashes are retained under ignored `.cache/linux-e2e/`.
+The final instance `108108945` and dedicated firewall `206363275` were deleted;
+cleanup confirmed both exact IDs absent with HTTP 404. Earlier disposable
+preparation/validation instances and their dedicated firewalls were also removed.
+Setup/API responses and hook inputs are controlled fixtures; any fixture
+`apns_accepted` response is not live APNs evidence. Native configuration loading
+was real; authenticated model turns, native runtime notification events, live
+API/APNs delivery and phone navigation were not tested.
+
 ## 2026-10-14: deployed API / temporary Linux CLI
 
 Started from `2fabb095939f78a9675bd61e1e649b46530b2ab8` on clean `main`, identical

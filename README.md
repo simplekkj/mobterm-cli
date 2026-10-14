@@ -129,6 +129,16 @@ never a credential. Codex respects `CODEX_HOME`; Claude respects
 notify argv are preserved. Claude JSON is reformatted but preserves unrelated
 values/hooks. Unsupported config shapes and edited owned entries fail without
 overwriting the user's configuration. Concurrent CLI writers use advisory locks.
+Claude ownership records track the complete entries inserted by Mobterm. A
+pre-existing identical command remains user-owned; later edits to a managed
+command, timeout, matcher or entry metadata cause a conflict instead of removal.
+Legacy Claude records without entry ownership require manual hook review;
+installation and removal leave that configuration unchanged rather than guess
+which matching commands belong to Mobterm.
+To migrate such a record, review Claude settings and remove only entries you
+can confirm were added by Mobterm, then move `hooks-claude.json` from the active
+private Mobterm config directory into a private backup. Reinstalling hooks will
+create entry ownership metadata. Retain pairing and installation identity files.
 
 Uninstall only removes this CLI's hook additions, retaining later user edits:
 
@@ -136,6 +146,16 @@ Uninstall only removes this CLI's hook additions, retaining later user edits:
 mobterm-cli hooks uninstall --agent codex --json
 mobterm-cli hooks uninstall --agent claude --json
 ```
+
+After both hook removals succeed, remove the installed executable if desired:
+
+```sh
+rm "$HOME/.local/bin/mobterm-cli"
+```
+
+If removal reports an edited hook, keep the executable until you have reviewed
+that entry. Pair credentials remain in the private Mobterm directory; revoke
+pairs in the App separately.
 
 Revoke a pair in the App. The CLI cannot create a new receiver or revive a revoked
 pair. Multiple devices have separate pair credentials and encryption keys.
@@ -176,6 +196,17 @@ Installer tests use isolated HOME/PATH, simulated GitHub responses and local
 archives without network access. With `--dist`, they additionally install and
 check all four real packages and run the native installed binary's `version`;
 this is not a download test against a public Release.
+
+On Linux with Python 3.11+, OpenSSL, real Codex 0.162.1 and Claude Code 2.1.282
+on PATH, run the black-box lifecycle checks against a built executable:
+
+```sh
+python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli -v
+```
+
+These checks create disposable HOME/config directories, verify native Agent
+configuration loading, and exercise setup over a loopback HTTPS fixture. They
+do not use Agent login credentials or send real model/APNs requests.
 
 See [protocol v1](docs/protocol-v1.md), [security](docs/security.md), and the
 honest scope of [validation](docs/validation.md). Secrets, transcripts, caches,

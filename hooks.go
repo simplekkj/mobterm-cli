@@ -15,11 +15,12 @@ import (
 )
 
 type HookRecord struct {
-	Agent    string   `json:"agent"`
-	Path     string   `json:"path"`
-	Original string   `json:"original,omitempty"`
-	Managed  string   `json:"managed"`
-	Chain    []string `json:"chain,omitempty"`
+	Agent       string            `json:"agent"`
+	Path        string            `json:"path"`
+	Original    string            `json:"original,omitempty"`
+	Managed     string            `json:"managed"`
+	Chain       []string          `json:"chain,omitempty"`
+	ClaudeOwned map[string]string `json:"claude_owned,omitempty"`
 }
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
@@ -243,6 +244,9 @@ func editCodex(data []byte, action, path, executable string, r HookRecord) ([]by
 	return append([]byte(managed), data...), r, nil
 }
 func editClaude(data []byte, action, path, executable string, r HookRecord) ([]byte, HookRecord, error) {
+	if r.Managed != "" && r.ClaudeOwned == nil {
+		return nil, r, errors.New("legacy Claude hook ownership is unknown; manually review hooks before reinstalling or removing; config left unchanged")
+	}
 	var root map[string]json.RawMessage
 	if len(data) == 0 {
 		root = map[string]json.RawMessage{}
@@ -251,34 +255,85 @@ func editClaude(data []byte, action, path, executable string, r HookRecord) ([]b
 	}
 	hooks := map[string][]map[string]json.RawMessage{}
 	if raw, ok := root["hooks"]; ok {
-		if json.Unmarshal(raw, &hooks) != nil {
+		if json.Unmarshal(raw, &hooks) != nil || hooks == nil {
 			return nil, r, errors.New("unsupported Claude hook shape")
 		}
+	}
+	for _, entries := range hooks {
+		if entries == nil {
+			return nil, r, errors.New("unsupported Claude hook shape")
+		}
+		for _, entry := range entries {
+			if entry == nil {
+				return nil, r, errors.New("unsupported Claude hook entry")
+			}
+		}
+	}
+	// Without an installation record, existing commands belong to the user.
+	if action == "uninstall" && r.Managed == "" {
+		return data, r, nil
 	}
 	command := shellQuote(executable) + " notify --source claude"
 	if r.Managed != "" {
 		command = r.Managed
 	}
-	events := map[string]string{"UserPromptSubmit": "", "Notification": "^(permission_prompt|elicitation_dialog|idle_prompt)$"}
+	events := []struct{ name, matcher string }{
+		{"UserPromptSubmit", ""},
+		{"Notification", "^(permission_prompt|elicitation_dialog|idle_prompt)$"},
+	}
+	owned := make(map[string]string, len(r.ClaudeOwned))
+	for event, entry := range r.ClaudeOwned {
+		owned[event] = entry
+	}
+	managedCommand, _ := json.Marshal(map[string]any{"type": "command", "command": command, "timeout": 10})
 	changed := false
-	for event, matcher := range events {
-		entries := hooks[event]
+	for _, event := range events {
+		managedEntry := map[string]json.RawMessage{"hooks": json.RawMessage("[" + string(managedCommand) + "]")}
+		if event.matcher != "" {
+			managedEntry["matcher"], _ = json.Marshal(event.matcher)
+		}
+		encodedEntry, _ := json.Marshal(managedEntry)
+		var expected map[string]json.RawMessage
+		if encoded, ok := owned[event.name]; ok {
+			if json.Unmarshal([]byte(encoded), &expected) != nil || expected == nil {
+				return nil, r, errors.New("invalid Claude hook ownership record")
+			}
+		}
+		entries := hooks[event.name]
 		found := false
+		ownedMatches := 0
 		out := make([]map[string]json.RawMessage, 0, len(entries))
 		for _, entry := range entries {
 			var commands []map[string]json.RawMessage
-			if json.Unmarshal(entry["hooks"], &commands) != nil {
+			if json.Unmarshal(entry["hooks"], &commands) != nil || commands == nil {
 				return nil, r, errors.New("unsupported Claude hook entry")
 			}
 			kept := make([]map[string]json.RawMessage, 0, len(commands))
 			for _, cmd := range commands {
+				if cmd == nil {
+					return nil, r, errors.New("unsupported Claude hook command")
+				}
 				var text string
 				_ = json.Unmarshal(cmd["command"], &text)
 				if text == command {
 					found = true
-					if action == "uninstall" {
-						changed = true
-						continue
+					if expected != nil {
+						ownedMatches++
+						encodedCommand, _ := json.Marshal(cmd)
+						candidate := make(map[string]json.RawMessage, len(entry))
+						for key, value := range entry {
+							candidate[key] = value
+						}
+						candidate["hooks"] = json.RawMessage("[" + string(encodedCommand) + "]")
+						actualEntry, _ := json.Marshal(candidate)
+						expectedEntry, _ := json.Marshal(expected)
+						if !bytes.Equal(actualEntry, expectedEntry) || ownedMatches > 1 {
+							return nil, r, errors.New("managed Claude hook was edited or duplicated; config left unchanged")
+						}
+						if action == "uninstall" {
+							changed = true
+							continue
+						}
 					}
 				}
 				kept = append(kept, cmd)
@@ -291,19 +346,18 @@ func editClaude(data []byte, action, path, executable string, r HookRecord) ([]b
 			}
 			out = append(out, entry)
 		}
+		if expected != nil && ownedMatches == 0 {
+			return nil, r, errors.New("managed Claude hook was edited or removed; config left unchanged")
+		}
 		if action == "install" && !found {
-			entry := map[string]json.RawMessage{}
-			if matcher != "" {
-				entry["matcher"], _ = json.Marshal(matcher)
-			}
-			entry["hooks"], _ = json.Marshal([]any{map[string]any{"type": "command", "command": command, "timeout": 10}})
-			out = append(out, entry)
+			out = append(out, managedEntry)
+			owned[event.name] = string(encodedEntry)
 			changed = true
 		}
 		if len(out) == 0 {
-			delete(hooks, event)
+			delete(hooks, event.name)
 		} else {
-			hooks[event] = out
+			hooks[event.name] = out
 		}
 	}
 	if !changed {
@@ -315,7 +369,7 @@ func editClaude(data []byte, action, path, executable string, r HookRecord) ([]b
 		root["hooks"], _ = json.Marshal(hooks)
 	}
 	result, err := json.MarshalIndent(root, "", "  ")
-	return append(result, '\n'), HookRecord{Agent: "claude", Path: path, Managed: command}, err
+	return append(result, '\n'), HookRecord{Agent: "claude", Path: path, Managed: command, ClaudeOwned: owned}, err
 }
 func hooksContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 10*time.Second)
