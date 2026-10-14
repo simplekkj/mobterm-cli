@@ -1,4 +1,59 @@
-# Implementation validation — 2026-10-13
+# Validation records
+
+## 2026-10-14: deployed API / temporary Linux CLI
+
+Started from `2fabb095939f78a9675bd61e1e649b46530b2ab8` on clean `main`, identical
+to the analysis baseline. No Go or protocol implementation changed in this task.
+Built with Go 1.27.1:
+
+```sh
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+  -ldflags '-X main.version=push-r1 -X main.commit=2fabb095939f78a9675bd61e1e649b46530b2ab8' \
+  -o dist/mobterm-cli-push-r1-linux-amd64 .
+```
+
+The actual binary ran on a new Singapore Nanode, Ubuntu 24.04, amd64; mode 0755,
+SHA-256 `22898eba28de0d7d73bf3f2095fd40f208d120855700ee07486a45039ba4e5e9`.
+First-use SSH trust was explicitly confirmed; subsequent connections pinned that
+key. The App's selected ECDSA host key was also checked over that trusted SSH
+channel. No verification was bypassed, no private key was copied to the server.
+
+Separate sandbox and production synthetic-token probes used independent credentials
+and pairs. `setup --stdin-frame`, durable local readback and API active status
+passed; encrypted `test` reached the deployed Workers and returned
+`permanent_failed / apns_invalid_token` as expected for those synthetic tokens.
+Credentials/keys travelled only through the bounded SSH stdin frame. Synthetic
+pairs were revoked; a revoked CLI send failed with `pair_revoked`. No public
+Release or version tag was created.
+
+A later real simulator token paired through the **App UI** to
+`https://api-sandbox.mobterm.app`, used this Linux CLI for test sending and received
+`apns_accepted`. The sandbox D1 readback recorded one attempt and no error; this
+state requires actual Apple HTTP 200. The simulator lock screen displayed the test
+notification. This is not physical-iPhone or production-delivery evidence.
+Repeating the actual CLI test returned `apns_accepted` again. After App UI
+revocation, CLI status read back `revoked` and another test failed with
+`pair_revoked`; all three task pairs were revoked.
+
+With real tmux 3.4, `target verify --stdin-frame` matched a deliberately inactive
+pane and its complete socket/server/session/window/pane identity. Killing that
+test pane made the same locator fail. The temporary tmux socket was removed after
+this check. The App also connected to a separate test tmux workspace using real
+Mosh 1.4.0. Codex and Claude were not installed/authenticated on this disposable
+server; no real Agent native lifecycle event or end-to-end business Jump to was
+verified. Synthetic event fixtures are not counted as those observations.
+
+The temporary instance (ID `108093358`) was deleted as requested at
+2026-10-14 03:18:59 UTC: DELETE 200, subsequent GET 404. Its deletion
+evidence, cloud resource versions, final repository SHAs and remaining physical
+checks are recorded in the
+[implementation handoff](https://app.notion.com/p/3f9cede2082381f5b08ce58e98e075ce).
+Local sanitized evidence lives in the sibling API repository's ignored
+`.wrangler/push-r1/`; simulator screenshots/xcresult live in the App's ignored
+`build/push-r1/`. Documentation checks: `git diff --check`. Existing historical
+unit/race results below remain distinct from this task's actual Linux execution.
+
+## Initial implementation — 2026-10-13
 
 Environment: macOS, Intel amd64, Go 1.27.1; local Codex 0.162.1, Claude Code
 2.1.282, tmux available. These results apply to the initial implementation source
