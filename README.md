@@ -11,20 +11,59 @@ repositories. See [LICENSE](LICENSE) and [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## Install
 
-Build with the toolchain pinned in go.mod:
+Install the latest published stable Release (no Go, jq or sudo required):
 
 ```sh
-go build -trimpath -o mobterm-cli .
-install -d -m 700 "$HOME/.local/bin"
-install -m 755 mobterm-cli "$HOME/.local/bin/mobterm-cli"
-mobterm-cli version
+curl -fsSL https://raw.githubusercontent.com/simplekkj/mobterm-cli/main/install.sh | sh
+```
+
+Or pin an **existing** stable Release, replacing `vX.Y.Z` with its exact tag:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/simplekkj/mobterm-cli/main/install.sh | sh -s -- --version vX.Y.Z
+```
+
+The script detects Linux/macOS and amd64/arm64, downloads the matching archive
+and `checksums.txt` from the same tag, verifies SHA-256 and safe archive entries,
+then installs only the binary to `$HOME/.local/bin/mobterm-cli` with mode 0755.
+It uses POSIX sh, curl, tar, and sha256sum or shasum (plus standard Unix tools).
+An existing regular CLI file is replaced atomically; repeat installation is safe.
+Download or validation failure preserves the old binary. Symlink/directory
+targets are refused. HTTPS and the same-source checksum establish transfer
+integrity, not an independent digital signature. macOS binaries are unsigned
+and not notarized; Gatekeeper approval is not claimed.
+
+**A published Release is required.** These instructions do not imply that the
+first Release has been published; without one, installation fails explicitly.
+The default latest selection excludes drafts and prereleases and must resolve
+to a stable `vX.Y.Z` tag in this repository.
+
+Run installation as the OS user that runs the Agent. Check the installed version:
+
+```sh
+"$HOME/.local/bin/mobterm-cli" version
 ```
 
 Ensure `mobterm-cli` is on the remote non-interactive SSH PATH as well as your
-interactive PATH. It must also remain at the absolute path recorded by installed
-Agent hooks. Run installation for the same OS user that runs the Agent.
+interactive PATH, or use the absolute path above. For the current shell:
 
-Future stable tags publish these assets to this repository's GitHub Releases:
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+An interactive shell's startup file may not be read by non-interactive SSH;
+configure that environment's PATH separately. The installer only prints a PATH
+hint and never edits shell startup files or SSH configuration. Keep the binary
+at the absolute path recorded by Agent hooks; reinstalling or upgrading at that
+same path preserves their executable reference.
+
+The script does not pair, install/refresh hooks, or modify `~/.config/mobterm`,
+`CODEX_HOME` or `CLAUDE_CONFIG_DIR`. Continue configuration in the corresponding
+saved Mobterm App connection as described below. For later explicit upgrades,
+use `mobterm-cli upgrade --version vX.Y.Z` (see [Upgrade](#upgrade)).
+
+For manual installation, stable tags produce these assets at
+[GitHub Releases](https://github.com/simplekkj/mobterm-cli/releases):
 
 | System | Architecture | Asset |
 | --- | --- | --- |
@@ -33,13 +72,20 @@ Future stable tags publish these assets to this repository's GitHub Releases:
 | macOS | Intel | `mobterm-cli_vX.Y.Z_darwin_amd64.tar.gz` |
 | macOS | Apple Silicon | `mobterm-cli_vX.Y.Z_darwin_arm64.tar.gz` |
 
-Download the matching archive and `checksums.txt` from the **same explicit tag**
-at [GitHub Releases](https://github.com/simplekkj/mobterm-cli/releases).
-No initial release is implied by these instructions. Verify with
-`sha256sum --check --ignore-missing checksums.txt` on Linux or
-`shasum -a 256 --check --ignore-missing checksums.txt` on macOS, then extract the
-verified archive and install its `mobterm-cli` executable with mode 0755.
-macOS binaries are unsigned and not notarized; Gatekeeper approval is not claimed.
+Download the matching archive and `checksums.txt` from the **same explicit tag**.
+In an otherwise empty download directory, run `sha256sum --check --ignore-missing
+checksums.txt` on Linux or `shasum -a 256 --check --ignore-missing checksums.txt` on
+macOS and confirm the selected archive reports `OK`. Extract the verified archive,
+then install its `mobterm-cli` executable with mode 0755 into a user-owned directory.
+
+For advanced source installation, build with the toolchain pinned in go.mod:
+
+```sh
+go build -trimpath -o mobterm-cli .
+install -d -m 700 "$HOME/.local/bin"
+install -m 755 mobterm-cli "$HOME/.local/bin/mobterm-cli"
+"$HOME/.local/bin/mobterm-cli" version
+```
 
 ## Pair and use
 
@@ -111,11 +157,14 @@ directory must be writable; use a user-owned installation to avoid elevated acce
 ## Build and verify
 
 ```sh
+sh -n install.sh
+python3 tests/install_test.py
 test -z "$(gofmt -l .)"
 go test ./...
 go vet ./...
 go test -race ./...
 python3 scripts/package.py --version v0.0.0 --commit FULL_40_CHARACTER_COMMIT_SHA
+python3 tests/install_test.py --dist dist --commit FULL_40_CHARACTER_COMMIT_SHA
 ```
 
 The package script builds all four targets with `CGO_ENABLED=0`, records the
@@ -123,6 +172,10 @@ source SHA/platform/version, normalizes tar/gzip metadata, and writes SHA-256
 checksums. CI performs native Linux/macOS tests and cross-builds; only stable tag
 pushes can reach the separately privileged Release job. Existing releases are
 never overwritten. Packaging locally does not publish or tag anything.
+Installer tests use isolated HOME/PATH, simulated GitHub responses and local
+archives without network access. With `--dist`, they additionally install and
+check all four real packages and run the native installed binary's `version`;
+this is not a download test against a public Release.
 
 See [protocol v1](docs/protocol-v1.md), [security](docs/security.md), and the
 honest scope of [validation](docs/validation.md). Secrets, transcripts, caches,

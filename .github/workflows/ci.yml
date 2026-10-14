@@ -20,17 +20,8 @@ jobs:
       - run: go test ./...
       - run: go vet ./...
       - run: go test -race ./...
+      - run: sh -n install.sh
       - name: Package all supported targets without publishing
         run: python3 scripts/package.py --version v0.0.0 --commit "$GITHUB_SHA"
-      - name: Native binary smoke test
-        shell: bash
-        run: |
-          case "$(uname -s)/$(uname -m)" in
-            Linux/x86_64) platform=linux_amd64 ;;
-            Darwin/arm64) platform=darwin_arm64 ;;
-            Darwin/x86_64) platform=darwin_amd64 ;;
-            *) exit 1 ;;
-          esac
-          mkdir -p dist/smoke
-          tar -xzf "dist/mobterm-cli_v0.0.0_${platform}.tar.gz" -C dist/smoke
-          dist/smoke/mobterm-cli version
+      - name: Offline installer regression and native package smoke test
+        run: python3 tests/install_test.py --dist dist --commit "$GITHUB_SHA"
