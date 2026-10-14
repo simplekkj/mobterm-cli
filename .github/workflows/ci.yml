@@ -3,23 +3,70 @@ on:
   push:
     branches: ['**']
   pull_request:
+  workflow_call:
 permissions:
   contents: read
 jobs:
   test:
+    name: Native ${{ matrix.goos }}/${{ matrix.goarch }} (${{ matrix.runner }})
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15]
-    runs-on: ${{ matrix.os }}
+        include:
+          - runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+            kernel: Linux
+            machine: x86_64
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            kernel: Linux
+            machine: aarch64
+          - runner: macos-26-intel
+            goos: darwin
+            goarch: amd64
+            kernel: Darwin
+            machine: x86_64
+          - runner: macos-26
+            goos: darwin
+            goarch: arm64
+            kernel: Darwin
+            machine: arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: '1.27.1'
+      - name: Verify native runner and Go host architecture
+        shell: bash
+        env:
+          EXPECTED_GOOS: ${{ matrix.goos }}
+          EXPECTED_GOARCH: ${{ matrix.goarch }}
+          EXPECTED_KERNEL: ${{ matrix.kernel }}
+          EXPECTED_MACHINE: ${{ matrix.machine }}
+        run: |
+          uname -sm
+          go version
+          go env GOHOSTOS GOHOSTARCH GOOS GOARCH
+          test "$(uname -s)" = "$EXPECTED_KERNEL"
+          test "$(uname -m)" = "$EXPECTED_MACHINE"
+          test "$(go env GOHOSTOS)" = "$EXPECTED_GOOS"
+          test "$(go env GOHOSTARCH)" = "$EXPECTED_GOARCH"
+          test "$(go env GOOS)" = "$EXPECTED_GOOS"
+          test "$(go env GOARCH)" = "$EXPECTED_GOARCH"
+          if [[ "$EXPECTED_GOOS" == darwin ]]; then
+            test "$(sysctl -in sysctl.proc_translated)" != 1
+          fi
       - run: test -z "$(gofmt -l .)"
       - run: go test ./...
       - run: go vet ./...
       - run: go test -race ./...
+      - name: Build and run native binary
+        run: |
+          go build -trimpath -o mobterm-cli .
+          ./mobterm-cli version
       - run: sh -n install.sh
       - name: Package all supported targets without publishing
         run: python3 scripts/package.py --version v0.0.0 --commit "$GITHUB_SHA"

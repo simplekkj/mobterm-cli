@@ -180,6 +180,8 @@ directory must be writable; use a user-owned installation to avoid elevated acce
 sh -n install.sh
 python3 tests/install_test.py
 test -z "$(gofmt -l .)"
+go build -trimpath -o mobterm-cli .
+./mobterm-cli version
 go test ./...
 go vet ./...
 go test -race ./...
@@ -189,9 +191,27 @@ python3 tests/install_test.py --dist dist --commit FULL_40_CHARACTER_COMMIT_SHA
 
 The package script builds all four targets with `CGO_ENABLED=0`, records the
 source SHA/platform/version, normalizes tar/gzip metadata, and writes SHA-256
-checksums. CI performs native Linux/macOS tests and cross-builds; only stable tag
-pushes can reach the separately privileged Release job. Existing releases are
-never overwritten. Packaging locally does not publish or tag anything.
+checksums. Branch pushes and pull requests run the same native CI on all four
+targets:
+
+| Target | Native GitHub-hosted Runner |
+| --- | --- |
+| Linux amd64 | `ubuntu-24.04` |
+| Linux arm64 | `ubuntu-24.04-arm` |
+| macOS amd64 | `macos-26-intel` |
+| macOS arm64 | `macos-26` |
+
+Each job checks the OS/CPU and Go host/target architecture, rejects Rosetta,
+runs the Go checks above, builds and executes the native binary, and cross-builds
+all four packages for offline installer regression and native installation smoke
+tests. Release tag pushes reuse this CI from the same commit. All four native
+jobs must succeed before the Ubuntu release build cross-compiles the four assets;
+only that successful build can reach the separately privileged Release job.
+Only stable `vX.Y.Z` tags in the official repository can publish, and existing
+releases are never overwritten. Packaging locally does not publish or tag anything.
+macOS release binaries remain unsigned and not notarized. CI success does not
+prove a Release was published, Gatekeeper accepted an installation, or a phone
+displayed a notification or navigated successfully.
 Installer tests use isolated HOME/PATH, simulated GitHub responses and local
 archives without network access. With `--dist`, they additionally install and
 check all four real packages and run the native installed binary's `version`;

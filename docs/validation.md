@@ -252,3 +252,42 @@ APNs delivery, phone Jump to, or a live service result. The all-zero commit and
 `v0.0.0` identify local packaging fixtures; no tag/release/deployment was created.
 Non-native architectures were built and inspected, not executed. Upgrade failure
 contracts were tested locally; an upgrade from a published release was not run.
+
+## mobterm-cli action — Round 1 v1.0 — 2026-10-14
+
+Analysis and starting HEAD were both
+`ec665c329cf1738a39e97061b86c8328fad144a9` on `main`, with a clean working tree
+and no baseline drift. This round changes the two workflow definitions and
+documentation only. The local checks below ran on macOS Intel (`Darwin x86_64`)
+with Go 1.27.1 and actionlint 1.7.12 against the working-tree implementation.
+
+| Executed check | Result |
+| --- | --- |
+| `actionlint .github/workflows/ci.yml .github/workflows/release.yml` | PASS |
+| `sh -n install.sh` | PASS |
+| `test -z "$(gofmt -l .)"` | PASS |
+| `go test -count=1 -v ./...` | PASS, 30 top-level tests, no skips; real tmux test executed |
+| `go vet ./...` | PASS |
+| `go test -race -count=1 ./...` | PASS |
+| `go build -trimpath -o mobterm-cli .` and `./mobterm-cli version` | PASS, `dev unknown darwin/amd64` |
+| Execute the CI native-host verification step locally with the darwin/amd64 matrix values | PASS, uname and Go host/target agree; no Rosetta |
+| `python3 scripts/package.py --version v0.0.0 --commit "$(git rev-parse HEAD)"` | PASS, four Linux/macOS amd64/arm64 archives |
+| `shasum -a 256 -c checksums.txt` in `dist` | PASS, all four archives |
+| `python3 tests/install_test.py --dist dist --commit "$(git rev-parse HEAD)"` | PASS, 14 tests, no skips; all archive layouts, metadata and installation bytes checked; native installed darwin/amd64 binary executed |
+| `git diff --check` | PASS |
+
+The fixture archives carry `v0.0.0` and the starting HEAD above; they include
+working-tree documentation and are not tagged release artifacts. Local execution
+does not establish native Linux amd64/arm64 or macOS arm64 success. The four
+GitHub-hosted jobs use `ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-26-intel` and
+`macos-26`; their post-push run URLs and actual results are recorded separately
+in the [round 1 handoff](https://app.notion.com/p/3f9cede2082381969f50d05578c15193).
+
+Static workflow inspection and actionlint confirm the same-commit reusable CI
+dependency `test -> build -> release`, branch/PR read-only permissions, and the
+retained stable-tag, exact-commit, official-repository and no-overwrite guards.
+The actual tag-triggered Release path and its failure/cancellation behavior were
+not exercised: no tag, Release or deployment was created in this round. Signing,
+notarization, Gatekeeper acceptance, public Release installation/upgrade and
+physical phone delivery/navigation were not tested here. Earlier validation
+records above describe separate tasks and remain historical evidence.
