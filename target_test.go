@@ -99,14 +99,24 @@ func TestHerdrNamespaceSocketReplacementAndMembership(t *testing.T) {
 		t.Fatal("bad Herdr identity")
 	}
 	first := l.ServerIdentity
-	listener.Close()
+	// Retain the old inode: unlink/rebind can reuse both inode and ctime on
+	// filesystems with coarse timestamps. This fixture requires a distinct socket.
+	if err = os.Rename(socket, socket+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err = listener.Close(); err != nil {
+		t.Fatal(err)
+	}
 	next, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer next.Close()
 	second, err := socketIdentity(socket)
-	if err != nil || second == first {
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second == first {
 		t.Fatal("socket replacement not detected")
 	}
 	snapshot := herdrSnapshot{Version: "0.9.3", Protocol: 22, Panes: []herdrPaneRecord{{"w1:p1", "term_123", "w1", "w1:t1"}, {"w1:p2", "term_123", "w1", "w1:t1"}}}
