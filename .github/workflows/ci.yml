@@ -145,12 +145,18 @@ jobs:
         run: python3 tests/install_test.py --dist dist --commit "$GITHUB_SHA"
 
   compatibility:
-    name: Agent compatibility (${{ matrix.sample }})
-    runs-on: ubuntu-24.04
+    name: Agent compatibility (${{ matrix.sample }}, ${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        sample: [minimum, current]
+        include:
+          - sample: minimum
+            runner: ubuntu-24.04
+          - sample: current
+            runner: ubuntu-24.04
+          - sample: minimum
+            runner: macos-15-intel
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
@@ -190,6 +196,11 @@ jobs:
             "@openai/codex@$CODEX_TEST_VERSION" "@anthropic-ai/claude-code@$CLAUDE_TEST_VERSION"
           echo "$RUNNER_TEMP/mobterm-agents/bin" >> "$GITHUB_PATH"
       - name: Real Agent lifecycle, configuration and local HTTPS regression
+        shell: bash
         run: |
-          python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli \
+          args=()
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            args+=(--config-only)
+          fi
+          python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli "${args[@]}" \
             --expect-codex-version "$CODEX_TEST_VERSION" --expect-claude-version "$CLAUDE_TEST_VERSION" -v

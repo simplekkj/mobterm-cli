@@ -236,6 +236,7 @@ this is not a download test against a public Release.
 The eight native CI jobs retain the historical Codex 0.162.1 / Claude Code
 2.1.282 regression pair. Two focused Linux jobs additionally execute the minimum
 and current endpoints from `testdata/compatibility-samples.json`. Samples are
+also checked at the minimum endpoint on a native macOS Intel runner. They are
 fixed for reproducibility; they are not the production allowlist. Go tests check
 the manifest against the policy and compatibility document. Node.js 22 and
 Python 3.12 are used. The runner requires explicit expected versions to verify

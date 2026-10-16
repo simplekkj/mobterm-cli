@@ -403,3 +403,18 @@ release, tag, deployment, paid resource, live API/APNs or phone test was perform
 Sanitized local logs and upstream packages are in `/tmp/mobterm-compat.RC7sS3`,
 not Git. Packaging/install checks remain in each native CI job; this task did not
 repeat unrelated local installer/upgrade tests outside the required Go suite.
+
+### Post-push native minimum follow-up
+
+The first implementation commit is
+`a1d676fdef3aee7cf15044f25e6b4448606a7e34`. Its Linux minimum/current
+endpoint jobs passed in run
+[38879959117](https://github.com/simplekkj/mobterm-cli/actions/runs/38879959117).
+Because the local Codex 0.100.0 macOS launch failure remained unresolved, one
+focused native macOS Intel minimum job was added alongside those two Linux
+endpoint jobs. It runs the same ten real configuration checks with
+`--config-only`; no existing job or assertion was removed. This is a response
+to the observed failure, not a multiplication of the full historical matrix.
+`actionlint` and `git diff --check` passed for this CI/documentation follow-up.
+Final native minimum and whole-run results are recorded in the handoff after
+reading the actual final-commit CI result.
