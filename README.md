@@ -28,8 +28,17 @@ and `checksums.txt` from the same tag, verifies SHA-256 and safe archive entries
 then installs only the binary to `$HOME/.local/bin/mobterm-cli` with mode 0755.
 It uses POSIX sh, curl, tar, and sha256sum or shasum (plus standard Unix tools).
 An existing regular CLI file is replaced atomically; repeat installation is safe.
-Download or validation failure preserves the old binary. Symlink/directory
-targets are refused. HTTPS and the same-source checksum establish transfer
+Any failure before the atomic replacement preserves the old binary and its mode.
+Failures and caught HUP/INT/TERM signals clean this run's downloads and staging
+file, then remove only installation directories created by this run that remain
+empty. Existing directories and their permissions are preserved. Cleanup failures
+produce warnings for manual inspection; nonempty directories are retained.
+Successful replacement commits the binary even if later cleanup or output fails.
+SIGKILL, power loss and concurrent replacement of installation paths cannot be
+fully recovered automatically; inspect reported leftovers without deleting
+unrecognized files. Symlink or non-directory installation directories and
+symlink/non-regular binary targets are refused.
+HTTPS and the same-source checksum establish transfer
 integrity, not an independent digital signature. macOS binaries are unsigned
 and not notarized; Gatekeeper approval is not claimed.
 

@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import signal
+import stat
 import subprocess
 import sys
 import tarfile
@@ -57,7 +59,7 @@ class InstallerTests(unittest.TestCase):
         self.work = self.root / "tmp"
         for directory in (self.home, self.bin, self.assets, self.work):
             directory.mkdir()
-        for tool in ("awk", "tar", "mktemp", "mkdir", "cat", "chmod", "mv", "rm", "gzip",
+        for tool in ("awk", "tar", "mktemp", "mkdir", "rmdir", "cat", "chmod", "mv", "rm", "gzip",
                      "sha256sum", "shasum"):
             source = shutil.which(tool)
             if source:
@@ -73,13 +75,12 @@ class InstallerTests(unittest.TestCase):
                         CODEX_HOME=str(self.home / ".codex"),
                         CLAUDE_CONFIG_DIR=str(self.home / ".claude"),
                         MOBTERM_CONFIG_DIR=str(self.home / ".config/mobterm"))
-        self.sentinels = {}
         for name in (".codex/config.toml", ".claude/settings.json", ".config/mobterm/state.json",
                      ".ssh/config", ".profile", ".zshrc"):
             path = self.home / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"untouched test configuration\n")
-            self.sentinels[path] = path.read_bytes()
+            path.chmod(0o640)
         self.destination = self.home / ".local/bin/mobterm-cli"
         self.make_archive()
 
@@ -114,7 +115,17 @@ class InstallerTests(unittest.TestCase):
         self.destination.write_bytes(b"old executable")
         self.destination.chmod(0o755)
 
-    def run_install(self, *args, success=True, stdin=False):
+    def home_snapshot(self):
+        snapshot = {}
+        for path in self.home.rglob("*"):
+            mode = path.lstat().st_mode
+            contents = (os.readlink(path) if stat.S_ISLNK(mode) else
+                        path.read_bytes() if stat.S_ISREG(mode) else None)
+            snapshot[path.relative_to(self.home).as_posix()] = (mode, contents)
+        return snapshot
+
+    def run_install(self, *args, success=True, stdin=False, extra_files=(), cleanup_expected=True):
+        before = self.home_snapshot()
         command = [shutil.which("sh")]
         if stdin:
             command += ["-s", "--", *args]
@@ -126,14 +137,20 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr.decode())
         else:
             self.assertNotEqual(result.returncode, 0, result.stdout.decode())
-        self.assertEqual(list(self.work.iterdir()), [], "temporary downloads leaked")
-        self.assertEqual(list(self.home.glob(".local/bin/.mobterm-cli-install.*")), [], "staged binary leaked")
-        for path, original in self.sentinels.items():
-            self.assertEqual(path.read_bytes(), original)
-        self.assertEqual({path.relative_to(self.home).as_posix() for path in self.home.rglob("*") if path.is_file()},
-                         {path.relative_to(self.home).as_posix() for path in self.sentinels} |
-                         ({".local/bin/mobterm-cli"} if self.destination.is_file() else set()),
-                         "unexpected configuration or hook file created")
+        if cleanup_expected:
+            self.assertEqual(list(self.work.iterdir()), [], "temporary downloads leaked")
+            self.assertEqual({path.relative_to(self.home).as_posix()
+                              for path in self.home.glob(".local/bin/.mobterm-cli-install.*")},
+                             {name for name in before if name.startswith(".local/bin/.mobterm-cli-install.")},
+                             "staged binary leaked or historical file removed")
+        after = self.home_snapshot()
+        for name, original in before.items():
+            if success and name == ".local/bin/mobterm-cli":
+                continue
+            self.assertEqual(after.get(name), original, f"existing user path changed: {name}")
+        self.assertLessEqual(set(after) - set(before),
+                             {".local", ".local/bin", ".local/bin/mobterm-cli"} | set(extra_files),
+                             "unexpected user path created")
         return result
 
     def assert_preserved(self, *args):
@@ -281,6 +298,12 @@ class InstallerTests(unittest.TestCase):
     def test_unwritable_paths(self):
         if os.geteuid() == 0:
             self.skipTest("root bypasses ordinary Unix write permissions")
+        self.home.chmod(0o555)
+        try:
+            self.run_install(success=False)
+            self.assertFalse((self.home / ".local").exists())
+        finally:
+            self.home.chmod(0o755)
         self.old_binary()
         self.destination.parent.chmod(0o555)
         try:
@@ -305,6 +328,244 @@ class InstallerTests(unittest.TestCase):
                 self.assert_preserved()
                 (self.bin / tool).unlink()
                 (self.bin / tool).symlink_to(source)
+
+    def intercept_tool(self, tool, code):
+        source = shutil.which(tool)
+        self.write_tool(tool, 'import os, pathlib, signal, subprocess, sys\n'
+                        'args = sys.argv[1:]\nreal = ' + repr(source) + '\n' + code +
+                        '\nos.execv(real, [real] + args)\n')
+
+    def restore_tool(self, tool):
+        (self.bin / tool).unlink()
+        (self.bin / tool).symlink_to(shutil.which(tool))
+
+    def test_first_install_early_failures(self):
+        for failure in ("all", "checksums.txt", f"mobterm-cli_{VERSION}_linux_amd64.tar.gz"):
+            with self.subTest(failure=failure):
+                self.env["HTTP_FAIL"] = failure
+                self.run_install(success=False)
+                self.assertFalse((self.home / ".local").exists())
+        del self.env["HTTP_FAIL"]
+        checks = self.assets / "checksums.txt"
+        good = checks.read_bytes()
+        checks.write_text("0" * 64 + f"  mobterm-cli_{VERSION}_linux_amd64.tar.gz\n")
+        self.run_install(success=False)
+        self.assertFalse((self.home / ".local").exists())
+        checks.write_bytes(good)
+        for entries in ([("mobterm-cli", tarfile.REGTYPE, b"")],
+                        [("mobterm-cli", tarfile.SYMTYPE, b"")],
+                        [("../escape", tarfile.REGTYPE, b"unsafe")]):
+            with self.subTest(entries=entries):
+                self.make_archive(entries)
+                self.run_install(success=False)
+                self.assertFalse((self.home / ".local").exists())
+
+    def test_transaction_failures_first_and_existing_install(self):
+        stages = (
+            ("work creation", "mktemp", 'if "-d" in args: sys.exit(37)'),
+            ("archive listing", "tar", 'if "-tzf" in args: sys.exit(37)'),
+            ("archive extraction", "tar", 'if "-xOzf" in args: sys.exit(37)'),
+            ("local creation", "mkdir", 'if args[-1].endswith("/.local"): sys.exit(37)'),
+            ("bin creation", "mkdir", 'if args[-1].endswith("/.local/bin"): sys.exit(37)'),
+            ("staging creation", "mktemp", 'if "-d" not in args: sys.exit(37)'),
+            ("partial staging write", "cat", 'sys.stdout.buffer.write(b"partial executable"); sys.exit(37)'),
+            ("chmod", "chmod", 'sys.exit(37)'),
+            ("move", "mv", 'sys.exit(37)'),
+        )
+        for existing in (False, True):
+            for stage, tool, code in stages:
+                if existing and tool == "mkdir":
+                    continue  # Existing directories must never be recreated.
+                with self.subTest(existing=existing, stage=stage):
+                    if existing:
+                        self.old_binary()
+                        self.destination.chmod(0o751)
+                        (self.home / ".local").chmod(0o750)
+                        self.destination.parent.chmod(0o711)
+                    before = self.home_snapshot()
+                    self.intercept_tool(tool, code)
+                    try:
+                        self.run_install(success=False)
+                        self.assertEqual(self.home_snapshot(), before)
+                    finally:
+                        self.restore_tool(tool)
+                        if existing:
+                            shutil.rmtree(self.home / ".local")
+
+    def test_preexisting_empty_directories_retained(self):
+        for existing_bin in (False, True):
+            with self.subTest(existing_bin=existing_bin):
+                local = self.home / ".local"
+                local.mkdir(mode=0o751)
+                if existing_bin:
+                    self.destination.parent.mkdir(mode=0o711)
+                before = self.home_snapshot()
+                self.intercept_tool("chmod", 'sys.exit(37)')
+                try:
+                    self.run_install(success=False)
+                    self.assertEqual(self.home_snapshot(), before)
+                finally:
+                    self.restore_tool("chmod")
+                    shutil.rmtree(local)
+
+    def test_historical_staging_files_retained(self):
+        self.destination.parent.mkdir(parents=True)
+        historical = self.destination.parent / ".mobterm-cli-install.historical"
+        historical.write_bytes(b"not owned by this installation")
+        historical.chmod(0o640)
+        self.intercept_tool("mv", 'sys.exit(37)')
+        try:
+            self.run_install(success=False)
+        finally:
+            self.restore_tool("mv")
+        self.run_install()
+
+    def test_install_directory_types(self):
+        external = self.root / "external"
+        external.mkdir()
+        sentinel = external / "user-file"
+        sentinel.write_bytes(b"external content")
+        sentinel.chmod(0o640)
+        for component in (self.home / ".local", self.destination.parent):
+            component.parent.mkdir(exist_ok=True)
+            for kind in ("symlink", "dangling symlink", "file", "fifo"):
+                with self.subTest(component=component.name, kind=kind):
+                    if kind in ("symlink", "dangling symlink"):
+                        component.symlink_to(external if kind == "symlink" else self.root / "missing")
+                    elif kind == "file":
+                        component.write_bytes(b"user file")
+                    else:
+                        os.mkfifo(component)
+                    before = self.home_snapshot()
+                    self.run_install(success=False)
+                    self.assertEqual(self.home_snapshot(), before)
+                    self.assertEqual(list(external.iterdir()), [sentinel])
+                    self.assertEqual(sentinel.read_bytes(), b"external content")
+                    self.assertEqual(sentinel.stat().st_mode & 0o777, 0o640)
+                    component.unlink()
+
+    def test_failed_mkdir_does_not_claim_concurrently_created_directory(self):
+        for directory in (".local", ".local/bin"):
+            with self.subTest(directory=directory):
+                self.intercept_tool("mkdir", 'if args[-1].endswith(' + repr("/" + directory) + '):\n'
+                                    '    subprocess.run([real] + args, check=True)\n    sys.exit(37)')
+                try:
+                    result = self.run_install(success=False)
+                    self.assertTrue((self.home / directory).is_dir())
+                    self.assertEqual(list((self.home / directory).iterdir()), [])
+                    self.assertIn(b"warning: Installation directory appeared", result.stderr)
+                finally:
+                    self.restore_tool("mkdir")
+                    shutil.rmtree(self.home / ".local")
+
+    def test_caught_signals_before_commit(self):
+        for caught in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+            for stage in ("mktemp work", "mkdir local", "mkdir bin", "mktemp stage", "cat", "mv"):
+                for existing in (False, True):
+                    if existing and stage.startswith("mkdir"):
+                        continue
+                    with self.subTest(signal=caught.name, stage=stage, existing=existing):
+                        if existing:
+                            self.old_binary()
+                            self.destination.chmod(0o751)
+                        before = self.home_snapshot()
+                        tool = stage.split()[0]
+                        send = f'os.kill(os.getppid(), {int(caught)})\n'
+                        if tool == "mktemp":
+                            condition = '"-d" in args' if stage == "mktemp work" else '"-d" not in args'
+                            code = ('if ' + condition + ':\n'
+                                    '    result = subprocess.run([real] + args, check=True, capture_output=True)\n'
+                                    '    sys.stdout.buffer.write(result.stdout)\n    sys.stdout.flush()\n'
+                                    '    ' + send + '    sys.exit(0)')
+                        elif tool == "mkdir":
+                            suffix = "/.local" if stage == "mkdir local" else "/.local/bin"
+                            code = ('if args[-1].endswith(' + repr(suffix) + '):\n'
+                                    '    subprocess.run([real] + args, check=True)\n'
+                                    '    ' + send + '    sys.exit(0)')
+                        else:
+                            code = send + 'sys.exit(37)'
+                        self.intercept_tool(tool, code)
+                        try:
+                            result = self.run_install(success=False)
+                            self.assertEqual(result.returncode, 1)
+                            self.assertEqual(self.home_snapshot(), before)
+                        finally:
+                            self.restore_tool(tool)
+                            if existing:
+                                shutil.rmtree(self.home / ".local")
+
+    def test_nonempty_new_directories_retained_with_warning(self):
+        for directory in (".local", ".local/bin"):
+            with self.subTest(directory=directory):
+                foreign = directory + "/user-file"
+                self.intercept_tool("mv", 'pathlib.Path(os.environ["HOME"], ' + repr(foreign) +
+                                    ').write_bytes(b"concurrent user data")\nsys.exit(37)')
+                try:
+                    result = self.run_install(success=False, extra_files=(foreign,))
+                    self.assertIn(b"Cannot atomically install", result.stderr)
+                    self.assertIn(b"warning:", result.stderr)
+                    self.assertIn(b"retained for manual inspection", result.stderr)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertEqual((self.home / foreign).read_bytes(), b"concurrent user data")
+                    self.assertFalse(self.destination.exists())
+                    if directory == ".local":
+                        self.assertFalse(self.destination.parent.exists())
+                finally:
+                    self.restore_tool("mv")
+                    shutil.rmtree(self.home / ".local")
+
+    def test_cleanup_failures_reported_without_masking_error(self):
+        for tool in ("rmdir", "rm"):
+            with self.subTest(tool=tool):
+                self.intercept_tool("mv", 'sys.exit(37)')
+                self.intercept_tool(tool, 'sys.exit(42)')
+                try:
+                    extras = ()
+                    # A failed rm deliberately leaves the exact stage/downloads behind.
+                    if tool == "rm":
+                        self.intercept_tool("mktemp", 'if "-d" not in args:\n'
+                                            '    path = pathlib.Path(os.environ["HOME"], ".local/bin/.mobterm-cli-install.test")\n'
+                                            '    path.touch(mode=0o600)\n    print(path)\n    sys.exit(0)')
+                        extras = (".local/bin/.mobterm-cli-install.test",)
+                    result = self.run_install(success=False, extra_files=extras, cleanup_expected=False)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn(b"Cannot atomically install", result.stderr)
+                    self.assertIn(b"warning:", result.stderr)
+                    if tool == "rm":
+                        self.assertIn(b"Cannot remove staged executable", result.stderr)
+                        self.assertIn(b"Cannot remove private download directory", result.stderr)
+                    else:
+                        self.assertIn(b"Cannot remove newly created bin", result.stderr)
+                        self.assertIn(b"Cannot remove newly created .local", result.stderr)
+                finally:
+                    self.restore_tool("mv")
+                    self.restore_tool(tool)
+                    if tool == "rm":
+                        self.restore_tool("mktemp")
+                    shutil.rmtree(self.home / ".local")
+                    for path in self.work.iterdir():
+                        shutil.rmtree(path)
+
+    def test_signal_after_successful_move_preserves_commit(self):
+        for caught in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+            with self.subTest(signal=caught.name):
+                self.intercept_tool("mv", 'subprocess.run([real] + args, check=True)\n'
+                                    f'os.kill(os.getppid(), {int(caught)})\nsys.exit(0)')
+                try:
+                    result = self.run_install(success=False)
+                    self.assertEqual(self.destination.read_bytes(), PAYLOAD)
+                    self.assertEqual(self.destination.stat().st_mode & 0o777, 0o755)
+                    self.assertNotIn(b"warning:", result.stderr)
+                finally:
+                    self.restore_tool("mv")
+                    shutil.rmtree(self.home / ".local")
+
+    def test_cleanup_failure_after_commit_preserves_success(self):
+        self.intercept_tool("rm", 'sys.exit(42)')
+        result = self.run_install(cleanup_expected=False)
+        self.assertIn(b"warning: Cannot remove private download directory", result.stderr)
+        self.assertEqual(self.destination.read_bytes(), PAYLOAD)
+        self.assertEqual(self.destination.stat().st_mode & 0o777, 0o755)
 
     def test_real_packages(self):
         if DIST is None:
