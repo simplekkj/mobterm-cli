@@ -33,6 +33,18 @@ it does not prove pairing succeeded. The App separately confirms API state and
 `status --json --pair ID`. Cancellation never removes unrelated pairs. A caller
 can abandon/revoke only its own pending attempt via device management.
 
+`status --json` adds Agent compatibility diagnostics under `capabilities.codex`
+and `capabilities.claude`: `minimum_version`, `supported_range`, and (on refusal)
+`version_rejection`. `supported` is the shared stable/minimum policy decision,
+not proof of native-event or phone delivery. `version` is a validation reference,
+identified by `version_role: "validation_reference"`; it is not a version gate.
+`actual_version` is bounded to 100 bytes (empty for failed/oversized probes), and
+`installed` retains its successful-probe meaning. These optional diagnostics do
+not change v1 installation/pair fields or their types. Installation-only status
+does not probe Agents. Consumers may ignore added fields; no App/API upgrade,
+data migration or credential/config format change is required. An older CLI still
+reads the same state and restores its old exact Agent gate on rollback.
+
 ## Encrypted events
 
 ```json

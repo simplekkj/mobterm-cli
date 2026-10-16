@@ -1,0 +1,5 @@
+{
+  "minimum": {"codex": "0.100.0", "claude": "2.0.36"},
+  "historical": {"codex": "0.162.1", "claude": "2.1.282"},
+  "current": {"codex": "0.163.0", "claude": "2.1.301"}
+}

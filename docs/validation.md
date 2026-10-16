@@ -291,3 +291,115 @@ not exercised: no tag, Release or deployment was created in this round. Signing,
 notarization, Gatekeeper acceptance, public Release installation/upgrade and
 physical phone delivery/navigation were not tested here. Earlier validation
 records above describe separate tasks and remain historical evidence.
+
+## mobterm-cli compatibility — Round 1 v1.0 — 2026-10-16
+
+Analysis and starting HEAD are both
+`45abeec25f1da108326d6c227b858cfe09d4d367`, clean `main`; no baseline drift.
+The App direct consumer remains at
+`efab5cd86313ba24ecf4967ed09fff390a46481f`: read-only inspection confirmed the
+v1 dictionary fields and 16 KiB output boundary. App/API source, credentials,
+wire encryption, locator identity, packaging and release workflow are unchanged.
+The task's final commit and actual post-push CI results are recorded in the
+[implementation handoff](https://app.notion.com/p/3fbcede2082381be9dacc40b98b386d0).
+
+### Minimum decisions and evidence levels
+
+[compatibility.md](compatibility.md) retains exact upstream commit IDs, package
+URLs/digests and executable source locations. Codex >=0.100.0 stable follows the
+first stable tag containing UUID submission IDs, including the native notify
+path and preserved thread identity on resume; 0.99.0 still resets its counter.
+Claude >=2.0.36 stable follows the actual notification-type construction and
+matcher/dispatch boundary; 2.0.35 lacks the required field. This is not a choice
+of the historical pins or the initially suggested candidates. Latest official
+stable releases were checked on 2026-10-16 (Codex 0.163.0, Claude 2.1.301), then
+fixed in the test manifest. Every intermediate version was not executed.
+
+Versioned Claude packages' registry SHA-512 integrity and SHA-256 were checked.
+A controlled probe of unmodified extracted construction/matcher functions passed
+only the three configured notification types to a child process and retained
+only session/event/type fields. This is source plus controlled-function evidence,
+not an interactive Claude event. No real model service or user credentials were
+used. Synthetic resume samples in Go likewise do not constitute a live Codex
+resume observation.
+
+Two real problems were found before final local verification: Claude 2.0.36's
+1.4–1.5 second JavaScript startup exceeded status's former one-second budget;
+its default-home `--version` bootstrap also migrated `.claude.json` metadata.
+The shared probe now has a three-second limit, disposable home/config/cwd,
+disabled updates/nonessential traffic and bounded child-pipe cleanup. It resolves
+the same executable on PATH. The existing null/unknown shape and byte-preservation
+assertions were retained; a regression explicitly models the native migration,
+checks the user's file is unchanged and confirms disposable state removal.
+
+### Final local checks
+
+Environment: macOS Intel `Darwin x86_64`, Go 1.27.1, Python 3.12, Node and
+real tmux on PATH. All Agent package installs use task-specific temporary npm
+prefixes/caches. Agent executions use temporary HOME/config/cwd and no login.
+
+| Command / scope | Actual result |
+| --- | --- |
+| `test -z "$(gofmt -l .)"` | PASS |
+| `MOBTERM_REQUIRE_TMUX=1 go test -count=1 -v ./...` | PASS, 40 top-level tests; real tmux test executed, no skips |
+| `go vet ./...` | PASS |
+| `MOBTERM_REQUIRE_TMUX=1 go test -race -count=1 ./...` | PASS |
+| `go build -trimpath -o mobterm-cli .` / `./mobterm-cli version` | PASS, `dev unknown darwin/amd64` |
+| Python `py_compile` with bytecode in task temporary directory | PASS |
+| `actionlint .github/workflows/ci.yml .github/workflows/release.yml` | PASS |
+| `git diff --check` | PASS |
+| Real current Codex 0.163.0 / Claude 2.1.301 configuration suite | PASS, all 10 macOS checks, final run 12.759s |
+| Real minimum Claude 2.0.36 / current Codex 0.163.0 configuration suite | PASS, all 10 macOS checks, final run 38.289s; this does not validate Codex minimum |
+| Historical Codex 0.162.1 / Claude 2.1.282 full macOS suite | FAILED locally: one copied CLI invocation timed out at 20s; not recorded as a full-suite PASS |
+| Historical null-hook case alone | PASS, 0.727s; real native configuration load/removal case also passed in the full runs |
+| Codex 0.100.0 native macOS preflight | FAILED, official npm and GitHub tar executables terminated with signal 9 before usable version/config output |
+
+Configuration suite command (selecting the explicit pair shown above):
+
+```sh
+PATH="/tmp/TASK_PREFIX/bin:$PATH" python3.12 tests/linux_lifecycle_test.py \
+  --binary ./mobterm-cli --config-only \
+  --expect-codex-version CODEX_SAMPLE --expect-claude-version CLAUDE_SAMPLE -v
+```
+
+The suites test native `mcp list` configuration loading with installed hooks and
+after hook/CLI removal, repeated install/uninstall, original notifier argv/exit
+code, unrelated hooks/later edits, ownership, permissions, malformed configs and
+symlinks. `--version` is provenance checking, not configuration-load evidence.
+MacOS excludes the Linux loopback HTTPS fixture and does not change certificate
+trust. The final Linux minimum/current endpoint results and eight historical
+native-platform job results must be read from actual CI, not inferred here.
+
+The local historical timeout was investigated with an owned fixture process:
+a debug suite also blocked on `status --installation-json`, which bypasses
+Agent probes; SIGQUIT ended that process with no Go stack/output. The isolated
+null-hook invocation returned the expected unchanged-config error normally.
+This supports a host executable-startup problem; it is not evidence that the
+failed full suite passed. No system security setting was changed, no timeout was
+raised to conceal the failure, and no assertion was removed. The separate Codex
+0.100.0 GitHub macOS tar SHA-256 is
+`8a2e3b8246b373c07b4ef44acd8e3c72aaa196ab7d9a66146936157704ec106b`.
+Its local launch failure remains explicit; Linux endpoint CI is needed for the
+minimum's real configuration evidence.
+
+Go regressions cover numeric stable parsing, boundaries/middle/historical/current
+and synthetic higher versions, malformed/ambiguous/prerelease/overflow output,
+missing/nonzero/expired-context probes, one probe per operation, configuration
+isolation, refusal preserving config/ownership/credentials, version-independent
+uninstall, single bounded status JSON and installation identity without probing.
+Range events traverse `run` through parsing, verified fixture target, encryption
+and controlled HTTP. Same-event reentry/retries retain exact ID/nonce/ciphertext;
+different turns (including synthetic resume boundaries) differ. Rejected versions,
+fields and targets never send; Codex's original notifier still receives exact argv
+and payload and retains its exit code. Existing Claude association/wait/filter/cache,
+real tmux, Herdr, crypto and upgrade tests remain intact.
+
+CI preserves all eight native OS/CPU jobs and required tmux execution. It reads
+fixed historical samples from `testdata/compatibility-samples.json`; two focused
+Linux jobs read minimum/current from the same manifest and execute the full
+11-case real-Agent/loopback-HTTPS suite. Production policy/reference consistency
+is tested. The same-commit release dependency and permissions are retained; no
+release, tag, deployment, paid resource, live API/APNs or phone test was performed.
+Sanitized local logs and upstream packages are in `/tmp/mobterm-compat.RC7sS3`,
+not Git. Packaging/install checks remain in each native CI job; this task did not
+repeat unrelated local installer/upgrade tests outside the required Go suite.

@@ -105,22 +105,91 @@ jobs:
         run: |
           go build -trimpath -o mobterm-cli .
           ./mobterm-cli version
-      - name: Install pinned native Agents in an isolated prefix
+      - name: Select reproducible historical Agent samples
         shell: bash
         run: |
+          python3 - <<'PYTHON'
+          import json, os
+          samples = json.load(open('testdata/compatibility-samples.json'))['historical']
+          with open(os.environ['GITHUB_ENV'], 'a') as out:
+              for agent, version in samples.items():
+                  print(f'{agent.upper()}_TEST_VERSION={version}', file=out)
+          PYTHON
+      - name: Install pinned native Agents in an isolated prefix
+        shell: bash
+        env:
+          HOME: ${{ runner.temp }}/mobterm-agent-home
+          CODEX_HOME: ${{ runner.temp }}/mobterm-agent-home/.codex
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/mobterm-agent-home/.claude
+          DISABLE_AUTOUPDATER: '1'
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+        run: |
+          mkdir -p "$HOME" "$CODEX_HOME" "$CLAUDE_CONFIG_DIR"
           npm install --global --prefix "$RUNNER_TEMP/mobterm-agents" --no-audit --no-fund \
-            @openai/codex@0.162.1 @anthropic-ai/claude-code@2.1.282
+            "@openai/codex@$CODEX_TEST_VERSION" "@anthropic-ai/claude-code@$CLAUDE_TEST_VERSION"
           echo "$RUNNER_TEMP/mobterm-agents/bin" >> "$GITHUB_PATH"
       - name: Real Agent lifecycle and configuration regression
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == Linux ]]; then
-            python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli -v
+            python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli \
+              --expect-codex-version "$CODEX_TEST_VERSION" --expect-claude-version "$CLAUDE_TEST_VERSION" -v
           else
-            python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli --config-only -v
+            python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli --config-only \
+              --expect-codex-version "$CODEX_TEST_VERSION" --expect-claude-version "$CLAUDE_TEST_VERSION" -v
           fi
       - run: sh -n install.sh
       - name: Package all supported targets without publishing
         run: python3 scripts/package.py --version v0.0.0 --commit "$GITHUB_SHA"
       - name: Offline installer regression and native package smoke test
         run: python3 tests/install_test.py --dist dist --commit "$GITHUB_SHA"
+
+  compatibility:
+    name: Agent compatibility (${{ matrix.sample }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        sample: [minimum, current]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.1'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Select fixed compatibility endpoints
+        env:
+          SAMPLE: ${{ matrix.sample }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          samples = json.load(open('testdata/compatibility-samples.json'))[os.environ['SAMPLE']]
+          with open(os.environ['GITHUB_ENV'], 'a') as out:
+              for agent, version in samples.items():
+                  print(f'{agent.upper()}_TEST_VERSION={version}', file=out)
+          PYTHON
+      - name: Check sample consistency and build
+        run: |
+          go test -count=1 -run TestCompatibilitySamplesMatchPolicy ./...
+          go build -trimpath -o mobterm-cli .
+      - name: Install exact native Agent samples in an isolated prefix
+        env:
+          HOME: ${{ runner.temp }}/mobterm-agent-home
+          CODEX_HOME: ${{ runner.temp }}/mobterm-agent-home/.codex
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/mobterm-agent-home/.claude
+          DISABLE_AUTOUPDATER: '1'
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+        run: |
+          mkdir -p "$HOME" "$CODEX_HOME" "$CLAUDE_CONFIG_DIR"
+          npm install --global --prefix "$RUNNER_TEMP/mobterm-agents" --no-audit --no-fund \
+            "@openai/codex@$CODEX_TEST_VERSION" "@anthropic-ai/claude-code@$CLAUDE_TEST_VERSION"
+          echo "$RUNNER_TEMP/mobterm-agents/bin" >> "$GITHUB_PATH"
+      - name: Real Agent lifecycle, configuration and local HTTPS regression
+        run: |
+          python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli \
+            --expect-codex-version "$CODEX_TEST_VERSION" --expect-claude-version "$CLAUDE_TEST_VERSION" -v

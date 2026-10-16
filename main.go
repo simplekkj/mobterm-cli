@@ -33,18 +33,21 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 	if installationOnly {
 		return result, nil
 	}
-	result["capabilities"] = map[string]any{"codex": map[string]any{"version": "0.162.1", "turn_completed": "agent-turn-complete", "needs_input": false, "reason": "PermissionRequest is pre-decision; no verified external human-wait event"}, "claude": map[string]any{"version": "2.1.282", "turn_completed": "native idle_prompt after user prompt; delayed by Claude", "needs_input": []string{"permission_prompt", "elicitation_dialog"}}, "herdr": map[string]any{"versions": []string{"0.9.1", "0.9.3"}, "source": "native Agent hooks only", "protocol": 22}}
+	result["capabilities"] = map[string]any{"codex": map[string]any{"turn_completed": "agent-turn-complete", "needs_input": false, "reason": "PermissionRequest is pre-decision; no verified external human-wait event"}, "claude": map[string]any{"turn_completed": "native idle_prompt after user prompt; delayed by Claude", "needs_input": []string{"permission_prompt", "elicitation_dialog"}}, "herdr": map[string]any{"versions": []string{"0.9.1", "0.9.3"}, "source": "native Agent hooks only", "protocol": 22}}
 	for _, agent := range []string{"codex", "claude"} {
 		capability := result["capabilities"].(map[string]any)[agent].(map[string]any)
-		query, cancel := context.WithTimeout(ctx, time.Second)
-		actual, queryErr := commandOutput(query, agent, "--version")
-		cancel()
-		capability["installed"] = queryErr == nil
-		actualVersion := strings.TrimSpace(string(actual))
-		if len(actualVersion) <= 100 {
-			capability["actual_version"] = actualVersion
+		policy := agentCompatibilities[agent]
+		probe := probeAgent(ctx, agent)
+		capability["version"] = policy.reference
+		capability["version_role"] = "validation_reference"
+		capability["minimum_version"] = policy.minimum.String()
+		capability["supported_range"] = ">=" + policy.minimum.String() + " stable"
+		capability["installed"] = probe.installed
+		capability["actual_version"] = probe.actual
+		capability["supported"] = probe.reason == ""
+		if probe.reason != "" {
+			capability["version_rejection"] = probe.reason
 		}
-		capability["supported"] = queryErr == nil && ((agent == "codex" && actualVersion == "codex-cli 0.162.1") || (agent == "claude" && actualVersion == "2.1.282 (Claude Code)"))
 	}
 	installed := map[string]bool{}
 	for _, agent := range []string{"codex", "claude"} {

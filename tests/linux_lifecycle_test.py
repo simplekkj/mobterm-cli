@@ -3,7 +3,9 @@
 
 Run as an ordinary user with --binary PATH. No Agent credentials are read:
 each test has a disposable HOME. Pairing uses a loopback HTTPS fixture, not APNs.
-Requires Python 3.11+, openssl, Codex 0.162.1 and Claude Code 2.1.282 on PATH.
+Requires Python 3.11+, openssl and explicitly selected real Agents on PATH.
+Pass --expect-codex-version and --expect-claude-version for package provenance;
+production compatibility is checked by CLI status and hook installation.
 The full suite requires Linux; --config-only also runs on macOS and excludes
 the HTTPS fixture, which relies on Linux's SSL_CERT_FILE trust loading.
 """
@@ -82,7 +84,7 @@ class LifecycleTests(unittest.TestCase):
 
     def cli(self, *args, data=None, code=0):
         result = subprocess.run([str(self.binary), *args], input=data, env=self.env,
-                                capture_output=True, timeout=20)
+                                capture_output=True, timeout=20, cwd=self.home)
         # Do not include potentially secret stdout/frame values in assertion messages.
         self.assertEqual(result.returncode, code, f'{args[:3]}: {result.stderr.decode()[:250]}')
         return result
@@ -124,7 +126,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.codex.read_bytes(), installed)
         notify = tomllib.loads(installed.decode())['notify']
         payload = json.dumps({'type': 'agent-turn-complete', 'thread-id': 'synthetic-thread', 'turn-id': 'synthetic-turn'})
-        result = subprocess.run([*notify, payload], env=self.env, capture_output=True, timeout=20)
+        result = subprocess.run([*notify, payload], env=self.env, capture_output=True, timeout=20, cwd=self.home)
         self.assertEqual(result.returncode, 7)
         self.assertEqual(json.loads(output.read_bytes()), [argv[-1], payload])
         later = b'\n[features]\nmulti_agent = true # later user edit\n'
@@ -148,7 +150,7 @@ class LifecycleTests(unittest.TestCase):
             payload = json.dumps({'session_id': 'synthetic-session', 'hook_event_name': event,
                                   'notification_type': 'permission_prompt'}).encode()
             result = subprocess.run(['sh', '-c', managed[0]['command']], input=payload,
-                                    env=self.env, capture_output=True, timeout=20)
+                                    env=self.env, capture_output=True, timeout=20, cwd=self.home)
             self.assertEqual(result.returncode, 0)
         settings['user_added'] = {'value': 42}
         settings['hooks']['Notification'].append({'matcher': 'idle_prompt', 'hooks': [
@@ -234,12 +236,12 @@ class LifecycleTests(unittest.TestCase):
             self.hook(agent)
             # Native configuration loading without model requests or login.
             args = ['codex', 'mcp', 'list', '--json'] if agent == 'codex' else ['claude', 'mcp', 'list']
-            result = subprocess.run(args, env=self.env, capture_output=True, timeout=30)
+            result = subprocess.run(args, env=self.env, capture_output=True, timeout=30, cwd=self.home)
             self.assertEqual(result.returncode, 0, result.stderr.decode()[:300])
             self.hook(agent, 'uninstall')
         self.binary.unlink()
         for args in (['codex', 'mcp', 'list', '--json'], ['claude', 'mcp', 'list']):
-            result = subprocess.run(args, env=self.env, capture_output=True, timeout=30)
+            result = subprocess.run(args, env=self.env, capture_output=True, timeout=30, cwd=self.home)
             self.assertEqual(result.returncode, 0, result.stderr.decode()[:300])
 
     def test_setup_https_repeat_failure_and_credentials_retained_on_hook_removal(self):
@@ -247,7 +249,7 @@ class LifecycleTests(unittest.TestCase):
         subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
                         '-keyout', str(key), '-out', str(cert), '-subj', '/CN=localhost',
                         '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1'],
-                       check=True, capture_output=True, timeout=20)
+                       check=True, capture_output=True, timeout=20, cwd=self.home)
         token = secrets.token_urlsafe(32)
         calls = []
         installation = json.loads(self.cli('status', '--installation-json').stdout)['installation_id']
@@ -315,6 +317,8 @@ class LifecycleTests(unittest.TestCase):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', required=True)
+    parser.add_argument('--expect-codex-version', required=True)
+    parser.add_argument('--expect-claude-version', required=True)
     parser.add_argument('--config-only', action='store_true',
                         help='run hook/configuration checks without the Linux HTTPS fixture')
     args, remaining = parser.parse_known_args()
@@ -328,11 +332,12 @@ if __name__ == '__main__':
         env = dict(PATH=AGENT_PATH, HOME=home, CODEX_HOME=home + '/.codex',
                    CLAUDE_CONFIG_DIR=home + '/.claude', DISABLE_UPDATES='1',
                    DISABLE_AUTOUPDATER='1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1')
-        for agent, expected in (('codex', 'codex-cli 0.162.1'), ('claude', '2.1.282 (Claude Code)')):
+        for agent, expected in (('codex', 'codex-cli ' + args.expect_codex_version),
+                                ('claude', args.expect_claude_version + ' (Claude Code)')):
             result = subprocess.run([agent, '--version'], env=env,
-                                    capture_output=True, text=True, timeout=20)
+                                    capture_output=True, text=True, timeout=20, cwd=home)
             if result.returncode or result.stdout.strip() != expected:
-                parser.error('Real supported Agent version required: ' + expected)
+                parser.error('Selected real Agent version required: ' + expected)
     tests = unittest.defaultTestLoader.getTestCaseNames(LifecycleTests)
     if args.config_only:
         tests.remove('test_setup_https_repeat_failure_and_credentials_retained_on_hook_removal')

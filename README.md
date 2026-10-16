@@ -108,7 +108,11 @@ Pairing uses an authenticated, host-verified SSH byte stream. The App queries
 stdin frame to `setup --stdin-frame`. Never paste the packet into shell argv,
 environment variables, a URL, terminal input, or a log. A packet contains secrets.
 
-Install hooks only after checking the [version compatibility](docs/compatibility.md):
+Install hooks after checking the [version compatibility](docs/compatibility.md):
+Codex >=0.100.0 stable or Claude Code >=2.0.36 stable. `status --json` reports
+the detected version, minimum and refusal reason. Its `supported` flag means the
+version policy passes; it does not establish live notification delivery. Future
+stable versions have no mechanical upper limit but are not automatically verified.
 
 ```sh
 mobterm-cli hooks install --agent codex --json
@@ -229,21 +233,28 @@ archives without network access. With `--dist`, they additionally install and
 check all four real packages and run the native installed binary's `version`;
 this is not a download test against a public Release.
 
-Every CI job installs real Codex 0.162.1 and Claude Code 2.1.282 into an isolated
-npm prefix, using Node.js 22 and Python 3.12. The test runner rejects unexpected
-Agent versions. Linux runs all 11 black-box lifecycle checks; macOS runs the 10
-hook/configuration checks with `--config-only`. Both include native Agent
-configuration loading before and after hook/executable removal. The Linux HTTPS
-fixture relies on `SSL_CERT_FILE` and is excluded from the macOS suite, without
+The eight native CI jobs retain the historical Codex 0.162.1 / Claude Code
+2.1.282 regression pair. Two focused Linux jobs additionally execute the minimum
+and current endpoints from `testdata/compatibility-samples.json`. Samples are
+fixed for reproducibility; they are not the production allowlist. Go tests check
+the manifest against the policy and compatibility document. Node.js 22 and
+Python 3.12 are used. The runner requires explicit expected versions to verify
+binary provenance, then checks support through the real CLI. Linux runs all 11
+black-box lifecycle checks; macOS runs the 10 configuration checks with
+`--config-only`. These include native configuration loading before and after
+hook/executable removal. The Linux HTTPS fixture uses `SSL_CERT_FILE` without
 changing system certificate trust.
 
-Locally, with Python 3.11+, OpenSSL and those exact real Agent versions on PATH,
-run the black-box checks against a built executable:
+Locally, install a selected manifest pair in an isolated npm prefix, then run
+against a built executable (example: current endpoints):
 
 ```sh
-python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli -v
-# macOS: run the hook/configuration suite
-python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli --config-only -v
+npm install --global --prefix /tmp/mobterm-agents --no-audit --no-fund \
+  @openai/codex@0.163.0 @anthropic-ai/claude-code@2.1.301
+PATH="/tmp/mobterm-agents/bin:$PATH" python3 tests/linux_lifecycle_test.py \
+  --binary ./mobterm-cli --expect-codex-version 0.163.0 \
+  --expect-claude-version 2.1.301 -v
+# On macOS add --config-only; repeat with the manifest minimum/historical pair.
 ```
 
 These checks create disposable HOME/config directories, disable Claude updates

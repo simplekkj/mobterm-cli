@@ -45,17 +45,6 @@ func configPath(agent string) (string, error) {
 	}
 	return "", errors.New("agent must be codex or claude")
 }
-func hookVersions(ctx context.Context, agent string) error {
-	want := map[string]string{"codex": "codex-cli 0.162.1", "claude": "2.1.282 (Claude Code)"}
-	out, err := commandOutput(ctx, agent, "--version")
-	if err != nil {
-		return errors.New("agent unavailable; hook configuration unchanged")
-	}
-	if strings.TrimSpace(string(out)) != want[agent] {
-		return errors.New("unsupported agent version; see docs/compatibility.md")
-	}
-	return nil
-}
 func changeHooks(ctx context.Context, s Store, agent, action, path, executable string, checkVersion bool) error {
 	if agent != "codex" && agent != "claude" {
 		return errors.New("agent must be codex or claude")
