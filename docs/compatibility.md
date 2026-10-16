@@ -25,7 +25,10 @@ hyphen dot-separated identifiers and does not affect comparison. Prereleases
 (alpha/beta/rc/nightly/dev or any `-suffix`), overflow, partial versions, banners,
 multiple versions and unknown forms fail safely. Probe output is bounded by the
 2 MiB command limit and by 100 bytes in status. Each Agent probe has the same
-three-second budget, bounded by the calling context, with bounded pipe cleanup.
+five-second budget, bounded by the calling context, with bounded pipe cleanup.
+Status probes the two independent Agents concurrently to retain time for pair
+readback within the command's ten-second context; deadline failures are reported
+as `probe_timeout` without exposing command output.
 This accommodates older JavaScript CLI startup (Claude 2.0.36 measured 1.4–1.5
 seconds on macOS Intel). Version probing resolves the normal PATH executable but
 uses a disposable HOME, cwd, CODEX_HOME, CLAUDE_CONFIG_DIR and XDG_CONFIG_HOME,

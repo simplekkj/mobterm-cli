@@ -34,10 +34,19 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 		return result, nil
 	}
 	result["capabilities"] = map[string]any{"codex": map[string]any{"turn_completed": "agent-turn-complete", "needs_input": false, "reason": "PermissionRequest is pre-decision; no verified external human-wait event"}, "claude": map[string]any{"turn_completed": "native idle_prompt after user prompt; delayed by Claude", "needs_input": []string{"permission_prompt", "elicitation_dialog"}}, "herdr": map[string]any{"versions": []string{"0.9.1", "0.9.3"}, "source": "native Agent hooks only", "protocol": 22}}
+	type probeResult struct {
+		agent string
+		probe agentProbe
+	}
+	probes := make(chan probeResult, 2)
 	for _, agent := range []string{"codex", "claude"} {
+		go func(agent string) { probes <- probeResult{agent, probeAgent(ctx, agent)} }(agent)
+	}
+	for range 2 {
+		completed := <-probes
+		agent, probe := completed.agent, completed.probe
 		capability := result["capabilities"].(map[string]any)[agent].(map[string]any)
 		policy := agentCompatibilities[agent]
-		probe := probeAgent(ctx, agent)
 		capability["version"] = policy.reference
 		capability["version_role"] = "validation_reference"
 		capability["minimum_version"] = policy.minimum.String()

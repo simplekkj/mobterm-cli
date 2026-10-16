@@ -418,3 +418,28 @@ to the observed failure, not a multiplication of the full historical matrix.
 `actionlint` and `git diff --check` passed for this CI/documentation follow-up.
 Final native minimum and whole-run results are recorded in the handoff after
 reading the actual final-commit CI result.
+
+### Native minimum probe-budget correction
+
+The macOS Intel minimum follow-up in
+[run 38880398633](https://github.com/simplekkj/mobterm-cli/actions/runs/38880398633)
+exposed an actual failure: one Claude 2.0.36 hook-install probe returned
+`probe_failed`. The native configuration-load case and the other nine-case
+paths passed. The failure occurred close to the three-second probe deadline;
+the original generic diagnostic did not distinguish timeout from other process
+failures. It is not recorded as a passing suite.
+
+The shared probe budget is now five seconds (still capped by the command
+context), with an explicit `probe_timeout` diagnostic for deadline exhaustion.
+Status starts the two independent probes concurrently so their budgets do not
+consume the entire ten-second context before pair readback. There is no retry,
+fixed delay, persistent cache, removed assertion or lifecycle timeout change.
+The prior three-second statement above describes the first implementation.
+
+After this source change, local gofmt, all 40 top-level Go tests with required
+real tmux and no skips, vet, race, native build/version, actionlint and diff
+checks passed again. The expired-context test now requires the timeout reason.
+Real minimum Claude 2.0.36/current Codex 0.163.0 passed all ten native macOS
+configuration checks again in 35.975 seconds. Final-commit native CI must verify
+the correction, including the failing minimum macOS job; its actual result is
+recorded in the handoff rather than inferred here.

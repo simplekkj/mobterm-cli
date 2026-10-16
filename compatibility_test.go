@@ -122,7 +122,7 @@ func TestAgentProbeFailures(t *testing.T) {
 	// An already-expired context exercises cancellation without a real sleep.
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	if probeAgent(ctx, "claude").reason != "probe_failed" {
+	if probeAgent(ctx, "claude").reason != "probe_timeout" {
 		t.Fatal("timed out probe accepted")
 	}
 	t.Setenv("FIXTURE_EXIT", "0")

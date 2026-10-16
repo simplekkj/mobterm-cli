@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -80,12 +81,15 @@ func probeAgent(ctx context.Context, agent string) agentProbe {
 		return agentProbe{reason: "unknown_agent"}
 	}
 	// Older official JavaScript CLIs need more than one second to start. Keep
-	// the same bounded budget in install, notify and status; two failed probes
-	// still leave time for pair readback within the command's ten-second context.
-	query, cancel := context.WithTimeout(ctx, 3*time.Second)
+	// the same bounded budget in install, notify and status. Status probes both
+	// Agents concurrently to leave time for pair readback in its ten-second context.
+	query, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	output, err := agentVersionOutput(query, agent)
 	if err != nil {
+		if errors.Is(query.Err(), context.DeadlineExceeded) {
+			return agentProbe{reason: "probe_timeout"}
+		}
 		return agentProbe{reason: "probe_failed"}
 	}
 	actual := strings.TrimSpace(string(output))
