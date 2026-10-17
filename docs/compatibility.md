@@ -30,9 +30,33 @@ Status probes the two independent Agents concurrently to retain time for pair
 readback within the command's ten-second context; deadline failures are reported
 as `probe_timeout` without exposing command output.
 This accommodates older JavaScript CLI startup (Claude 2.0.36 measured 1.4–1.5
-seconds on macOS Intel). Version probing resolves the normal PATH executable but
-uses a disposable HOME, cwd, CODEX_HOME, CLAUDE_CONFIG_DIR and XDG_CONFIG_HOME,
-with updates/nonessential traffic disabled. Claude 2.0.36's version bootstrap
+seconds on macOS Intel). Version probing first fixes the effective launcher and
+runtime in the caller's original HOME/cwd/PATH. Generated asdf shims are recognized
+by their configured data-directory location and full script shape (asdf 0.20.2
+format), not just a command name. Bounded `asdf which` and
+`asdf env <command> /usr/bin/printenv PATH` queries resolve the executable and
+execution PATH before isolation; they do not run the Agent or its pre-exec hook.
+Only PATH is captured, not the full environment. This resolves the standard Node
+plugin without selection callbacks. Other plugins, custom list-bin-paths,
+exec-path, exec-env callbacks and shim templates are refused before querying asdf,
+so arbitrary plugin code cannot run in the real HOME during resolution. Custom
+pre-exec behavior and arbitrary wrapper scripts are not verified by this support.
+No shell rc, login shell or wrapper eval
+is used. See [asdf commands](https://asdf-vm.com/manage/commands.html) and the fixed
+[implementation](https://github.com/asdf-vm/asdf/blob/cb72590e9f9691b6e651aecfe4b0c9334adff41b/internal/cli/cli.go).
+
+For official npm `#!/usr/bin/env node` entries, including npm symlinks, the selected
+Node is also resolved explicitly, using asdf's execution PATH when the Agent is a
+shim. A competing global installation is never a fallback for failed resolution.
+Relative PATH directories are fixed before cwd changes. Direct native binaries
+keep their ordinary PATH selection. The entire resolution plus single Agent
+version execution shares the five-second deadline and 2 MiB output budget;
+selection is local to each child, without changing the parent's environment/cwd,
+installing versions or retaining a persistent resolution cache.
+
+The actual Agent uses a disposable HOME, cwd, CODEX_HOME, CLAUDE_CONFIG_DIR and
+XDG_CONFIG_HOME, with updates/nonessential traffic disabled. No authentication or
+project files are copied into it. Claude 2.0.36's version bootstrap
 otherwise migrates `~/.claude.json`; probe isolation prevents that native side
 effect on user configuration. No probe state/cache is retained. Install refuses
 before configuration or ownership writes. Uninstall never requires a present or compatible Agent.

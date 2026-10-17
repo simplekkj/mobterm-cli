@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -103,7 +105,225 @@ func versionEnvironment(t *testing.T) string {
 	}
 	t.Setenv("FIXTURE_PROBES", filepath.Join(t.TempDir(), "probes"))
 	t.Setenv("FIXTURE_EXIT", "0")
+	if mode := os.Getenv("FIXTURE_LAUNCHER"); mode != "" {
+		versionLauncherFixture(t, dir, mode)
+	}
 	return dir
+}
+
+// A selection-sensitive launcher, rather than a shim that just echoes a version.
+// The real asdf/Node/npm path is exercised separately by tests/asdf_probe_test.py.
+func versionLauncherFixture(t *testing.T, dir, mode string) {
+	t.Helper()
+	write := func(path, data string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(data), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	home := os.Getenv("HOME")
+	data := filepath.Join(home, ".asdf")
+	if strings.Contains(mode, "explicit") {
+		data = filepath.Join(t.TempDir(), "data with ' spaces")
+		t.Setenv("ASDF_DATA_DIR", data)
+	} else {
+		t.Setenv("ASDF_DATA_DIR", "")
+	}
+	write(filepath.Join(home, ".tool-versions"), "nodejs home\n")
+	selected := "home"
+	project := t.TempDir()
+	t.Chdir(project)
+	if strings.Contains(mode, "project") {
+		write(filepath.Join(project, ".tool-versions"), "nodejs project\n")
+		selected = "project"
+	}
+	t.Setenv("FIXTURE_SELECTED", filepath.Join(data, "installs", "nodejs", selected, "bin"))
+	t.Setenv("FIXTURE_REAL_HOME", home)
+	t.Setenv("FIXTURE_HOMES", filepath.Join(t.TempDir(), "homes"))
+	// The asdf fixture implements only read-only which/env; it must run before
+	// isolation and resolve the same home/project version that exec would use.
+	write(filepath.Join(dir, "asdf"), `#!/bin/sh
+[ "$HOME" = "$FIXTURE_REAL_HOME" ] || exit 9
+[ "$FIXTURE_RESOLVE_FAIL" != 1 ] || exit 8
+data=${ASDF_DATA_DIR:-$HOME/.asdf}
+file=$HOME/.tool-versions
+[ ! -f "$PWD/.tool-versions" ] || file=$PWD/.tool-versions
+read tool version < "$file"
+bin=$data/installs/$tool/$version/bin
+case "$1" in
+which) [ -x "$bin/$2" ] || exit 8; printf '%s\n' "$bin/$2" ;;
+env) printf '%s\n' "$bin:$PATH" ;;
+exec) shift; command=$1; shift; PATH=$bin:$PATH exec "$bin/$command" "$@" ;;
+*) exit 7 ;;
+esac
+`)
+	for _, version := range []string{"home", "project"} {
+		bin := filepath.Join(data, "installs", "nodejs", version, "bin")
+		write(filepath.Join(bin, "node"), `#!/bin/sh
+[ "${0%/*}" = "$FIXTURE_SELECTED" ] || exit 6
+if [ "$FIXTURE_PREFLIGHT" = 1 ]; then exec /bin/sh "$@"; fi
+[ "$HOME" != "$FIXTURE_REAL_HOME" ] && [ "$PWD" = "$HOME" ] || exit 5
+printf 'migration' > "$HOME/.claude.json"
+printf '%s\n' "$HOME" >> "$FIXTURE_HOMES"
+exec /bin/sh "$@"
+`)
+		for _, agent := range []string{"codex", "claude"} {
+			original, err := os.ReadFile(filepath.Join(dir, agent))
+			if err != nil {
+				t.Fatal(err)
+			}
+			script := strings.Replace(string(original), "#!/bin/sh", "#!/usr/bin/env node", 1)
+			write(filepath.Join(bin, agent), script)
+			if strings.HasPrefix(mode, "node") {
+				write(filepath.Join(dir, agent), script)
+			}
+		}
+	}
+	for _, name := range []string{"node", "codex", "claude"} {
+		if strings.HasPrefix(mode, "node") && name != "node" {
+			continue
+		}
+		write(filepath.Join(data, "shims", name), "#!/usr/bin/env bash\n# asdf-plugin: nodejs home\n# asdf-plugin: nodejs project\nexec asdf exec \""+name+"\" \"$@\"")
+	}
+	// A competing installation must never be substituted for the selected one.
+	global := t.TempDir()
+	for _, name := range []string{"node", "codex", "claude"} {
+		write(filepath.Join(global, name), "#!/bin/sh\nexit 4\n")
+	}
+	t.Setenv("PATH", filepath.Join(data, "shims")+string(os.PathListSeparator)+dir+string(os.PathListSeparator)+global+":/usr/bin:/bin")
+	for _, agent := range []string{"codex", "claude"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		c := exec.CommandContext(ctx, agent, "--version")
+		c.WaitDelay = 100 * time.Millisecond
+		c.Env = append(os.Environ(), "FIXTURE_PREFLIGHT=1", "FIXTURE_VERSION="+agentOutput(agent, agentCompatibilities[agent].reference))
+		out, err := c.Output()
+		cancel()
+		if err != nil || strings.TrimSpace(string(out)) != agentOutput(agent, agentCompatibilities[agent].reference) {
+			t.Fatal("original launcher context is not usable", err)
+		}
+	}
+	if err := os.Remove(os.Getenv("FIXTURE_PROBES")); err != nil {
+		t.Fatal(err)
+	}
+	sentinels := map[string][]byte{}
+	for _, path := range []string{filepath.Join(home, ".tool-versions"), filepath.Join(project, ".tool-versions"), filepath.Join(home, ".claude.json")} {
+		if filepath.Base(path) == ".claude.json" {
+			write(path, "user-owned")
+		}
+		if b, err := os.ReadFile(path); err == nil {
+			sentinels[path] = b
+		}
+	}
+	t.Cleanup(func() {
+		for path, before := range sentinels {
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Error("probe changed selection or user configuration")
+			}
+		}
+	})
+}
+
+func TestAsdfCompatibilityEntrypoints(t *testing.T) {
+	for _, mode := range []string{"agent-home", "agent-project-explicit", "node-home-explicit", "node-project"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("FIXTURE_LAUNCHER", mode)
+			t.Run("entrypoints", TestCompatibilityEntrypoints)
+			t.Run("notify", TestRangeNotifyEncryptedIdentity)
+			t.Run("chain", TestRejectedCodexVersionPreservesNotifierChain)
+			t.Run("installation-only", TestInstallationIdentityDoesNotProbeAgents)
+			t.Run("one-probe", TestCompatibilityUsesOneProbePerAgentOperation)
+		})
+	}
+}
+
+func TestAsdfProbeIsolationAndFailure(t *testing.T) {
+	t.Setenv("FIXTURE_LAUNCHER", "agent-project-explicit")
+	versionEnvironment(t)
+	t.Setenv("FIXTURE_VERSION", "2.0.36 (Claude Code)")
+	s := testStore(t)
+	if _, err := s.installation(); err != nil {
+		t.Fatal(err)
+	}
+	parentEnv := os.Environ()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := status(context.Background(), s, newAPI(), "", false); err != nil {
+		t.Fatal(err)
+	}
+	afterCwd, err := os.Getwd()
+	if err != nil || afterCwd != cwd || !slices.Equal(parentEnv, os.Environ()) {
+		t.Fatal("concurrent probes changed parent selection context")
+	}
+	homes, err := os.ReadFile(os.Getenv("FIXTURE_HOMES"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	used := map[string]bool{}
+	for _, home := range strings.Fields(string(homes)) {
+		if used[home] {
+			t.Fatal("concurrent probes shared a disposable home")
+		}
+		used[home] = true
+		if _, err := os.Stat(home); !os.IsNotExist(err) {
+			t.Fatal("probe home not cleaned")
+		}
+	}
+	if len(used) != 2 {
+		t.Fatal("both concurrent probes did not execute")
+	}
+	if err := changeHooks(context.Background(), s, "claude", "install", "", "/fixture/mobterm-cli", true); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"bin/list-bin-paths", "bin/exec-path", "bin/exec-env", "shims/claude"} {
+		callback := filepath.Join(probeAsdfDataDir(), "plugins", "nodejs", path)
+		if err := os.MkdirAll(filepath.Dir(callback), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(callback, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if p := probeAgent(context.Background(), "claude"); p.installed || p.reason != "probe_failed" {
+			t.Fatal("custom selection callback accepted", path)
+		}
+		if err := os.Remove(callback); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config, _ := configPath("claude")
+	before, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FIXTURE_RESOLVE_FAIL", "1")
+	if p := probeAgent(context.Background(), "claude"); p.installed || p.reason != "probe_failed" {
+		t.Fatal("failed launcher accepted")
+	}
+	if err := changeHooks(context.Background(), s, "claude", "install", "", "/fixture/mobterm-cli", true); err == nil {
+		t.Fatal("failed launcher installed")
+	}
+	after, err := os.ReadFile(config)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("failed launcher changed hook config")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if p := probeAgent(ctx, "claude"); p.installed || p.reason != "probe_failed" {
+		t.Fatal("cancelled launcher accepted")
+	}
+	ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if p := probeAgent(ctx, "claude"); p.installed || p.reason != "probe_timeout" {
+		t.Fatal("expired launcher accepted")
+	}
+	if err := changeHooks(context.Background(), s, "claude", "uninstall", "", "/fixture/mobterm-cli", true); err != nil {
+		t.Fatal("failed launcher blocked uninstall", err)
+	}
 }
 
 func TestAgentProbeFailures(t *testing.T) {
@@ -170,12 +390,16 @@ printf '2.0.36 (Claude Code)\n'
 }
 
 func TestCompatibilityEntrypoints(t *testing.T) {
-	versionEnvironment(t)
 	samples := compatibilitySamples(t)
+	versionEnvironment(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { printJSON(w, map[string]string{"status": "active"}) }))
 	defer server.Close()
+	cases := []string{"minimum", "middle", "historical", "current", "future", "below", "unknown", "prerelease", "nonzero", "missing"}
+	if mode := os.Getenv("FIXTURE_LAUNCHER"); mode != "" && mode != "agent-project-explicit" {
+		cases = []string{"minimum", "below"}
+	}
 	for _, agent := range []string{"codex", "claude"} {
-		for _, sample := range []string{"minimum", "middle", "historical", "current", "future", "below", "unknown", "prerelease", "nonzero", "missing"} {
+		for _, sample := range cases {
 			t.Run(agent+"/"+sample, func(t *testing.T) {
 				version := samples[sample][agent]
 				supported := true
@@ -348,17 +572,21 @@ func TestCompatibilityUsesOneProbePerAgentOperation(t *testing.T) {
 }
 
 func TestRangeNotifyEncryptedIdentity(t *testing.T) {
-	versionEnvironment(t)
+	samples := compatibilitySamples(t)
+	dir := versionEnvironment(t)
 	t.Setenv("TMUX", "/fixture/tmux.sock,123,0")
 	t.Setenv("TMUX_PANE", "%3")
 	t.Setenv("HERDR_PANE_ID", "")
 	tmux := "#!/bin/sh\nprintf '%s\\t%s\\t%s\\t%s\\t%s\\n' /fixture/tmux.sock 123:456:789 '$1' '@2' '%3'\n"
-	if err := os.WriteFile(filepath.Join(os.Getenv("PATH"), "tmux"), []byte(tmux), 0700); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(tmux), 0700); err != nil {
 		t.Fatal(err)
 	}
-	samples := compatibilitySamples(t)
+	cases := []string{"minimum", "middle", "historical", "current", "future", "below", "unknown", "prerelease", "nonzero", "missing", "invalid_event", "invalid_target", "ambiguous_target"}
+	if mode := os.Getenv("FIXTURE_LAUNCHER"); mode != "" && mode != "agent-project-explicit" {
+		cases = []string{"minimum", "below"}
+	}
 	for _, agent := range []string{"codex", "claude"} {
-		for _, sample := range []string{"minimum", "middle", "historical", "current", "future", "below", "unknown", "prerelease", "nonzero", "missing", "invalid_event", "invalid_target", "ambiguous_target"} {
+		for _, sample := range cases {
 			t.Run(agent+"/"+sample, func(t *testing.T) {
 				v := samples[sample][agent]
 				allowed := true
@@ -446,8 +674,12 @@ func TestRangeNotifyEncryptedIdentity(t *testing.T) {
 						}
 					}
 					var out, diag bytes.Buffer
-					if run(args, strings.NewReader(input), &out, &diag) != 0 || out.Len() != 0 || strings.Contains(diag.String(), "PRIVATE_") || (allowed && diag.Len() != 0) {
-						t.Fatal("hook failed, blocked Agent, or leaked payload")
+					code := run(args, strings.NewReader(input), &out, &diag)
+					if strings.Contains(diag.String(), "PRIVATE_") {
+						t.Fatal("hook leaked fixture payload")
+					}
+					if code != 0 || out.Len() != 0 || (allowed && diag.Len() != 0) {
+						t.Fatalf("hook failed: exit=%d stdout_bytes=%d diagnostic=%q", code, out.Len(), diag.String())
 					}
 				}
 				mu.Lock()

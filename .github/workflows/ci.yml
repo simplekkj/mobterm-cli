@@ -204,3 +204,8 @@ jobs:
           fi
           python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli "${args[@]}" \
             --expect-codex-version "$CODEX_TEST_VERSION" --expect-claude-version "$CLAUDE_TEST_VERSION" -v
+      - name: Real asdf and Node launcher isolation regression
+        if: matrix.sample == 'minimum' && runner.os == 'Linux'
+        run: |
+          python3 tests/asdf_probe_test.py --binary ./mobterm-cli \
+            --work-dir "$RUNNER_TEMP/mobterm-asdf-probe"

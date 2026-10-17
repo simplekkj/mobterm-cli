@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,27 +99,26 @@ func probeAgent(ctx context.Context, agent string) agentProbe {
 	return result
 }
 
-// Even --version in older Claude releases migrates user configuration. Resolve
-// the selected executable on the ordinary PATH, but let it load/write only a
-// disposable home/configuration. Terminal queries keep commandOutput's semantics.
+// Resolve launchers in the caller's selection context before isolating the Agent.
+// Even --version in older Claude releases migrates user configuration.
+// Terminal queries keep commandOutput's semantics.
 func agentVersionOutput(ctx context.Context, agent string) ([]byte, error) {
-	c := exec.CommandContext(ctx, agent, "--version")
+	budget := 2 * 1024 * 1024
+	launch, err := resolveAgentLaunch(ctx, agent, &budget)
+	if err != nil {
+		return nil, err
+	}
+	c := exec.CommandContext(ctx, launch.executable, append(launch.args, "--version")...)
 	dir, err := os.MkdirTemp("", "mobterm-agent-version-")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(dir)
 	c.Dir = dir
-	c.Env = append(c.Environ(), "HOME="+dir, "CODEX_HOME="+filepath.Join(dir, "codex"),
+	c.Env = append(c.Environ(), "PATH="+launch.path, "HOME="+dir, "CODEX_HOME="+filepath.Join(dir, "codex"),
 		"CLAUDE_CONFIG_DIR="+filepath.Join(dir, "claude"), "XDG_CONFIG_HOME="+filepath.Join(dir, "config"),
 		"DISABLE_UPDATES=1", "DISABLE_AUTOUPDATER=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1")
-	c.WaitDelay = 100 * time.Millisecond
-	out := &limitBuffer{limit: 2 * 1024 * 1024}
-	c.Stdout, c.Stderr = out, io.Discard
-	if err := c.Run(); err != nil {
-		return nil, err
-	}
-	return out.Bytes(), nil
+	return probeCommand(c, &budget)
 }
 
 func hookVersions(ctx context.Context, agent string) error {

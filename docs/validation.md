@@ -443,3 +443,57 @@ Real minimum Claude 2.0.36/current Codex 0.163.0 passed all ten native macOS
 configuration checks again in 35.975 seconds. Final-commit native CI must verify
 the correction, including the failing minimum macOS job; its actual result is
 recorded in the handoff rather than inferred here.
+
+## Compatibility round 2: launcher selection before isolation (2026-10-17)
+
+Analysis/start SHA: `6982f37b1333a38e24bc4d45d86a16ec77c4425e`, clean
+`main`; no baseline drift, checkout/reset/pull/rebase or changes outside CLI.
+COMP-R2-01 preserves the existing minimums and all event/wire contracts.
+
+The selection-sensitive fixture first establishes that the original HOME/project
+context can launch the Agent. Before the fix,
+`go test -count=1 -run '^TestAsdfCompatibilityEntrypoints/agent-project-explicit/entrypoints/codex/minimum$' ./...`
+failed at the supported installation decision (2.848s). The same case passed
+after fixing both the executable and runtime selection (4.093s). A fixture setup
+error reading the sample manifest after changing cwd was corrected before this
+reproduction; it is not evidence for the production bug. The corresponding
+encrypted-notify minimum case also passed after the fix (9.076s).
+
+New regressions exercise Agent shims and npm-to-Node shims, HOME/project choice,
+default/explicit asdf data, competing global commands, space/quote paths,
+encrypted notify/retry/turn identity, original notifier exits, installation-only
+and single version execution. Migration sentinels and selection files are checked;
+status probes use separate disposable homes without changing parent HOME/cwd/PATH.
+Unsupported selection callbacks are rejected before running asdf in the real HOME.
+
+The focused real test is `python3.12 tests/asdf_probe_test.py --binary BINARY
+--work-dir NEW_TEMP_DIR` (one shell line). It builds asdf from fixed source
+`cb72590e9f9691b6e651aecfe4b0c9334adff41b` (v0.20.2), fixes the official
+Node plugin at `779c8dc84b3bdab38c2c80622d315c2c3267f74b`, verifies official
+Node archive SHA-256 against release SHASUMS256.txt, and installs Node
+22.22.2 / Claude 2.1.301 and Node 22.14.0 / Claude 2.0.36. It checks all eight
+default/explicit-data, HOME/project, Agent/Node-shim combinations, real `mcp list`
+configuration loading, repeated hook lifecycle and configuration/state protection.
+It uses no real user config, login or model service. CI adds this only to the
+existing Linux minimum job; the eight native and three endpoint jobs remain.
+
+Local environment: macOS Intel, Go 1.27.1, Python 3.12.15, Node 22.22.2,
+required real tmux. Initial `go vet ./...`, native build/version, Python syntax,
+actionlint and `git diff --check` passed. Expanded checks are still required for
+the final commit; their final results belong in the handoff report.
+
+Local startup failures are retained, not passing evidence: the first real-asdf
+attempt timed out launching `asdf reshim` at 60s; the next timed out launching
+the isolated Node/npm installation at 180s. Even independent `go version`,
+`gh --version` and gofmt processes intermittently failed to start before their
+deadlines with no output. The initial expanded fixture run was stopped with
+SIGQUIT after its preflight child stalled; the stack was waiting in Cmd.Output.
+The preflight now has a bounded context. A current real-Agent configuration
+rerun passed nine of ten cases but one copied CLI hook-install process timed out
+at the unchanged 20s limit. No assertion, production deadline or system security
+setting was weakened. Clean final-commit CI, including the real asdf step and
+minimum/current configuration runs, must succeed before closing the task.
+
+Local evidence/packages: `/tmp/mobterm-r2.2vskUV`, outside Git. Native model
+interaction/resume, live API/APNs, phone display/navigation and publishing were
+not performed. Configuration and synthetic HTTP tests do not establish those.
