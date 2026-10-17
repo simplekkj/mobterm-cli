@@ -497,3 +497,69 @@ minimum/current configuration runs, must succeed before closing the task.
 Local evidence/packages: `/tmp/mobterm-r2.2vskUV`, outside Git. Native model
 interaction/resume, live API/APNs, phone display/navigation and publishing were
 not performed. Configuration and synthetic HTTP tests do not establish those.
+
+## Miscellaneous optimizations — round 1 v1.0, R8 (2026-10-17)
+
+Analysis and starting CLI SHA were both
+`cdbfdc989d1451c8adb66f7e7f55adf8b0f33477`, clean `main`, with no drift.
+This round adds `api_retry_test.go` and the daily-admission/429/503 contract in
+`docs/protocol-v1.md`; CLI runtime code, encryption vectors, packaging and upgrade
+behavior are unchanged. Final commits and cross-repository acceptance evidence
+are recorded in the [round 1 handoff](https://app.notion.com/p/3fccede2082381019e3ae4bd36ae9876).
+
+Local environment: macOS Intel, Go `go1.27.1 darwin/amd64`, tmux 3.7c.
+The new HTTP fixture returns 429 `notification_global_daily_limit` with
+`Retry-After: 86400` inside the existing ten-second command context. The CLI
+returns in under one second, sends exactly one POST and preserves the supplied
+event ID, nonce and ciphertext. It creates no next-day sleeper, daemon or queue.
+Existing same-envelope retry/cache tests remain unchanged.
+
+| Executed command / scope | Actual result |
+| --- | --- |
+| `test -z "$(gofmt -l .)"` | PASS |
+| `go test ./...` | PASS, 96.048s |
+| `go vet ./...` | PASS |
+| `go test -race ./...` | FAIL, 146.732s; existing synthetic launcher preflight timed out in two `agent-home` cases |
+| `go test -race -count=1 -v -run '^TestAsdfCompatibilityEntrypoints/agent-home' ./...` | FAIL, 29.714s; existing preflight failed in notify/chain/installation-only/one-probe |
+| `go test -race -count=1 -v ./...` | FAIL, 144.382s; `TestAsdfCompatibilityEntrypoints` and `TestAsdfProbeIsolationAndFailure` failed at original-launcher preflight; no skips or data-race warnings |
+| Targeted R8 race command below | PASS, three tests, no skips, 4.184s |
+| `git diff --check` | PASS |
+
+```sh
+go test -race -count=1 -v \
+  -run 'TestSendDailyRetryAfterExitsWithinCommandBudget|TestSendBoundedRetriesAndStage|TestRetryReusesExactEnvelopeAcrossInvocations' ./...
+```
+
+The final full race run passed the new daily-retry test and the live tmux test
+(the latter took 1.07s). Its failures reported
+`original launcher context is not usable signal: killed` at the existing
+five-second fixture preflight, before the production Agent probe. They were
+not race-detector findings. Concurrent Xcode compilation and Simulator startup
+were observed, but CPU contention is an inference, not an established cause.
+
+To distinguish these failures from R8 changes, the unmodified starting SHA above
+was exported with `git archive HEAD` into a separate temporary directory. There,
+`go test -race -count=1 -v -run '^TestAsdfCompatibilityEntrypoints/agent-home/installation-only$' ./...`
+reproduced the identical preflight failure in 5.16s (8.246s overall, exit 1).
+This establishes an unrelated baseline/environment failure; it does not turn
+the required full race check into a pass. No fixture, timeout, assertion, runtime
+or system security setting was changed to suppress it. The targeted R8 race
+checks provide narrower evidence for the affected request/retry path.
+
+Sibling API validation used Node 22.22.2, pinned Miniflare/workerd, real local
+D1 and a controlled APNs response. Its full 42-test run passed with no skips;
+final public-validation/protocol checks passed three tests and an additional
+policy/APNs completion race passed one. Atomic last-admission contention,
+UTC-boundary Retry-After, idempotence, management availability, migration
+preservation, indexed cleanup, 40-round expiry load and D1 row costs are recorded
+in the API README and handoff. These local fixtures do not establish live edge
+limiting, real APNs acceptance, phone display or navigation. Old CLI runtime
+behavior already supports bounded exit with the new API; no forced simultaneous
+CLI release is required.
+
+Sanitized local evidence is under `/tmp/mobterm-r1-evidence/`: `cli-test.log`,
+`cli-race.log`, `cli-race-focused.log`, `cli-race-final.log`,
+`cli-baseline-race.log`, `cli-r8-race.log` and `r8-report.txt`. Temporary paths
+are local evidence, not committed artifacts or hosted CI results. No packaging,
+release, deployment, remote D1, WAF, Secrets or live APNs operation was performed
+for this round. Earlier records above describe separate tasks.

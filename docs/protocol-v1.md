@@ -178,3 +178,64 @@ re-entry. Expired entries are rejected and retained as tombstones for another da
 The bounded cache holds 512 entries; saturation fails visibly to stderr while
 allowing the Agent to continue. No daemon or scheduled retry is started. Cross-system
 delivery is not exactly-once.
+
+## Request protection and daily admission budgets
+
+All callers, including scripts, use the same authorization and resource limits.
+Public routing/body validation and native Cloudflare limiters precede D1 access.
+Native limits (IP 300/minute, fixed service key 5000/minute, credential per route
+family 120/minute) are node-local and eventually consistent, not precise global
+quotas. Only Cloudflare's trusted connecting IP is used; shared NAT users share
+that coarse limit. A credential is not proof of an official App installation.
+
+Persistent request buckets are charged only after ownership/sending authentication
+(or the new-registration exception). Sending and management credential buckets
+are separate. Existing per-minute/hour and capacity restrictions remain in place.
+New-device registration first checks existing ownership, then fixed global budgets,
+then IP admission and capacity; arbitrary new registration is therefore not free.
+
+Conservative configurable defaults, per UTC day:
+
+| Admission | Default | HTTP 429 error |
+| --- | ---: | --- |
+| New device, service-wide | 200 | `registration_daily_limit` |
+| New pair, per device | 40 | `pair_creation_daily_limit` |
+| Claim, per verified pair | 20 | `claim_daily_limit` |
+| Notification processing, per pair | 500 | `notification_pair_daily_limit` |
+| Notification processing, per device (including tests) | 1000 | `notification_device_daily_limit` |
+| Notification processing, service-wide | 5000 | `notification_global_daily_limit` |
+
+Notification budgets count **valid processing admission attempts**, not unique
+messages, delivery receipts or billable units. After authorization, active/policy,
+envelope and payload validation, existing identical terminal events, live leases
+and retries that are not due return their current state without a daily charge.
+Different content under the same ID remains HTTP 409. Other eligible requests
+charge global → device → pair daily buckets once each, before insertion, lease,
+attempt increment or APNs. Each is an atomic D1 conditional counter; these layers
+are not one all-or-nothing transaction. Earlier charges remain consumed when a
+later bucket rejects, a competing lease wins, or service work fails. Each admitted
+request can attempt APNs at most once; the five-attempt event ceiling remains.
+Owned registration, pair creation and completed-claim retries skip their new
+admission budgets, while ordinary request protection still applies.
+
+Errors use the existing `{ "error": "CODE" }` envelope. Daily budget rejection
+includes positive integer `Retry-After` seconds to the next UTC day (1–86400).
+`rate_limited` retains the persistent bucket's remaining window. Native
+`preflight_rate_limited` returns 429 with a conservative 60 seconds, not an exact
+global recovery time. Missing/failing native bindings return 503
+`rate_limit_unavailable`; invalid budget configuration returns 503
+`budget_configuration_invalid`; both return 60 seconds. Existing APNs 429/503
+state/error responses retain their meaning. Daily sending exhaustion does not
+consume the management credential budget or prohibit policy disable/revoke,
+device reads or token updates; those retain separate ordinary abuse protection.
+Global exhaustion temporarily affects every user's new notifications.
+
+The CLI preserves one initial POST plus at most one retry, a four-second HTTP
+timeout and the command's ten-second context. A next-day Retry-After exits promptly
+without a second POST; it never rotates event ID/nonce/ciphertext to evade a quota.
+The 512-entry replay cache is not a daemon, spool or scheduled retry queue. App
+clients do not automatically poll or re-pair on 429. Old App versions show a generic
+failure with the new API; old CLI versions already exit within their command
+budget. New clients retain generic fallback for older API errors. No encryption,
+AAD, target, APNs payload or credential authority changes require simultaneous
+upgrades. API/APNs acceptance still does not establish phone delivery/navigation.
