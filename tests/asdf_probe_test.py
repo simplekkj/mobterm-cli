@@ -97,7 +97,8 @@ def main():
     (project / '.tool-versions').write_text('nodejs project\n')
     (home / '.claude').mkdir()
     settings = home / '.claude/settings.json'
-    settings.write_text('{"env":{"USER_SETTING":"keep"},"hooks":{}}\n')
+    settings.write_text(json.dumps({'env': {'USER_SETTING': 'keep'}, 'hooks': {
+        'Stop': [{'hooks': [{'type': 'command', 'command': 'true'}]}]}}) + '\n')
     sentinel = home / '.claude.json'
     sentinel.write_text('{"numStartups":3}\n')
     run([binary, 'status', '--installation-json'])
@@ -159,6 +160,8 @@ def main():
                 for action in ('uninstall', 'uninstall'):
                     run([binary, 'hooks', action, '--agent', 'claude', '--json'], cwd=cwd)
                 assert json.loads(settings.read_bytes()) == original_settings
+                (config_home / '.claude/settings.json').write_bytes(settings.read_bytes())
+                run(['claude', 'mcp', 'list'], cwd=config_home, process_env=config_env)
                 snapshots[settings] = settings.read_bytes()  # Installer may preserve values with new formatting.
                 for p, before in snapshots.items():
                     assert p.read_bytes() == before, 'Lifecycle changed unrelated config'
