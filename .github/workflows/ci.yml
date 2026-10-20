@@ -209,3 +209,29 @@ jobs:
         run: |
           python3 tests/asdf_probe_test.py --binary ./mobterm-cli \
             --work-dir "$RUNNER_TEMP/mobterm-asdf-probe"
+
+      - name: Native OpenCode and Pi adapter contracts
+        run: node scripts/test-native-adapters.mjs
+      - name: Install official TUI compatibility endpoints
+        env:
+          HOME: ${{ runner.temp }}/mobterm-native-home
+          PI_CODING_AGENT_DIR: ${{ runner.temp }}/mobterm-native-home/pi
+          PI_OFFLINE: '1'
+          PI_SKIP_VERSION_CHECK: '1'
+          OPENCODE_DISABLE_AUTOUPDATE: '1'
+        run: |
+          mkdir -p "$HOME" "$PI_CODING_AGENT_DIR"
+          npm install --prefix "$RUNNER_TEMP/mobterm-native-hosts" --no-audit --no-fund \
+            "@opencode/cli@$OPENCODE_TEST_VERSION" "@earendil-works/pi-coding-agent@$PI_TEST_VERSION" \
+            "@earendil-works/chord@$PI_TEST_VERSION" "@earendil-works/pi-agent-core@$PI_TEST_VERSION" \
+            "@earendil-works/pi-ai@$PI_TEST_VERSION" "@earendil-works/pi-codemode@$PI_TEST_VERSION" \
+            "@earendil-works/pi-mcp@$PI_TEST_VERSION" "@earendil-works/pi-tui@$PI_TEST_VERSION"
+      - name: Load generated adapters in official hosts without model credentials
+        run: |
+          python3 scripts/test-native-adapters-host.py opencode \
+            "$RUNNER_TEMP/mobterm-native-hosts/node_modules/.bin/opencode" \
+            ./mobterm-cli "$OPENCODE_TEST_VERSION"
+          python3 scripts/test-native-adapters-host.py pi \
+            "$RUNNER_TEMP/mobterm-native-hosts/node_modules/.bin/pi" \
+            ./mobterm-cli "$PI_TEST_VERSION" \
+            "$RUNNER_TEMP/mobterm-native-hosts/node_modules/@earendil-works/pi-coding-agent"

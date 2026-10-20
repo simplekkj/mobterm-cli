@@ -10,6 +10,8 @@ passing the gate is **not** a claim that its event contract has been tested.
 | --- | --- | --- | --- |
 | Codex | 0.100.0 | 0.162.1 | 0.163.0 |
 | Claude Code | 2.0.36 | 2.1.282 | 2.1.301 |
+| OpenCode | 2.0.0 | — | 2.1.0 (2026-10-20) |
+| Pi coding-agent | 1.1.0 | — | 1.3.0 (2026-10-20) |
 
 The pinned test samples live in `testdata/compatibility-samples.json`. Go tests
 check minimum/current against the production descriptor in `compatibility.go` and
@@ -17,7 +19,8 @@ this document; CI reads that manifest. Change these together when intentionally
 changing the minimum or recording a new validation reference. No CLI release is
 needed merely to unlock a higher stable Agent version using the same contract.
 
-Only whole official output forms `codex-cli X.Y.Z` and `X.Y.Z (Claude Code)` are
+Only whole official output forms `codex-cli X.Y.Z`, `X.Y.Z (Claude Code)`,
+`opencode vX.Y.Z`, and Pi plain `X.Y.Z` are
 recognized. Outer whitespace, an optional `v` immediately before the number and
 SemVer build metadata (`+build.7`) are accepted. Components are unsigned 64-bit
 integers with no leading zeros. Build metadata has nonempty ASCII alphanumeric /
@@ -26,7 +29,7 @@ hyphen dot-separated identifiers and does not affect comparison. Prereleases
 multiple versions and unknown forms fail safely. Probe output is bounded by the
 2 MiB command limit and by 100 bytes in status. Each Agent probe has the same
 five-second budget, bounded by the calling context, with bounded pipe cleanup.
-Status probes the two independent Agents concurrently to retain time for pair
+Status probes the four independent Agents concurrently to retain time for pair
 readback within the command's ten-second context; deadline failures are reported
 as `probe_timeout` without exposing command output.
 This accommodates older JavaScript CLI startup (Claude 2.0.36 measured 1.4–1.5
@@ -248,3 +251,58 @@ Both pinned Herdr release binaries were exercised against real isolated local
 servers: raw `session.snapshot` target verification succeeded and stopped-server
 verification failed. This proves the actual socket request/response contract,
 not an iPhone/SSH/APNs or controller-control integration.
+
+## OpenCode / Pi TUI adapters (2026-10-20)
+
+OpenCode 2.0.0 (`63f7ceecbed2d7d9a627518d935dd963b9d4ac9f`) and 2.1.0
+(`60c68d145a14127ce633e26aa5fdfb882a7baa6d`) provide the formal
+[`@opencode/plugin/tui` context](https://github.com/anomalyco/opencode/blob/63f7ceecbed2d7d9a627518d935dd963b9d4ac9f/packages/plugin/src/tui/context.ts).
+The global `cli.json` plugin reference loads only its `./tui` export. The generated
+package has no server entrypoint or floating dependency. Existing JSONC comments,
+trailing commas, plugin ordering and unrelated settings remain intact.
+
+Only `session.execution.succeeded` from the current visible root is completion.
+A readable parent chain and the host root/family must agree. Child completion,
+failed/interrupted execution, unknown/global owners and background roots are
+ignored. `permission.asked` / `form.created` require the exact request to remain
+in the official pending list in the same root family and location. Unavailable
+pending data is skipped, not inferred from text or a timer. Reply/cancel events,
+route changes and lifecycle generations invalidate queued work. No internal tab
+is automatically selected. Two actual TUI instances showing the same root may
+notify their own terminals; native event IDs and bounded per-TUI memory survive
+hot reload without becoming cross-TUI ownership.
+
+Pi means the official `@earendil-works/pi-coding-agent` package in
+[earendil-works/pi](https://github.com/earendil-works/pi). Minimum 1.1.0
+(`abe508e1b89912adde45528136c3221eb69acdd7`) adds explicit settled cancellation;
+current reference 1.3.0 (`71023aec1546d6d677a65669c5665c0927ce0dd0`).
+The extension uses host-resolved `VERSION`, `ctx.mode === "tui"`,
+`sessionManager.getSessionId()`, observed `agent_start` and final `agent_settled`.
+Only explicit `aborted:false` completes. Retry/compaction/continuation intermediate
+end events are not subscribed. Session switch/reload/shutdown invalidates pending
+associations; a half-turn after reload produces no historical notification.
+`needs_input:false` is intentional: public prompt start/end events have no stable
+request ID or reliable active-request query. `hasUI` alone is insufficient because
+RPC can have UI. Fork/resume parent history is not treated as a background agent.
+A non-aborted settled can follow a final error: the message means a turn ended,
+not that the user's task succeeded.
+
+OpenCode/Pi version probes resolve launcher/Node/asdf in the original environment
+first, then isolate HOME/cwd/XDG config/data/cache/state and TMPDIR. OpenCode
+variables and OTEL overrides are removed in the child; updates are disabled.
+Pi gets an isolated `PI_CODING_AGENT_DIR`, offline/version-check flags and no
+`PI_MANAGED_INSTALL_ROOT`; `PI_PACKAGE_DIR` selection is preserved. Actual install
+paths use the caller environment, never this probe directory. Pi's output must
+be plain `X.Y.Z`, OpenCode's `opencode vX.Y.Z`; neither permits an extra `v` or
+runtime suffix. SemVer build metadata is accepted; pre-release versions are not.
+
+The bridge uses a recorded absolute executable, argv and bounded stdin, one child
+plus at most eight queued jobs, a ten-second deadline and lifecycle cleanup.
+Errors show at most one generic local diagnostic per extension lifetime, with
+stdout/stderr suppressed. New-source CLI failures return nonzero to this child
+bridge; Codex/Claude notifier exit behavior is unchanged. No user model/API
+credentials, message content or original events enter the adapter payload.
+Generated assets and exact config references have local fingerprint ownership;
+interrupted transactions retain a retryable journal and never restore an entire
+user config as rollback. Edited/unowned files and symlinks are refused. Uninstall
+uses the saved root and remains available without the Agent on PATH.

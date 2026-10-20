@@ -33,8 +33,10 @@ type agentCompatibility struct {
 }
 
 var agentCompatibilities = map[string]agentCompatibility{
-	"codex":  {stableVersion{0, 100, 0}, "0.163.0", "codex-cli ", ""},
-	"claude": {stableVersion{2, 0, 36}, "2.1.301", "", " (Claude Code)"},
+	"codex":    {stableVersion{0, 100, 0}, "0.163.0", "codex-cli ", ""},
+	"claude":   {stableVersion{2, 0, 36}, "2.1.301", "", " (Claude Code)"},
+	"opencode": {stableVersion{2, 0, 0}, "2.1.0", "opencode v", ""},
+	"pi":       {stableVersion{1, 1, 0}, "1.3.0", "", ""},
 }
 
 // Match a whole official version token. An optional v and SemVer build metadata
@@ -47,6 +49,9 @@ func (p agentCompatibility) evaluate(output string) string {
 		return "unknown_output"
 	}
 	token := strings.TrimSuffix(strings.TrimPrefix(output, p.prefix), p.suffix)
+	if (p.prefix == "opencode v" || (p.prefix == "" && p.suffix == "")) && strings.HasPrefix(token, "v") {
+		return "unknown_output"
+	}
 	m := agentVersionToken.FindStringSubmatch(token)
 	if m == nil {
 		return "unknown_output"
@@ -115,7 +120,21 @@ func agentVersionOutput(ctx context.Context, agent string) ([]byte, error) {
 	}
 	defer os.RemoveAll(dir)
 	c.Dir = dir
-	c.Env = append(c.Environ(), "PATH="+launch.path, "HOME="+dir, "CODEX_HOME="+filepath.Join(dir, "codex"),
+	env := c.Environ()
+	if agent == "opencode" || agent == "pi" {
+		filtered := make([]string, 0, len(env))
+		for _, entry := range env {
+			key, _, _ := strings.Cut(entry, "=")
+			if strings.HasPrefix(key, "OPENCODE_") || strings.HasPrefix(key, "OTEL_") || key == "PI_MANAGED_INSTALL_ROOT" {
+				continue
+			}
+			filtered = append(filtered, entry)
+		}
+		env = append(filtered, "NO_COLOR=1", "OPENCODE_CONFIG_DIR="+filepath.Join(dir, "opencode"), "OPENCODE_DISABLE_AUTOUPDATE=1",
+			"XDG_DATA_HOME="+filepath.Join(dir, "data"), "XDG_CACHE_HOME="+filepath.Join(dir, "cache"), "XDG_STATE_HOME="+filepath.Join(dir, "state"), "TMPDIR="+dir,
+			"PI_CODING_AGENT_DIR="+filepath.Join(dir, "pi"), "PI_OFFLINE=1", "PI_SKIP_VERSION_CHECK=1")
+	}
+	c.Env = append(env, "PATH="+launch.path, "HOME="+dir, "CODEX_HOME="+filepath.Join(dir, "codex"),
 		"CLAUDE_CONFIG_DIR="+filepath.Join(dir, "claude"), "XDG_CONFIG_HOME="+filepath.Join(dir, "config"),
 		"DISABLE_UPDATES=1", "DISABLE_AUTOUPDATER=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1")
 	return probeCommand(c, &budget)
@@ -126,7 +145,7 @@ func hookVersions(ctx context.Context, agent string) error {
 	if probe.reason != "" {
 		p, ok := agentCompatibilities[agent]
 		if !ok {
-			return fmt.Errorf("agent must be codex or claude")
+			return fmt.Errorf("agent must be codex, claude, opencode or pi")
 		}
 		return fmt.Errorf("%s requires stable >=%s: %s; hook configuration unchanged", agent, p.minimum, probe.reason)
 	}

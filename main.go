@@ -38,17 +38,21 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 		agent string
 		probe agentProbe
 	}
-	probes := make(chan probeResult, 2)
-	for _, agent := range []string{"codex", "claude"} {
+	capabilities := result["capabilities"].(map[string]any)
+	capabilities["opencode"] = map[string]any{"turn_completed": "session.execution.succeeded: visible root only", "needs_input": []string{"permission.asked", "form.created"}, "managed_hooks": true, "adapter_revision": 1}
+	capabilities["pi"] = map[string]any{"turn_completed": "agent_settled: aborted=false in TUI", "needs_input": false, "reason": "No authoritative pending human-request API", "managed_hooks": true, "adapter_revision": 1}
+	probes := make(chan probeResult, 4)
+	for _, agent := range []string{"codex", "claude", "opencode", "pi"} {
 		go func(agent string) { probes <- probeResult{agent, probeAgent(ctx, agent)} }(agent)
 	}
-	for range 2 {
+	for range 4 {
 		completed := <-probes
 		agent, probe := completed.agent, completed.probe
 		capability := result["capabilities"].(map[string]any)[agent].(map[string]any)
 		policy := agentCompatibilities[agent]
 		capability["version"] = policy.reference
 		capability["version_role"] = "validation_reference"
+		capability["validation_reference"] = policy.reference
 		capability["minimum_version"] = policy.minimum.String()
 		capability["supported_range"] = ">=" + policy.minimum.String() + " stable"
 		capability["installed"] = probe.installed
@@ -65,6 +69,9 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 			b, e := secureRead(r.Path, 2*1024*1024)
 			installed[agent] = e == nil && strings.Contains(string(b), r.Managed)
 		}
+	}
+	for _, agent := range []string{"opencode", "pi"} {
+		installed[agent] = nativeHooksInstalled(s, agent)
 	}
 	result["hooks"] = installed
 	pairs, err := s.pairs()
@@ -120,7 +127,7 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 }
 func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "mobterm-cli setup --stdin-frame | hooks install|uninstall --agent codex|claude | notify --source codex|claude | test --pair ID --json | status --json [--pair ID] | status --installation-json | target verify --stdin-frame | upgrade --version vX.Y.Z | version")
+		fmt.Fprintln(out, "mobterm-cli setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | target verify --stdin-frame | upgrade --version vX.Y.Z | version")
 		return 0
 	}
 	if args[0] == "version" || args[0] == "--version" {
@@ -203,7 +210,11 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 			break
 		}
 		err = changeHooks(ctx, s, agent, args[1], "", executable, true)
-		value = map[string]any{"v": 1, "agent": agent, "action": args[1], "ok": err == nil}
+		receipt := map[string]any{"v": 1, "agent": agent, "action": args[1], "ok": err == nil}
+		if err == nil && args[1] == "install" && (agent == "opencode" || agent == "pi") {
+			receipt["activation"] = "restart_required"
+		}
+		value = receipt
 	case "notify":
 		var source string
 		var chain bool
@@ -216,7 +227,7 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 			err = e
 		} else if source == "codex" && f.NArg() == 1 {
 			payload = []byte(f.Arg(0))
-		} else if source == "claude" && f.NArg() == 0 {
+		} else if (source == "claude" || source == "opencode" || source == "pi") && f.NArg() == 0 {
 			payload, err = readHook(in)
 		} else {
 			err = errors.New("invalid hook invocation")
@@ -226,6 +237,9 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		}
 		if err != nil {
 			fmt.Fprintln(diagnostic, "mobterm-cli: notification unavailable (agent continues)")
+			if source == "opencode" || source == "pi" {
+				return 1
+			}
 		}
 		if chain && source == "codex" && len(payload) > 0 {
 			return runNotifyChain(s, string(payload))

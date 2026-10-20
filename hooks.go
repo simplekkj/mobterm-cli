@@ -46,6 +46,9 @@ func configPath(agent string) (string, error) {
 	return "", errors.New("agent must be codex or claude")
 }
 func changeHooks(ctx context.Context, s Store, agent, action, path, executable string, checkVersion bool) error {
+	if agent == "opencode" || agent == "pi" {
+		return changeNativeHooks(ctx, s, agent, action, path, executable, checkVersion)
+	}
 	if agent != "codex" && agent != "claude" {
 		return errors.New("agent must be codex or claude")
 	}

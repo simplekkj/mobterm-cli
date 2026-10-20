@@ -563,3 +563,94 @@ Sanitized local evidence is under `/tmp/mobterm-r1-evidence/`: `cli-test.log`,
 are local evidence, not committed artifacts or hosted CI results. No packaging,
 release, deployment, remote D1, WAF, Secrets or live APNs operation was performed
 for this round. Earlier records above describe separate tasks.
+
+## 2026-10-20 — OpenCode/Pi, round 1 v1.0 (WF-1.0)
+
+First implementation; delivery awaits one external static review. CLI analysis
+and start SHA: `4d61af34b59ca0d090a3d12887a25d17ee9ce6a7`. App was checked at
+`3f77ce3f34d6fbb7cd6b320d3c4048d6c9717061` (its prior pairing fix is retained).
+API remains unchanged at `64170845c1c08b9f0ef369771fe2ff7773e256c7`.
+Final commits and exact task ranges are recorded in the
+[shared handoff](https://app.notion.com/p/3ffcede2082381eeaae8c70fb0befd2b).
+
+Environment: local macOS Intel, Go 1.27.1, Node 22.22.2, real local tmux available.
+Test CLI was built from this working tree with `go build -trimpath`; its default
+version is `dev`, commit `unknown`, and it was used only in disposable local
+HOME/config/package-prefix directories. Packaging used `v0.0.0`, never a release.
+No user remote host, real model, production API/D1 or APNs credential was used.
+
+Executed checks:
+
+- `test -z "$(gofmt -l .)"`, `go vet ./...`, `git diff --check`: PASS.
+- `go test -count=1 ./...`: PASS (206.037s), including real local tmux,
+  original golden vector, legacy source semantics/ownership, native metadata,
+  version isolation, native asset transactions and encrypted retry/terminal scope.
+- `go test -race -count=1 ./...`: PASS (146.319s). Earlier full/race attempts
+  hit the unchanged five-second asdf fixture preflight timeout during very high
+  local load; the final runs pass without relaxing the production or test timeout.
+- `node scripts/test-native-adapters.mjs`: PASS; controlled host API fixtures
+  execute generated adapter logic, not authenticated model events. Covers root /
+  child / unknown / orphan ownership, pending and resolved requests, route changes,
+  reload and two TUI instances, Pi settled/cancel/session/mode boundaries, bounded
+  queue and cleanup. Only whitelisted metadata reaches the recorder.
+- `scripts/test-native-adapters-host.py` with each actual official endpoint:
+  OpenCode 2.0.0 and 2.1.0 PASS actual TUI setup + restart (nine listeners,
+  `channel:latest`); Pi 1.1.0 and 1.3.0 PASS official discovery/TS imports/registration
+  and actual TUI `session_start` (`mode:tui`, four listeners). A temporary wrapper
+  observes registration around the unmodified generated adapter; this does not
+  prove real `succeeded`, permission/form or `agent_settled` model activity.
+- `python3 scripts/package.py --version v0.0.0 --commit "$(git rev-parse HEAD)"`:
+  PASS all Linux/macOS amd64/arm64 single-binary archives and checksums. Assets
+  are embedded with Go `embed`; no installed sibling source tree is required.
+- `python3 tests/install_test.py --dist dist --commit "$(git rev-parse HEAD)"`:
+  PASS 25 tests (229.499s), including native packaged binary version smoke test.
+- API read-only: `npm run typecheck`,
+  `node --test --test-timeout=120000 --test-concurrency=1 tests/protocol.test.mjs`:
+  PASS (two protocol tests). Original Go/API golden vectors remain identical.
+  Additionally actual new-source CLI `notify` requests to a local test receiver
+  were passed to unchanged API `envelope` / `apnsPayload`, then decrypted using
+  the existing `mobterm/1` AAD: both OpenCode/Pi PASS. This is local acceptance
+  and cryptographic compatibility, not a real APNs or phone observation.
+- CI compatibility's existing three endpoint jobs now install and load both new
+  sources; native eight-runner historical Codex/Claude matrix stays unchanged.
+  YAML parsed with Ruby's YAML parser. See exact final CI links in the handoff;
+  local checks do not imply every hosted runner already passed.
+
+Official host assets used:
+
+- OpenCode 2.0.0: npm `@opencode/cli-darwin-x64-baseline@2.0.0`,
+  [registry tarball](https://registry.npmjs.org/@opencode/cli-darwin-x64-baseline/-/cli-darwin-x64-baseline-2.0.0.tgz),
+  registry integrity `sha512-X7+LzkxWQpwmY1wJz8OPnOVGNI9NjlYZIyiGM/WN6I4x88clrcGT4q++2U0M1frYLXuoEjlIPZ/RE9r8sAv1Vw==`.
+- OpenCode 2.1.0: [official Intel archive](https://opencode.ai/files/bin/2.1.0/opencode-darwin-x64-baseline.zip),
+  SHA-256 `2dbdf0d21cd9691142e582125eb2c01b7e653facb584d412d3ffc3d972679beb`,
+  matched against the [fixed official tap](https://github.com/anomalyco/homebrew-tap/blob/6754df9897acc1a92eef20fcde2642eb09a9d38a/opencode-v2.rb).
+- Pi 1.1.0: [official package](https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.1.0.tgz),
+  registry integrity `sha512-SeEi/4hdcHNgA9UWlefZl7ZZpm3dzi2OoxNjDHsBJ9o298LNOtbL4DGKgitlEj6uCTccvtw6f2hlCkTPVJ2RXg==`.
+- Pi 1.3.0: [official package](https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.3.0.tgz),
+  registry integrity `sha512-V/WoCjA2hQSe3QLWIUB24cTRdtEdeLiIzkDqU5RMXV6VWuD+KGZnzVBMhglwdnQTySkehZsjt8a3g6Jd2g4nnw==`.
+
+Pi 1.1.0's published caret dependencies initially resolved newer same-repository
+packages and failed before extension loading (`MCP_TYPESCRIPT_PREAMBLE` import).
+The endpoint fixture pins coding-agent/chord/pi-agent-core/pi-ai/pi-codemode/pi-mcp/
+pi-tui together to 1.1.0; CI does the same for each endpoint. npm verified registry
+integrity; no project/user Agent installation was changed. The tested minimum
+fixture's telemetry dependency resolved 1.3.0. An initial cold OpenCode version
+probe timed out locally; subsequent original-budget probe and installation/TUI
+runs passed. No version-policy fallback or timeout widening was added.
+
+Not executed: paid/authenticated model-native completion/wait rounds, real iPhone
+notification display/tap, live APNs delivery, user SSH/Mosh/Herdr network end-to-end
+navigation. Existing local target and crypto tests are distinct evidence. Pi
+`needs_input:false` and OpenCode's visible-root-family-only scope are intentional.
+The latest official CLI Release checked during delivery is
+[v0.1.4](https://github.com/simplekkj/mobterm-cli/releases/tag/v0.1.4); it does not
+contain this task. Commit/push does not publish a Release, and the App updater
+can therefore still install a CLI without these new management capabilities.
+
+Final focused check after adapter-only cleanup:
+`go test -count=1 -run 'TestNative|TestCompatibilitySamplesMatchPolicy|TestStableAgentVersions' ./...`
+PASS (5.756s). Final controlled bridge cases additionally cover missing CLI spawn,
+8 KiB identity rejection and unknown/prerelease events. Source inspection resolved
+an event-order concern without introducing deferred work: both OpenCode endpoints
+pin `@solid-primitives/event-bus@1.1.2`; its global reducer dispatch occurs before
+typed plugin handlers, so the official pending stores are updated first.

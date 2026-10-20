@@ -28,6 +28,9 @@ func parseEvent(ctx context.Context, s Store, source string, payload []byte) (ki
 	if len(payload) > 1024*1024 {
 		return "", "", errors.New("hook input limit exceeded")
 	}
+	if source == "opencode" || source == "pi" {
+		return parseNativeEvent(source, payload)
+	}
 	var p hookInput
 	if json.Unmarshal(payload, &p) != nil {
 		return "", "", errors.New("invalid hook JSON")
@@ -153,8 +156,10 @@ func notify(ctx context.Context, s Store, a API, source string, payload []byte, 
 	}
 	kind, identity := "test", randomID()
 	if !test {
-		if err = hookVersions(ctx, source); err != nil {
-			return nil, err
+		if source != "opencode" && source != "pi" {
+			if err = hookVersions(ctx, source); err != nil {
+				return nil, err
+			}
 		}
 		kind, identity, err = parseEvent(ctx, s, source, payload)
 		if err != nil {
@@ -170,6 +175,9 @@ func notify(ctx context.Context, s Store, a API, source string, payload []byte, 
 		if err != nil {
 			return nil, err
 		}
+	}
+	if !test && (source == "opencode" || source == "pi") {
+		identity = nativeTargetIdentity(identity, l)
 	}
 	pairs, err := s.pairs()
 	if err != nil {

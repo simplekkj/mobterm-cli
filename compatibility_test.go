@@ -48,6 +48,9 @@ func TestCompatibilitySamplesMatchPolicy(t *testing.T) {
 		}
 		for _, group := range []string{"minimum", "historical", "current"} {
 			v := samples[group][agent]
+			if v == "" && group == "historical" {
+				continue
+			}
 			if policy.evaluate(agentOutput(agent, v)) != "" || !strings.Contains(string(doc), v) {
 				t.Fatalf("missing/unsupported documented %s/%s sample", group, agent)
 			}
@@ -58,12 +61,15 @@ func TestCompatibilitySamplesMatchPolicy(t *testing.T) {
 func TestStableAgentVersions(t *testing.T) {
 	for agent, p := range agentCompatibilities {
 		t.Run(agent, func(t *testing.T) {
-			below := map[string]string{"codex": "0.99.0", "claude": "2.0.35"}[agent]
-			middle := map[string]string{"codex": "0.120.0", "claude": "2.1.10"}[agent]
-			for _, token := range []string{p.minimum.String(), middle, p.reference, "99.10.10", "v" + p.minimum.String(), p.minimum.String() + "+build.7"} {
+			below := map[string]string{"codex": "0.99.0", "claude": "2.0.35", "opencode": "1.99.0", "pi": "1.0.99"}[agent]
+			middle := map[string]string{"codex": "0.120.0", "claude": "2.1.10", "opencode": "2.0.1", "pi": "1.2.0"}[agent]
+			for _, token := range []string{p.minimum.String(), middle, p.reference, "99.10.10", p.minimum.String() + "+build.7"} {
 				if got := p.evaluate(" \t" + agentOutput(agent, token) + "\r\n"); got != "" {
 					t.Fatalf("stable %q refused: %s", token, got)
 				}
+			}
+			if (agent == "codex" || agent == "claude") && p.evaluate(agentOutput(agent, "v"+p.minimum.String())) != "" {
+				t.Fatal("legacy optional v refused")
 			}
 			if p.evaluate(agentOutput(agent, below)) != "below_minimum" {
 				t.Fatal("lower boundary accepted")
@@ -79,6 +85,9 @@ func TestStableAgentVersions(t *testing.T) {
 				}
 			}
 			for _, output := range []string{"banner\n" + agentOutput(agent, p.reference), agentOutput(agent, p.reference) + "\nbanner", p.reference, "codex-cli 99.0.0\n2.1.301 (Claude Code)", strings.Repeat("x", 101)} {
+				if agent == "pi" && output == p.reference {
+					continue
+				}
 				if p.evaluate(output) == "" {
 					t.Fatalf("ambiguous output accepted: %q", output)
 				}

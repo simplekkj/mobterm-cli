@@ -34,7 +34,7 @@ it does not prove pairing succeeded. The App separately confirms API state and
 can abandon/revoke only its own pending attempt via device management.
 
 `status --json` adds Agent compatibility diagnostics under `capabilities.codex`
-and `capabilities.claude`: `minimum_version`, `supported_range`, and (on refusal)
+and `capabilities.claude`, plus `capabilities.opencode` and `capabilities.pi`: `minimum_version`, `supported_range`, and (on refusal)
 `version_rejection`. `supported` is the shared stable/minimum policy decision,
 not proof of native-event or phone delivery. `version` is a validation reference,
 identified by `version_role: "validation_reference"`; it is not a version gate.
@@ -44,6 +44,16 @@ not change v1 installation/pair fields or their types. Installation-only status
 does not probe Agents. Consumers may ignore added fields; no App/API upgrade,
 data migration or credential/config format change is required. An older CLI still
 reads the same state and restores its old exact Agent gate on rollback.
+
+New sources also report `managed_hooks:true`, `adapter_revision:1`, and
+`validation_reference`. Management support is independent of `supported`:
+uninstall works without a supported runtime. Existing `hooks` values remain
+booleans describing disk ownership, never live activation. Hook receipts retain
+`v/agent/action/ok`; new-source successful install adds
+`activation:"restart_required"`. An old App can consume new-source v1 events
+without knowing the source. A new App facing an old CLI refuses only unsupported
+new management actions and asks for a CLI update. Public envelope fields, AAD,
+locator types, policies and token generations are unchanged.
 
 ## Encrypted events
 
@@ -171,6 +181,15 @@ repeated waits without another persistent occurrence store. HTTP retries within
 that invocation retain the identity and encrypted envelope; separately duplicated
 upstream calls cannot be distinguished and can duplicate alerts. This limitation
 is not hidden behind a time-window heuristic.
+
+For OpenCode/Pi only, identity hashes source + native event + session + event/round
+ID + TUI instance, then the locally captured verified locator. OpenCode uses its
+native event ID and per-TUI in-memory instance across hot reload. Pi uses a fresh
+random association per observed run and never fabricates completion after reload.
+Two TUI instances showing the same root can notify their own exact terminals.
+The local adapter stdin contains only revision, host runtime version, event,
+session/event/instance IDs and Pi aborted=false (maximum 4096 bytes); unknown
+fields or invalid metadata are refused. It is not a public REST schema.
 
 The local retry cache contains ciphertext and a locator digest, never hook content.
 Same pair/source identity keeps nonce, expiry and ciphertext identical across

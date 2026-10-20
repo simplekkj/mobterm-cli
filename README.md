@@ -109,7 +109,8 @@ stdin frame to `setup --stdin-frame`. Never paste the packet into shell argv,
 environment variables, a URL, terminal input, or a log. A packet contains secrets.
 
 Install hooks after checking the [version compatibility](docs/compatibility.md):
-Codex >=0.100.0 stable or Claude Code >=2.0.36 stable. `status --json` reports
+Codex >=0.100.0, Claude Code >=2.0.36, OpenCode >=2.0.0, or Pi coding-agent
+(`@earendil-works/pi-coding-agent`) >=1.1.0, stable releases only. `status --json` reports
 the detected version, minimum and refusal reason. Its `supported` flag means the
 version policy passes; it does not establish live notification delivery. Future
 stable versions have no mechanical upper limit but are not automatically verified.
@@ -117,6 +118,8 @@ stable versions have no mechanical upper limit but are not automatically verifie
 ```sh
 mobterm-cli hooks install --agent codex --json
 mobterm-cli hooks install --agent claude --json
+mobterm-cli hooks install --agent opencode --json
+mobterm-cli hooks install --agent pi --json
 mobterm-cli status --json
 mobterm-cli test --pair PAIR_ID --json
 ```
@@ -127,6 +130,27 @@ completion is the native delayed `idle_prompt`, never `Stop`. Hook installation
 does not change a user's Stop hooks or tool approval decisions. Herdr uses these
 same native Agent hooks, with an explicit structured terminal query. No second
 Herdr event forwarder is installed.
+
+OpenCode uses a TUI-only plugin: only successful completion of the currently
+visible root session and verified pending permission/form requests in its family
+are forwarded. Background tabs, child completion, failed/interrupted execution,
+and non-TUI frontends are excluded. Pi uses a TUI extension and forwards only
+final `agent_settled` with explicit `aborted:false` after an observed start.
+Pi does not support `needs_input`: its public API cannot reliably confirm an
+outstanding human request. Neither source reads prompt, responses or transcripts.
+
+Successful new-source installation returns `activation: restart_required`: files
+are configured, but the Agent must restart/reload. `hooks` booleans describe
+owned files/references matching on disk, not whether a running Agent loaded them.
+OpenCode uses `OPENCODE_CONFIG_DIR` or `(XDG_CONFIG_HOME or ~/.config)/opencode/cli.json`
+(JSONC preserved); Pi uses `PI_CODING_AGENT_DIR` (including leading `~`) or
+`~/.pi/agent/extensions`. No Agent/runtime is installed or upgraded. Uninstall
+uses recorded paths and works even after the Agent has been removed/downgraded.
+Changed roots or edited/foreign assets are refused instead of silently overwritten.
+Before rolling back to an older CLI, uninstall these new integrations with the
+new CLI if possible; old CLIs cannot manage them, but pairing and old hooks remain
+readable. The App updater installs the latest official Release, so unreleased
+source commits do not make these integrations available through that updater.
 
 `test` sends a clearly marked, encrypted test event without a terminal locator;
 it is usable over non-PTY SSH and does not jump to an arbitrary pane. Responses
@@ -158,9 +182,11 @@ Uninstall only removes this CLI's hook additions, retaining later user edits:
 ```sh
 mobterm-cli hooks uninstall --agent codex --json
 mobterm-cli hooks uninstall --agent claude --json
+mobterm-cli hooks uninstall --agent opencode --json
+mobterm-cli hooks uninstall --agent pi --json
 ```
 
-After both hook removals succeed, remove the installed executable if desired:
+After all installed hook removals succeed, remove the installed executable if desired:
 
 ```sh
 rm "$HOME/.local/bin/mobterm-cli"
