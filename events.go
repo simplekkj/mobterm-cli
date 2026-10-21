@@ -106,48 +106,14 @@ type cachedEnvelope struct {
 }
 
 func eventEnvelope(ctx context.Context, s Store, p Pair, kind, identity string, l Locator) (Envelope, error) {
-	unlock, err := s.lock(ctx)
+	d, err := enqueueDelivery(ctx, s, p, kind, identity, l, "")
 	if err != nil {
 		return Envelope{}, err
 	}
-	defer unlock()
-	cache := map[string]cachedEnvelope{}
-	err = s.readJSON("events.json", &cache)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return Envelope{}, err
+	if d.Envelope == nil {
+		return Envelope{}, errors.New("source_event_already_processed")
 	}
-	now := time.Now()
-	for k, v := range cache {
-		if v.Envelope.ExpiresAt+86400 <= now.Unix() {
-			delete(cache, k)
-		}
-	}
-	eventID := digest(identity + "\x00" + p.PairID)
-	cacheKey := p.PairID + ":" + eventID
-	plain, _ := json.Marshal(l)
-	hash := digest(string(plain))
-	if old, ok := cache[cacheKey]; ok {
-		if old.Envelope.ExpiresAt <= now.Unix() {
-			return Envelope{}, errors.New("source event expired; refusing to renew its notification")
-		}
-		if old.LocatorHash != hash || old.Envelope.Kind != kind {
-			return Envelope{}, errors.New("event identity target conflict")
-		}
-		return old.Envelope, nil
-	}
-	if len(cache) >= 512 {
-		return Envelope{}, errors.New("event retry cache full; wait for expiry")
-	}
-	key, err := decode64(p.EncryptionKey, 32)
-	if err != nil {
-		return Envelope{}, err
-	}
-	e, err := seal(key, Envelope{V: 1, PairID: p.PairID, EventID: eventID, Kind: kind, ExpiresAt: now.Add(time.Hour).Unix()}, l, nil)
-	if err != nil {
-		return e, err
-	}
-	cache[cacheKey] = cachedEnvelope{e, hash}
-	return e, s.writeJSON("events.json", cache)
+	return *d.Envelope, nil
 }
 func notify(ctx context.Context, s Store, a API, source string, payload []byte, pairID string, test bool) ([]map[string]any, error) {
 	id, err := s.installation()
@@ -176,7 +142,9 @@ func notify(ctx context.Context, s Store, a API, source string, payload []byte, 
 			return nil, err
 		}
 	}
+	nativeSource := ""
 	if !test && (source == "opencode" || source == "pi") {
+		nativeSource = identity
 		identity = nativeTargetIdentity(identity, l)
 	}
 	pairs, err := s.pairs()
@@ -184,34 +152,48 @@ func notify(ctx context.Context, s Store, a API, source string, payload []byte, 
 		return nil, err
 	}
 	var results []map[string]any
+	var pending []delivery
 	var lastErr error
+	// Finish durable fan-out to every eligible pair before performing any network IO.
 	for pid, p := range pairs {
 		if pairID != "" && pid != pairID {
 			continue
 		}
-		if p.InstallationID != id {
+		if p.InstallationID != id || p.Status != "active" {
 			continue
 		}
-		e, err := eventEnvelope(ctx, s, p, kind, identity, l)
-		if err != nil {
-			lastErr = err
+		d, e := enqueueDelivery(ctx, s, p, kind, identity, l, source, nativeSource)
+		if e != nil {
+			lastErr = e
+			results = append(results, map[string]any{"v": 1, "pair_id": pid, "state": "not_saved", "error": safeCode(e.Error())})
 			continue
 		}
-		v, err := a.send(ctx, p, e)
-		if v == nil {
-			v = map[string]any{"state": "retryable_failed", "error": "api_unavailable"}
+		if d.State == "pending" {
+			pending = append(pending, d)
+		} else {
+			results = append(results, deliveryResult(d))
 		}
-		v["v"] = 1
-		v["pair_id"] = pid
-		if err != nil {
-			lastErr = err
-			v["delivery"] = "failed"
+	}
+	for _, d := range pending {
+		if ctx.Err() != nil {
+			results = append(results, deliveryResult(d))
+			lastErr = ctx.Err()
+			continue
+		}
+		v, e := deliverOne(ctx, s, a, d)
+		if e != nil {
+			lastErr = e
 		}
 		results = append(results, v)
 	}
 	if len(results) == 0 && lastErr == nil {
-		lastErr = errors.New("no matching local pair")
+		lastErr = errors.New("no matching active local pair")
 	}
+	// New deliveries have priority. Old due work only consumes a remaining budget.
+	if deadline, ok := ctx.Deadline(); !test && ok && time.Until(deadline) > time.Second {
+		_, _ = flushOutbox(ctx, s, a, "", false)
+	}
+
 	return results, lastErr
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -203,13 +204,15 @@ func rootNotify(data []byte) (start, end int, argv []string, err error) {
 }
 func editCodex(data []byte, action, path, executable string, r HookRecord) ([]byte, HookRecord, error) {
 	if r.Managed != "" {
-		if bytes.Count(data, []byte(r.Managed)) == 1 {
+		_, _, actual, parseErr := rootNotify(data)
+		_, _, expected, recordErr := rootNotify([]byte(r.Managed))
+		if bytes.Count(data, []byte(r.Managed)) == 1 && parseErr == nil && recordErr == nil && reflect.DeepEqual(actual, expected) {
 			if action == "install" {
 				return data, r, nil
 			}
 			return bytes.Replace(data, []byte(r.Managed), []byte(r.Original), 1), r, nil
 		}
-		if action == "uninstall" || strings.Contains(string(data), "# mobterm-cli managed notify") {
+		if action == "uninstall" || strings.Contains(string(data), "# mobterm-cli managed notify") && !(action == "install" && parseErr == nil && len(actual) == 0) {
 			return nil, r, errors.New("managed notify was edited; config left unchanged")
 		}
 	}
@@ -225,10 +228,17 @@ func editCodex(data []byte, action, path, executable string, r HookRecord) ([]by
 			return nil, r, errors.New("refusing recursive notify wrapper")
 		}
 	}
+	if r.Managed != "" {
+		if len(chain) > 0 {
+			return nil, r, errors.New("managed notify was replaced; config unchanged")
+		}
+		chain = r.Chain
+	}
 	args := []string{executable, "notify", "--source", "codex", "--mobterm-chain"}
 	encoded, _ := json.Marshal(args)
 	managed := "# mobterm-cli managed notify v1\nnotify = " + string(encoded) + "\n# end mobterm-cli managed notify\n"
-	r = HookRecord{Agent: "codex", Path: path, Managed: managed, Chain: chain}
+	original := r.Original
+	r = HookRecord{Agent: "codex", Path: path, Managed: managed, Chain: chain, Original: original}
 	if start >= 0 {
 		r.Original = string(data[start:end])
 		return append(append(append([]byte{}, data[:start]...), managed...), data[end:]...), r, nil
@@ -272,6 +282,21 @@ func editClaude(data []byte, action, path, executable string, r HookRecord) ([]b
 	events := []struct{ name, matcher string }{
 		{"UserPromptSubmit", ""},
 		{"Notification", "^(permission_prompt|elicitation_dialog|idle_prompt)$"},
+	}
+	if r.Managed != "" {
+		for event, entries := range hooks {
+			for _, entry := range entries {
+				var cmds []map[string]json.RawMessage
+				_ = json.Unmarshal(entry["hooks"], &cmds)
+				for _, cmd := range cmds {
+					var text string
+					_ = json.Unmarshal(cmd["command"], &text)
+					if text == command && (event != "UserPromptSubmit" && event != "Notification") || text != command && looksManagedClaude(text, command) {
+						return nil, r, errors.New("managed Claude command was moved or modified; config unchanged")
+					}
+				}
+			}
+		}
 	}
 	owned := make(map[string]string, len(r.ClaudeOwned))
 	for event, entry := range r.ClaudeOwned {
@@ -338,7 +363,17 @@ func editClaude(data []byte, action, path, executable string, r HookRecord) ([]b
 			}
 			out = append(out, entry)
 		}
-		if expected != nil && ownedMatches == 0 {
+		if expected != nil && ownedMatches == 0 && action == "install" {
+			for _, entry := range entries {
+				var actualMatcher, wantMatcher string
+				_ = json.Unmarshal(entry["matcher"], &actualMatcher)
+				_ = json.Unmarshal(expected["matcher"], &wantMatcher)
+				if actualMatcher == wantMatcher {
+					return nil, r, errors.New("managed Claude entry may have been replaced; config unchanged")
+				}
+			}
+		}
+		if expected != nil && ownedMatches == 0 && action != "install" {
 			return nil, r, errors.New("managed Claude hook was edited or removed; config left unchanged")
 		}
 		if action == "install" && !found {

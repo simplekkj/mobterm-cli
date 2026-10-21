@@ -29,8 +29,12 @@ The phone rechecks its local pair and connection binding before opening a target
 
 Hook errors are quiet on stdout, sanitized on stderr, and return zero. An existing
 Codex notifier is invoked with its original argv/input and its own output/exit
-status preserved. Mobterm's network work has a ten-second overall deadline and
-at most two HTTP attempts. Interactive test/status expose failures instead of
+status preserved. Mobterm's work has a ten-second overall command budget and four-second HTTP
+timeouts. Each new delivery makes one immediate POST; later events or explicit
+flush can recover up to 32 due deliveries, with at most four requests at once.
+A delivery reserves at most 12 POST attempts across calls. Durable owner leases
+and exact-envelope reuse protect concurrent hook/flush operations. Per-event
+service handoff ends local POST recovery; receipt refresh only performs GETs. Interactive test/status expose failures instead of
 reporting a phone receipt. The original user notifier remains under the user's
 own timeout/exit semantics.
 
@@ -39,3 +43,12 @@ assets, not arbitrary mirrors or script URLs. SHA-256 verifies integrity against
 that same release. This is not an independent publisher signature. A compromised
 publisher account remains a supply-chain risk. macOS signing/notarization is not
 claimed.
+
+New tmux occupant proofs hash OS boot identity, pane PID and exact kernel process
+birth; no command line, environment or terminal content is collected. Resolve is
+restricted to the original tmux session, or Herdr namespace/socket incarnation.
+Missing/ambiguous/replaced identity never falls back to names or guessed panes.
+Optional Agent metadata stays inside authenticated ciphertext and outside target
+identity comparisons. Existing public envelope/AAD and credential separation
+remain unchanged. Local retired-pair summaries contain only digests, status and
+time, and never sending tokens or encryption keys.

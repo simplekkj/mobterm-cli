@@ -88,13 +88,14 @@ func claudeNotifyEnvironment(t *testing.T) {
 	dir := t.TempDir()
 	for name, script := range map[string]string{
 		"claude": "#!/bin/sh\n[ \"$1\" = --version ] || exit 1\nprintf '%s\\n' \"$FIXTURE_CLAUDE_VERSION\"\n",
-		"tmux":   "#!/bin/sh\n[ \"$1\" = -S ] && [ \"$2\" = /fixture/tmux.sock ] && [ \"$3\" = list-panes ] || exit 1\nprintf '%s\\t%s\\t%s\\t%s\\t%s\\n' /fixture/tmux.sock 123:456:789 '$1' '@2' '%3'\n",
+		"tmux":   "#!/bin/sh\n[ \"$1\" = -S ] && [ \"$2\" = /fixture/tmux.sock ] && [ \"$3\" = list-panes ] || exit 1\nprintf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' /fixture/tmux.sock 123:456:789 '$1' '@2' '%3' \"$FIXTURE_PANE_PID\"\n",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FIXTURE_PANE_PID", fmt.Sprint(os.Getpid()))
 	t.Setenv("FIXTURE_CLAUDE_VERSION", "2.1.282 (Claude Code)")
 	t.Setenv("TMUX", "/fixture/tmux.sock,123,0")
 	t.Setenv("TMUX_PANE", "%3")
@@ -132,7 +133,9 @@ func TestClaudeWaitNotifyEncryptedRetries(t *testing.T) {
 						printJSON(w, map[string]string{"state": "retryable_failed", "error": "apns_unavailable"})
 						return
 					}
-					printJSON(w, map[string]string{"state": "apns_accepted"})
+					var e Envelope
+					_ = json.Unmarshal(b, &e)
+					printJSON(w, map[string]string{"event_id": e.EventID, "state": "apns_accepted"})
 				}))
 				defer server.Close()
 				p := testPair(id, server.URL)
@@ -141,8 +144,23 @@ func TestClaudeWaitNotifyEncryptedRetries(t *testing.T) {
 				}
 				for i := 0; i < 2; i++ {
 					var out, diag bytes.Buffer
-					if code := run([]string{"notify", "--source", "claude"}, bytes.NewReader(claudeWaitPayload(notification)), &out, &diag); code != 0 || out.Len() != 0 || diag.Len() != 0 {
+					if code := run([]string{"notify", "--source", "claude"}, bytes.NewReader(claudeWaitPayload(notification)), &out, &diag); code != 0 || out.Len() != 0 || !strings.Contains(diag.String(), "agent continues") {
 						t.Fatalf("notification failed or produced output: exit=%d stdout=%d stderr=%d", code, out.Len(), diag.Len())
+					}
+					records, e := outboxRecords(context.Background(), s, "", false)
+					if e != nil {
+						t.Fatal(e)
+					}
+					for _, d := range records {
+						if d.State == "pending" {
+							_, e = updateDelivery(context.Background(), s, d.PairID, d.EventID, func(d *delivery) error { d.Next = 0; return nil })
+							if e != nil {
+								t.Fatal(e)
+							}
+						}
+					}
+					if _, e = flushOutbox(context.Background(), s, newAPI(), "", false); e != nil {
+						t.Fatal(e)
 					}
 				}
 				mu.Lock()
@@ -165,6 +183,7 @@ func TestClaudeWaitNotifyEncryptedRetries(t *testing.T) {
 					}
 					locator, err := openEnvelope(key, envelope, time.Now())
 					want := Locator{V: 1, InstallationID: id, Backend: "tmux", Namespace: "/fixture/tmux.sock", ServerIdentity: "123:456:789", WorkspaceID: "$1", ViewID: "@2", PaneID: "%3"}
+					want.OccupantID, _ = processIdentity(os.Getpid())
 					if err != nil || locator != want || envelope.Kind != "needs_input" {
 						t.Fatalf("encrypted wait target mismatch: %v", err)
 					}
@@ -224,7 +243,7 @@ func TestClaudeWaitRetainsVersionSessionAndTargetGuards(t *testing.T) {
 			}
 			var out, diag bytes.Buffer
 			code := run([]string{"notify", "--source", "claude"}, bytes.NewReader(payload), &out, &diag)
-			if code != 0 || out.Len() != 0 || diag.String() != "mobterm-cli: notification unavailable (agent continues)\n" {
+			if code != 0 || out.Len() != 0 || diag.String() != "mobterm-cli: notification unavailable (agent continues): request_failed\n" {
 				t.Fatal("guard failure changed silent, nonblocking hook contract")
 			}
 			if strings.Contains(diag.String(), "PRIVATE_") {
@@ -236,47 +255,44 @@ func TestClaudeWaitRetainsVersionSessionAndTargetGuards(t *testing.T) {
 
 func TestClaudeWaitEnvelopeCacheBounded(t *testing.T) {
 	s := testStore(t)
-	id, err := s.installation()
-	if err != nil {
-		t.Fatal(err)
-	}
+	id, _ := s.installation()
 	p := testPair(id, "https://api.invalid")
 	l := fixtureLocator()
 	l.InstallationID = id
-	cache := make(map[string]cachedEnvelope, 512)
-	for i := 0; i < 511; i++ {
-		cache[fmt.Sprintf("existing-%d", i)] = cachedEnvelope{Envelope: Envelope{ExpiresAt: time.Now().Add(time.Hour).Unix()}}
-	}
-	if err := s.writeJSON("events.json", cache); err != nil {
-		t.Fatal(err)
-	}
 	ctx := context.Background()
+	seedOutbox(t, s, p, 511, "pending", time.Now().Unix())
 	kind, identity, err := parseEvent(ctx, s, "claude", claudeWaitPayload("permission_prompt"))
-	if err != nil || kind != "needs_input" {
-		t.Fatalf("wait parsing failed: %v", err)
+	if err != nil {
+		t.Fatal(err)
 	}
 	e, err := eventEnvelope(ctx, s, p, kind, identity, l)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := eventEnvelope(ctx, s, p, kind, "next-wait", l); err == nil {
-		t.Fatal("cache grew beyond 512 events")
+	if _, err = eventEnvelope(ctx, s, p, kind, "next-wait", l); err == nil {
+		t.Fatal("cache grew beyond 512 pending events")
 	}
 	if retry, err := eventEnvelope(ctx, s, p, kind, identity, l); err != nil || retry != e {
 		t.Fatal("full cache stopped stable retry")
 	}
-	if err := s.readJSON("events.json", &cache); err != nil || len(cache) != 512 {
-		t.Fatalf("cache limit: size=%d err=%v", len(cache), err)
+	records, err := outboxRecords(ctx, s, "", false)
+	if err != nil || len(records) != 512 {
+		t.Fatal("pending capacity", len(records), err)
 	}
-	cache["existing-0"] = cachedEnvelope{Envelope: Envelope{ExpiresAt: time.Now().Unix() - 86401}}
-	if err := s.writeJSON("events.json", cache); err != nil {
+	for _, d := range records {
+		if d.EventID != e.EventID {
+			_, err = updateDelivery(ctx, s, d.PairID, d.EventID, func(d *delivery) error { d.Expires = time.Now().Unix() - 1; return nil })
+			break
+		}
+	}
+	if _, err = outboxRecords(ctx, s, "", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := eventEnvelope(ctx, s, p, kind, "next-wait", l); err != nil {
-		t.Fatalf("expired cache entry not reclaimed: %v", err)
+	if _, err = eventEnvelope(ctx, s, p, kind, "next-wait", l); err != nil {
+		t.Fatal("expired pending capacity not released", err)
 	}
-	cache = nil
-	if err := s.readJSON("events.json", &cache); err != nil || len(cache) != 512 {
-		t.Fatalf("cache grew during expiry cleanup: size=%d err=%v", len(cache), err)
+	summary, err := outboxSummary(ctx, s, "")
+	if err != nil || summary["pending"] != 512 || summary["terminated"] != 1 {
+		t.Fatal("lost tombstone or pending count", summary, err)
 	}
 }

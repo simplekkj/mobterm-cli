@@ -117,6 +117,9 @@ func (s Store) lock(ctx context.Context) (func(), error) {
 	return lockFile(ctx, filepath.Join(s.Dir, ".lock"))
 }
 func lockFile(ctx context.Context, path string) (func(), error) {
+	if ctx.Err() != nil {
+		return nil, errors.New("command_budget_exhausted")
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
 		return nil, err
@@ -191,18 +194,61 @@ func (s Store) savePair(ctx context.Context, p Pair) error {
 		return err
 	}
 	defer unlock()
+	return s.savePairLocked(p)
+}
+func (s Store) transitionPair(ctx context.Context, expected Pair, status string) error {
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	pairs, err := s.pairs()
+	if err != nil {
+		return err
+	}
+	if current, ok := pairs[expected.PairID]; !ok || current != expected {
+		return errors.New("pair_operation_superseded")
+	}
+	next := expected
+	next.Status = status
+	return s.savePairLocked(next)
+}
+func (s Store) savePairLocked(p Pair) error {
 	v, err := s.pairs()
 	if err != nil {
 		return err
 	}
+	var retired []retiredPair
+	if e := s.readJSON("pair-history.json", &retired); e != nil && !errors.Is(e, os.ErrNotExist) {
+		return e
+	}
+	for _, summary := range retired {
+		if summary.PairRef == digest(p.PairID) {
+			return errors.New("pair_retired_new_pair_required")
+		}
+	}
 	if old, ok := v[p.PairID]; ok && old.SetupPacket != p.SetupPacket {
 		return errors.New("pair identity conflict")
 	}
-	if len(v) >= 32 {
-		if _, ok := v[p.PairID]; !ok {
-			return errors.New("pair limit reached")
+	active, pending := 0, 0
+	for id, old := range v {
+		if id == p.PairID {
+			continue
+		}
+		if old.Status == "pending" || old.Status == "pending_review" {
+			pending++
+		} else {
+			active++
 		}
 	}
+	if p.Status == "pending" || p.Status == "pending_review" {
+		if pending >= 32 {
+			return errors.New("pending_pair_limit_reconcile_or_abandon")
+		}
+	} else if active >= 32 {
+		return errors.New("active_pair_limit")
+	}
+
 	v[p.PairID] = p
 	return s.writeJSON("pairs.json", v)
 }

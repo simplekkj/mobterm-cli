@@ -71,6 +71,12 @@ func parseNativeEvent(source string, payload []byte) (string, string, error) {
 }
 
 func nativeTargetIdentity(identity string, locator Locator) string {
+	// Movement is location metadata, not a new upstream occurrence.
+	locator.ViewID = ""
+	if locator.Backend == "herdr" {
+		locator.WorkspaceID = ""
+		locator.PaneID = ""
+	}
 	target, _ := json.Marshal(locator)
 	return digest(identity + "\x00" + string(target))
 }

@@ -258,3 +258,188 @@ failure with the new API; old CLI versions already exit within their command
 budget. New clients retain generic fallback for older API errors. No encryption,
 AAD, target, APNs payload or credential authority changes require simultaneous
 upgrades. API/APNs acceptance still does not establish phone delivery/navigation.
+
+## Reliability and strong target additions (round 1 v1.0, 2026-10-21)
+
+These additions preserve the v1 public envelope and exact AES-GCM AAD above.
+The plaintext remains a **top-level locator**, with optional `agent` restricted to
+`codex`, `claude`, `opencode`, `pi`. Missing agent means “Agent”. Display metadata
+is not a target identity field. Before `target verify` or `target resolve`, callers
+must encode only the locator field whitelist; never forward the decrypted agent
+field to the strict stdin decoder. The original golden vector is unchanged;
+[protocol-v1-extended.json](../testdata/protocol-v1-extended.json) adds agent and
+strong occupant fields using the same key/nonce/AAD convention.
+
+### SSH diagnostics and recovery
+
+`status --json [--pair ID]` adds `health`, `outbox` and
+`capabilities.target:{resolve:true,tmux_occupant:"tmux-proc-v1"}`. Each
+`health.<agent>` has `state`, `configuration_state`, `issues` (at most 12 fixed
+`code/event/capability` objects), `restart_required`, and `loaded:"unknown"`.
+States are `not_installed`, `unsupported`, `not_configured`, `complete`, `partial`,
+`modified`, `conflict`, `unknown`. Version and disk state are independent.
+`complete` proves disk entry/conditions only, never that an Agent loaded them or
+produced a real event. Old `hooks` remains its existing boolean ownership signal.
+Tests of notification delivery do not alter hook health.
+
+Codex parses root TOML notify argv, executable and preserved notifier chain;
+Claude checks both UserPromptSubmit and Notification commands, type, timeout 10,
+and the exact `^(permission_prompt|elicitation_dialog|idle_prompt)$` matcher.
+Missing owned entries may be restored by `hooks install`; moved, replaced,
+duplicated or edited entries are refused. OpenCode/Pi check effective roots,
+transaction/ownership, revision 1, rendered asset hash, CLI executable and the
+OpenCode plugin reference. Their installation still requires an Agent restart;
+no loaded-state inference is made. Unknown configuration is preserved.
+
+`outbox` includes `pending`, `handed_off`, `terminated`, `next_attempt_at`, at most
+8 `recent_errors`, and `waiting_for:"next_agent_event_or_explicit_flush"`.
+An independent `outbox.error` means diagnostics could not safely read the store.
+Status and `outbox status --json [--pair ID]` never send, migrate, or repair event
+state. An interrupted transaction reports `outbox_recovery_required` until a
+mutating operation resumes it. Pair status adds `local_status` and an optional
+action independently of remote `status`.
+
+- `outbox flush --json [--pair ID]`: user-triggered bounded send recovery.
+- `outbox refresh --json [--pair ID]`: at most 32 receipt GETs, never a POST.
+- `pairs reconcile --json [--pair ID]`: authenticate original credentials and
+  persist active status or retire explicitly revoked/expired records.
+- `pairs abandon --pair ID --json`: only a pending/pending_review attempt; removes
+  local token/key and keeps a bounded redacted summary. This is **not** remote
+  revocation or evidence that remote capacity has been freed.
+
+Local active/review records and pending/pending_review records have separate
+32-entry limits. Only active records send. Unknown authentication/404 retains
+credentials for review; a transient active-pair network failure never deletes or
+rebinds it. A lost claim reply is reconciled using the same authenticated pair GET
+and installation. Confirmed inactive records and explicitly abandoned attempts
+leave no local token/key, with at most 128 digest-only historical summaries.
+Retirement does not affect another device. `unauthorized` suspends this pair;
+policy denial terminates only that delivery. No automatic re-pair loop exists.
+
+### Durable delivery ownership
+
+Every eligible pair is independently persisted **before the first network send**.
+A failed save is `not_saved`, never claimed queued. The command remains bounded to
+10 seconds, each HTTP to 4 seconds. New events run before old due work. This
+implementation uses one immediate POST per hook delivery (within the maximum of
+two); subsequent invocations/explicit flush retry persisted work. Flush selects
+at most 32 records with at most 4 concurrent requests and pair round-robin.
+There is no daemon, cron installation, port, detached child, or idle wake-up.
+
+Each delivery retains its original event ID, nonce, ciphertext, first creation
+and one-hour expiry. Across calls at most 12 POST attempts are reserved durably.
+Retry delay starts at 15 seconds, doubles to 5 minutes. A valid longer Retry-After
+is respected. Integer overflow/excessive numeric headers saturate to one day
+(which exceeds the original TTL), HTTP dates are supported, invalid headers use
+the local delay. A retry at/after expiry terminates; expiry is never extended.
+
+Only a structurally valid matching `event_id` response with
+`outbox_handoff:true` transfers responsibility. Explicit terminal states win
+before handoff. For `accepted/sending/retryable_failed`, handoff applies even
+with HTTP 202/429/503: the receipt is retained and further local POSTs stop.
+Without handoff, even 202 leaves local responsibility. Bad JSON, wrong event ID,
+or a global health capability cannot imply receipt. Terminal/handed-off records
+release large ciphertext; retry metadata and deduplication remain.
+
+Receipt refresh uses the authorized existing single-event GET. A missing record
+means `service_record_unavailable`; only after the known original expiry + 24h
+may the CLI say `service_retention_may_have_elapsed`. Neither means delivered,
+and neither causes a new event or re-POST. API/Cron recovery remains independent
+of the CLI after handoff. APNs acceptance, local receipt and user viewing are
+separate stages; no phone delivery or exactly-once guarantee follows.
+
+### Versioned local storage and migration
+
+`outbox-v1/` uses 256 digest-prefix shards, each bounded to 2 MiB; this does not
+increase Store.readJSON's 2 MiB limit for other configuration. A dedicated bounded
+index (32 MiB) maintains exact pair/global counts. A bounded transaction journal
+(36 MiB) atomically repairs interrupted shard/index commits. Every read/modify
+uses the existing cross-process private lock and 0600 atomic writes. Network IO
+never holds that lock; persisted lease owner and 15-second expiry prevent hook /
+flush competition. Late results must still own the lease.
+
+Pending limits are 512 per pair, 16384 per installation, 80 MiB serialized
+envelopes. Deduplication/results last seven days, at most 4096 per pair and
+131072 installation-wide. No valid pending record or protected tombstone is
+evicted to admit another event. Fixed capacity errors ask for retry after expiry,
+reconciliation, or an explicit flush. Source identity is an irreversible digest;
+raw hook input, terminal output, directories, prompts and conversations are not
+persisted. Seven days at 500 events/day for 32 devices fits the metadata budget.
+
+Legacy events.json migrates idempotently to `legacy_unknown`, never an automatic
+send queue. Its existing identity/envelope/expiry is preserved; no new expiry or occupant
+proof is synthesized. At most 512 legacy unknown envelopes remain under the
+same byte budget for their seven-day deduplication window. They are not known
+terminal deliveries and are never dispatched. Authentication-only inspection
+recognizes legacy native source hashes even after a location move or expiry;
+it does not authorize navigation or extend expiry. The obsolete events.json is
+removed only after the replacement store commits. Corruption is an error, never an
+empty replacement database. A rollback must not replay the new outbox through an
+old CLI. Seven-day source replay protection requires a recognizable upstream
+identity. Claude human-wait callbacks have no authoritative occurrence ID and
+cannot be recognized as arbitrary raw replays; unrelated waits are not merged
+by timing. Nothing promises permanent recognition of arbitrary callbacks beyond
+the retained source-identity window.
+
+### Strong identity and explicit movement
+
+New tmux locators include `occupant_id:"tmux-proc-v1:<64 lowercase hex>"`.
+SHA-256 input is UTF-8 `os + "\n" + lowercased_boot_id + "\n" + decimal_pid +
+"\n" + birth`. Linux uses boot_id and /proc/PID/stat starttime ticks; Darwin
+uses kern.bootsessionuuid and kern.proc.pid starttime `seconds:microseconds`
+via fixed golang.org/x/sys v0.46.0. PID/name/second-resolution ps alone never
+proves occupancy. Queries bracket process birth reads with matching pane,
+pane_pid, full server identity and location snapshots. Missing/denied/reused
+process identity fails without fallback.
+
+`target verify --stdin-frame` remains strict about position. New
+`target resolve --stdin-frame` returns `{v:1,status:"valid",locator:{...},
+tmux_pane_pid:123}` for tmux; PID is absent for Herdr and is only an SSH control
+proof. Resolve allows window changes **within the same tmux session** and keeps
+installation, namespace, full `pid:start_time:session_created`, session, pane and
+occupant identical. Cross-session changes are rejected. Respawn-pane retaining a
+pane ID produces a new birth proof and is rejected. New clients must validate
+before/after final conditional navigation and compare the resolved pane_pid in
+the final tmux selection command.
+
+Herdr resolve checks the same installation, namespace and socket incarnation
+before/after one structured snapshot, then uniquely finds terminal_id==occupant_id
+across workspace/tab/pane. Duplicate terminal IDs or pane slots, restart, restore
+with new terminal ID and namespace change fail. It does not consult shared focus.
+Old tmux locators without a strong occupant are available as history/manual-open
+only in the new App; no live proof can be added retroactively. Old Herdr locators
+with valid existing socket/terminal/occupant proof can resolve. The new guarantee
+requires both CLI and App: an old App retains only its original navigation checks.
+
+### API, APNs and rollout compatibility
+
+The API conditionally persists the original envelope before announcing per-event
+handoff. Old NULL-envelope rows do not claim handoff or auto-recover; a same-hash,
+nonterminal retry may fill the original envelope without resetting state/attempts
+or expiry. Existing once-per-minute Cron resumes accepted/due/released-lease work;
+HTTP and Cron share leases, quota admission and final authorization. Terminal
+metadata remains until original expiry + 24h; recoverable ciphertext is cleared.
+New API response fields do not require a new envelope or access permission.
+
+APNs keeps original generic/test loc-keys and encrypted envelope, adds a safe
+`title:"MobTerm"`, `mutable-content:1`, and a per-pair/event 64-hex collapse ID: SHA-256 of UTF-8
+`mobterm-apns-v1\nPAIR_ID\nEVENT_ID` with no trailing newline.
+Different events never collapse by target. The final UTF-8 payload still must fit
+4096 bytes. An old App ignores extension flags; an old API still provides generic
+notifications but cannot guarantee NSE spool/preview invocation. New NSE detail
+is opt-in and device-decrypted; Agent and separately permitted local connection
+name are the only preview context. A processing-time locked key, missing group,
+timeout or error falls back to original safe content.
+
+Release order is separately authorized: additive migration/API first, then App,
+then CLI. API rollback must stop new handoff and drain/explicitly terminate
+outstanding responsibility, or retain the recovery implementation. Do not roll
+back responsibility into a service that cannot recover it. No production release,
+remote migration, Apple group creation or APNs operation is authorized by this
+local implementation or by source commit/push.
+
+Target commands on failure return nonzero with
+`{v:1,ok:false,error:CODE}`. Codes are `target_upgrade_required` (old tmux proof),
+`installation_replaced`, `target_invalid` (definite missing/replaced/ambiguous
+identity), and `target_query_unavailable` (query, permission or unavailable birth
+proof). Temporary inability to query does not prove the terminal was replaced.

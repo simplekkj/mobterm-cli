@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -127,5 +129,124 @@ func TestHerdrNamespaceSocketReplacementAndMembership(t *testing.T) {
 	snapshot.Panes = snapshot.Panes[:1]
 	if _, err = locatorFromHerdr(l.InstallationID, "work", "w1:p1", first, snapshot); err == nil {
 		t.Fatal("unverified version accepted")
+	}
+}
+
+func TestLiveTmuxMoveRespawnAndProcessProof(t *testing.T) {
+	binary, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatal("real tmux is required for strong identity verification")
+	}
+	dir, e := os.MkdirTemp("/tmp", "mt-proof-")
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(dir, "move.sock")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.CommandContext(ctx, binary, append([]string{"-S", socket}, args...)...).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	pane := run("new-session", "-d", "-s", "proof", "-P", "-F", "#{pane_id}")
+	defer exec.Command(binary, "-S", socket, "kill-server").Run()
+	s := testStore(t)
+	id, _ := s.installation()
+	original, err := captureTmux(ctx, id, socket, pane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	if _, _, err := captureTmuxProcess(ctx, id, socket, pane, func(pid int) (string, error) {
+		calls++
+		if calls == 1 {
+			return "tmux-proc-v1:" + strings.Repeat("a", 64), nil
+		}
+		return "tmux-proc-v1:" + strings.Repeat("b", 64), nil
+	}); err == nil {
+		t.Fatal("same PID with changed birth accepted")
+	}
+	if !strongTmuxOccupant.MatchString(original.OccupantID) {
+		t.Fatal("missing strong occupant")
+	}
+	run("new-window", "-d", "-t", original.WorkspaceID, "-n", "destination")
+	destination := run("list-windows", "-t", original.WorkspaceID, "-F", "#{window_id}")
+	windows := strings.Split(destination, "\n")
+	run("join-pane", "-s", pane, "-t", windows[len(windows)-1], "-d")
+	response, err := resolveTarget(ctx, s, bytes.NewReader(framed(original)))
+	if err != nil {
+		t.Fatal("same-session move rejected", err)
+	}
+	moved := response["locator"].(Locator)
+	if moved.ViewID == original.ViewID || moved.OccupantID != original.OccupantID || response["tmux_pane_pid"] == nil {
+		t.Fatal("move proof lost")
+	}
+	if _, err = verifyTarget(ctx, s, bytes.NewReader(framed(original))); err == nil {
+		t.Fatal("strict verify followed a move")
+	}
+	if _, err = verifyTarget(ctx, s, bytes.NewReader(framed(moved))); err != nil {
+		t.Fatal(err)
+	}
+	run("respawn-pane", "-k", "-t", pane)
+	if _, err = resolveTarget(ctx, s, bytes.NewReader(framed(original))); err == nil {
+		t.Fatal("respawn reused occupant")
+	}
+	current, err := captureTmux(ctx, id, socket, pane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.PaneID != original.PaneID || current.OccupantID == original.OccupantID {
+		t.Fatal("respawn identity not detected")
+	}
+	// A different session must never be followed, even with the same process.
+	other := run("new-session", "-d", "-s", "other", "-P", "-F", "#{pane_id}")
+	run("join-pane", "-s", pane, "-t", other, "-d")
+	if _, err = resolveTarget(ctx, s, bytes.NewReader(framed(current))); err == nil {
+		t.Fatal("cross-session move accepted")
+	}
+	legacy := original
+	legacy.OccupantID = ""
+	if _, err = resolveTarget(ctx, s, bytes.NewReader(framed(legacy))); err == nil {
+		t.Fatal("legacy identity upgraded from live state")
+	}
+}
+func TestHerdrTerminalMoveAndDuplicate(t *testing.T) {
+	id := fixtureLocator().InstallationID
+	s := herdrSnapshot{Version: "0.9.3", Protocol: 22, Panes: []herdrPaneRecord{{PaneID: "new:p", TerminalID: "term_123", WorkspaceID: "new", TabID: "new:t"}}}
+	moved, err := locateHerdr(id, "work", "old:p", "term_123", "socket-v1:instance", s)
+	if err != nil || moved.WorkspaceID != "new" || moved.TerminalID != "term_123" {
+		t.Fatal("terminal relocation failed", err)
+	}
+	s.Panes = append(s.Panes, s.Panes[0])
+	if _, err = locateHerdr(id, "work", "old:p", "term_123", "socket-v1:instance", s); err == nil {
+		t.Fatal("duplicate terminal accepted")
+	}
+	s.Panes = s.Panes[:1]
+	s.Panes[0].TerminalID = "replacement"
+	if _, err = locateHerdr(id, "work", "old:p", "term_123", "socket-v1:instance", s); err == nil {
+		t.Fatal("replacement terminal accepted")
+	}
+}
+
+func TestTargetStructuredFailureClassification(t *testing.T) {
+	for message, want := range map[string]string{"target_upgrade_required": "target_upgrade_required", "installation replaced": "installation_replaced", "terminal target replaced": "target_invalid", "tmux pane missing or has ambiguous membership": "target_invalid", "Herdr target missing or ambiguous": "target_invalid", "process_birth_unavailable": "target_query_unavailable", "target query failed": "target_query_unavailable"} {
+		if got := targetErrorCode(errors.New(message)); got != want {
+			t.Fatal(message, got)
+		}
+	}
+	s := testStore(t)
+	id, _ := s.installation()
+	t.Setenv("MOBTERM_CONFIG_DIR", s.Dir)
+	l := fixtureLocator()
+	l.InstallationID = id
+	var out, diagnostic bytes.Buffer
+	code := run([]string{"target", "resolve", "--stdin-frame"}, bytes.NewReader(framed(l)), &out, &diagnostic)
+	if code != 1 || !strings.Contains(out.String(), `"error":"target_upgrade_required"`) {
+		t.Fatal("structured old-target failure lost", out.String())
 	}
 }

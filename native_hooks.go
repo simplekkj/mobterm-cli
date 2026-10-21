@@ -323,7 +323,7 @@ func changeNativeHooks(ctx context.Context, s Store, agent, action, path, execut
 				return err
 			}
 		}
-		allowMissing := r.Pending == "uninstall" || r.Pending == "install" && !r.ReferenceRequired
+		allowMissing := action == "install" || r.Pending == "uninstall" || r.Pending == "install" && !r.ReferenceRequired
 		result, err = editNativePlugin(config, reference, action, owned, allowMissing)
 		if err != nil {
 			return err
@@ -336,7 +336,7 @@ func changeNativeHooks(ctx context.Context, s Store, agent, action, path, execut
 			if e != nil {
 				return e
 			}
-			if !nativeAllowed(data, exists, file, r.Pending) {
+			if !nativeAllowed(data, exists, file, r.Pending) && !(action == "install" && !exists) {
 				return errors.New("managed native asset was edited or removed; integration unchanged")
 			}
 		}
@@ -363,6 +363,9 @@ func changeNativeHooks(ctx context.Context, s Store, agent, action, path, execut
 				old := r.Files[asset]
 				n := next.Files[asset]
 				n.PreviousSHA = old.SHA
+				if _, exists, _, e := nativeRead(asset); e == nil && !exists {
+					n.PreviousSHA = ""
+				}
 				if r.Pending == "install" {
 					if old.SHA != n.SHA || r.Executable != executable {
 						return errors.New("native installation incomplete; retry with the original CLI before upgrading")

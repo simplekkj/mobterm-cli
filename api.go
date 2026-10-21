@@ -25,6 +25,15 @@ func newAPI() API {
 	return API{&http.Client{Timeout: 4 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return errors.New("redirect refused") }}}
 }
 func (a API) request(ctx context.Context, p Pair, method, path string, body any) (map[string]any, error) {
+	// Keep the last second of a finite command budget for durable result commits.
+	deadline := time.Now().Add(4 * time.Second)
+	if end, ok := ctx.Deadline(); ok && end.Add(-time.Second).Before(deadline) {
+		deadline = end.Add(-time.Second)
+	}
+	requestCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	ctx = requestCtx
+
 	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -60,10 +69,7 @@ func (a API) request(ctx context.Context, p Pair, method, path string, body any)
 		if len(code) > 80 || strings.ContainsAny(code, "\r\n") {
 			code = "request_failed"
 		}
-		retryAfter := time.Duration(0)
-		if seconds, e := strconv.Atoi(resp.Header.Get("Retry-After")); e == nil && seconds > 0 {
-			retryAfter = time.Duration(seconds) * time.Second
-		}
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		return v, &APIError{Status: resp.StatusCode, Code: code, RetryAfter: retryAfter}
 	}
 	return v, nil
@@ -73,6 +79,10 @@ func (a API) send(ctx context.Context, p Pair, e Envelope) (map[string]any, erro
 	var err error
 	for attempt := 0; attempt < 2; attempt++ {
 		v, err = a.request(ctx, p, "POST", "/v1/pairs/"+p.PairID+"/events", e)
+		state, _ := v["state"].(string)
+		if v["event_id"] == e.EventID && (terminalDelivery(state) || v["outbox_handoff"] == true && (state == "accepted" || state == "sending" || state == "retryable_failed")) {
+			return v, nil
+		}
 		if err == nil {
 			return v, nil
 		}
@@ -116,24 +126,76 @@ func setup(ctx context.Context, s Store, a API, in io.Reader) (map[string]any, e
 		return nil, errors.New("installation identity changed")
 	}
 	pair := Pair{p, "pending"}
+	existing, e := s.pairs()
+	if e != nil {
+		return nil, e
+	}
+	if old, ok := existing[p.PairID]; ok {
+		if old.SetupPacket != p {
+			return nil, errors.New("pair identity conflict")
+		}
+		pair = old
+	}
+
 	if err = s.savePair(ctx, pair); err != nil {
 		return nil, err
 	}
 	v, err := a.request(ctx, pair, "POST", "/v1/pairs/"+p.PairID+"/claim", map[string]string{"installation_id": id, "claim_id": p.PairID})
 	if err != nil {
-		return nil, err
+		var ae *APIError
+		if errors.As(err, &ae) && ae.Status == 410 && (ae.Code == "pair_expired" || ae.Code == "pair_revoked") {
+			if retireErr := s.retirePairIfCurrent(ctx, p.PairID, strings.TrimPrefix(ae.Code, "pair_"), false, &pair); retireErr != nil {
+				return nil, retireErr
+			}
+			return nil, err
+		}
+		// A lost claim response can leave a remotely active, locally pending pair.
+		remote, queryErr := a.request(ctx, pair, "GET", "/v1/pairs/"+p.PairID, nil)
+		if errors.As(queryErr, &ae) && ae.Status == 410 && (ae.Code == "pair_expired" || ae.Code == "pair_revoked") {
+			if retireErr := s.retirePairIfCurrent(ctx, p.PairID, strings.TrimPrefix(ae.Code, "pair_"), false, &pair); retireErr != nil {
+				return nil, retireErr
+			}
+		}
+		if queryErr != nil || remote["status"] != "active" || remote["installation_id"] != id {
+			return nil, err
+		}
+		v = remote
 	}
 	if v["status"] != "active" {
 		return nil, errors.New("API has not activated pair")
 	}
-	pair.Status = "active"
-	if err = s.savePair(ctx, pair); err != nil {
+	if err = s.transitionPair(ctx, pair, "active"); err != nil {
 		return nil, err
 	}
+	pair.Status = "active"
 	// Read the durable local value before acknowledging the SSH machine call.
 	saved, err := s.pairs()
 	if err != nil || saved[p.PairID] != pair {
 		return nil, errors.New("local pair readback failed")
 	}
 	return map[string]any{"v": 1, "pair_id": p.PairID, "installation_id": id, "status": "active", "local_saved": true}, nil
+}
+
+// Valid excessively long numeric values saturate at a day: all CLI events expire
+// in an hour, so this terminates safely instead of overflowing into an early retry.
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if strings.Trim(value, "0123456789") == "" {
+		n, e := strconv.ParseUint(value, 10, 64)
+		if e != nil || n > 86400 {
+			return 24 * time.Hour
+		}
+		return time.Duration(n) * time.Second
+	}
+	if date, e := http.ParseTime(value); e == nil && date.After(now) {
+		d := date.Sub(now)
+		if d > 24*time.Hour {
+			return 24 * time.Hour
+		}
+		return d
+	}
+	return 0
 }

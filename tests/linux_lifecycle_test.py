@@ -266,7 +266,9 @@ class LifecycleTests(unittest.TestCase):
                 calls.append((method, self.path))
                 if self.path.endswith('/claim'):
                     test.assertEqual(body, {'installation_id': installation, 'claim_id': pair_id})
-                value = {'state': 'apns_accepted'} if self.path.endswith('/events') else {'status': 'active'}
+                value = ({'event_id': body['event_id'], 'state': 'apns_accepted'}
+                         if self.path.endswith('/events') else
+                         {'status': 'active', 'installation_id': installation})
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()

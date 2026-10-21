@@ -123,7 +123,9 @@ func TestNativeNotifyRetryAndTerminalScope(t *testing.T) {
 					w.WriteHeader(503)
 					return
 				}
-				printJSON(w, map[string]string{"state": "apns_accepted"})
+				var e Envelope
+				_ = json.Unmarshal(b, &e)
+				printJSON(w, map[string]string{"event_id": e.EventID, "state": "apns_accepted"})
 			}))
 			defer server.Close()
 			p := testPair(id, server.URL)
@@ -136,13 +138,26 @@ func TestNativeNotifyRetryAndTerminalScope(t *testing.T) {
 					event.InstanceID = "another-tui"
 				}
 				b, _ := json.Marshal(event)
-				if _, err := notify(context.Background(), s, newAPI(), source, b, "", false); err != nil {
-					t.Fatal(err)
+				_, _ = notify(context.Background(), s, newAPI(), source, b, "", false)
+				records, e := outboxRecords(context.Background(), s, "", false)
+				if e != nil {
+					t.Fatal(e)
+				}
+				for _, d := range records {
+					if d.State == "pending" {
+						_, e = updateDelivery(context.Background(), s, d.PairID, d.EventID, func(d *delivery) error { d.Next = 0; return nil })
+						if e != nil {
+							t.Fatal(e)
+						}
+					}
+				}
+				if _, e = flushOutbox(context.Background(), s, newAPI(), "", false); e != nil {
+					t.Fatal(e)
 				}
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if len(bodies) != 6 || !bytes.Equal(bodies[0], bodies[1]) || !bytes.Equal(bodies[0], bodies[2]) || !bytes.Equal(bodies[2], bodies[3]) || !bytes.Equal(bodies[4], bodies[5]) || bytes.Equal(bodies[0], bodies[4]) {
+			if len(bodies) != 4 || !bytes.Equal(bodies[0], bodies[1]) || !bytes.Equal(bodies[2], bodies[3]) || bytes.Equal(bodies[0], bodies[2]) {
 				t.Fatal("reentry/retry/instance scope mismatch")
 			}
 			for _, body := range bodies {
@@ -178,5 +193,19 @@ func TestNativeNotifyRetryAndTerminalScope(t *testing.T) {
 				t.Fatal("ambiguous multiplexer accepted")
 			}
 		})
+	}
+}
+
+func TestNativeSourceIdentitySurvivesLocationMove(t *testing.T) {
+	l := fixtureLocator()
+	l.OccupantID = "tmux-proc-v1:" + strings.Repeat("a", 64)
+	original := nativeTargetIdentity("source", l)
+	l.ViewID = "@9"
+	if nativeTargetIdentity("source", l) != original {
+		t.Fatal("same native occurrence moved into a new event")
+	}
+	l.OccupantID = "tmux-proc-v1:" + strings.Repeat("b", 64)
+	if nativeTargetIdentity("source", l) == original {
+		t.Fatal("different process reused source identity")
 	}
 }

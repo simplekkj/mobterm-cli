@@ -586,7 +586,8 @@ func TestRangeNotifyEncryptedIdentity(t *testing.T) {
 	t.Setenv("TMUX", "/fixture/tmux.sock,123,0")
 	t.Setenv("TMUX_PANE", "%3")
 	t.Setenv("HERDR_PANE_ID", "")
-	tmux := "#!/bin/sh\nprintf '%s\\t%s\\t%s\\t%s\\t%s\\n' /fixture/tmux.sock 123:456:789 '$1' '@2' '%3'\n"
+	t.Setenv("FIXTURE_PANE_PID", fmt.Sprint(os.Getpid()))
+	tmux := "#!/bin/sh\nprintf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' /fixture/tmux.sock 123:456:789 '$1' '@2' '%3' \"$FIXTURE_PANE_PID\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(tmux), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -648,7 +649,9 @@ func TestRangeNotifyEncryptedIdentity(t *testing.T) {
 						w.WriteHeader(503)
 						return
 					}
-					printJSON(w, map[string]string{"state": "apns_accepted"})
+					var event Envelope
+					_ = json.Unmarshal(body, &event)
+					printJSON(w, map[string]string{"event_id": event.EventID, "state": "apns_accepted"})
 				}))
 				defer server.Close()
 				p := testPair(id, server.URL)
@@ -687,8 +690,25 @@ func TestRangeNotifyEncryptedIdentity(t *testing.T) {
 					if strings.Contains(diag.String(), "PRIVATE_") {
 						t.Fatal("hook leaked fixture payload")
 					}
-					if code != 0 || out.Len() != 0 || (allowed && diag.Len() != 0) {
+					if code != 0 || out.Len() != 0 || (allowed && invocation == 1 && diag.Len() != 0) || (allowed && invocation != 1 && !strings.Contains(diag.String(), "agent continues")) {
 						t.Fatalf("hook failed: exit=%d stdout_bytes=%d diagnostic=%q", code, out.Len(), diag.String())
+					}
+					if allowed {
+						records, e := outboxRecords(context.Background(), s, "", false)
+						if e != nil {
+							t.Fatal(e)
+						}
+						for _, d := range records {
+							if d.State == "pending" {
+								_, e = updateDelivery(context.Background(), s, d.PairID, d.EventID, func(d *delivery) error { d.Next = 0; return nil })
+								if e != nil {
+									t.Fatal(e)
+								}
+							}
+						}
+						if _, e = flushOutbox(context.Background(), s, newAPI(), "", false); e != nil {
+							t.Fatal(e)
+						}
 					}
 				}
 				mu.Lock()
@@ -699,18 +719,19 @@ func TestRangeNotifyEncryptedIdentity(t *testing.T) {
 					}
 					return
 				}
-				if len(bodies) != 6 || !bytes.Equal(bodies[0], bodies[1]) || !bytes.Equal(bodies[0], bodies[2]) || !bytes.Equal(bodies[2], bodies[3]) || !bytes.Equal(bodies[4], bodies[5]) {
+				if len(bodies) != 4 || !bytes.Equal(bodies[0], bodies[1]) || !bytes.Equal(bodies[2], bodies[3]) {
 					t.Fatal("event reentry/HTTP retry did not preserve exact ciphertext")
 				}
 				key, _ := decode64(p.EncryptionKey, 32)
 				var first Envelope
-				for _, index := range []int{0, 4} {
+				for _, index := range []int{0, 2} {
 					var envelope Envelope
 					if err := json.Unmarshal(bodies[index], &envelope); err != nil {
 						t.Fatal(err)
 					}
 					l, err := openEnvelope(key, envelope, time.Now())
 					want := Locator{V: 1, InstallationID: id, Backend: "tmux", Namespace: "/fixture/tmux.sock", ServerIdentity: "123:456:789", WorkspaceID: "$1", ViewID: "@2", PaneID: "%3"}
+					want.OccupantID, _ = processIdentity(os.Getpid())
 					if err != nil || l != want || envelope.Kind != "turn_completed" {
 						t.Fatal("encrypted event target mismatch", err)
 					}

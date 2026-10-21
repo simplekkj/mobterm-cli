@@ -249,13 +249,11 @@ func TestExpiredCachedEventIsNotRenewed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var cache map[string]cachedEnvelope
-	_ = s.readJSON("events.json", &cache)
-	for k, v := range cache {
-		v.Envelope.ExpiresAt = time.Now().Unix() - 1
-		cache[k] = v
+	_, err = updateDelivery(context.Background(), s, p.PairID, e.EventID, func(d *delivery) error { d.Expires = time.Now().Unix() - 1; return nil })
+	if err != nil {
+		t.Fatal(err)
 	}
-	_ = s.writeJSON("events.json", cache)
+
 	_, err = eventEnvelope(context.Background(), s, p, e.Kind, "old", l)
 	if err == nil {
 		t.Fatal("expired event renewed")

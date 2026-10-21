@@ -23,6 +23,7 @@ import (
 const maxFrame = 16384
 const maxCiphertext = 2800 // Includes the 16-byte GCM tag. API separately checks the full 4096-byte APNs payload.
 var opaqueID = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
+var strongTmuxOccupant = regexp.MustCompile(`^tmux-proc-v1:[a-f0-9]{64}$`)
 var simpleID = regexp.MustCompile(`^[A-Za-z0-9_:.%-]{1,128}$`)
 
 type SetupPacket struct {
@@ -104,6 +105,9 @@ func (l Locator) validate() error {
 		return errors.New("invalid locator backend or namespace")
 	}
 	if l.Backend == "tmux" {
+		if l.OccupantID != "" && !strongTmuxOccupant.MatchString(l.OccupantID) {
+			return errors.New("invalid tmux occupant")
+		}
 		if !tmuxSession.MatchString(l.WorkspaceID) || !tmuxWindow.MatchString(l.ViewID) || !tmuxPane.MatchString(l.PaneID) {
 			return errors.New("invalid tmux target ID")
 		}
@@ -133,6 +137,9 @@ func (e Envelope) validate(now time.Time) error {
 	return nil
 }
 func seal(key []byte, e Envelope, l Locator, nonce []byte) (Envelope, error) {
+	return sealAgent(key, e, l, nonce, "")
+}
+func sealAgent(key []byte, e Envelope, l Locator, nonce []byte, agent string) (Envelope, error) {
 	if len(key) != 32 {
 		return e, errors.New("AES-256 key required")
 	}
@@ -156,7 +163,13 @@ func seal(key []byte, e Envelope, l Locator, nonce []byte) (Envelope, error) {
 	if err != nil {
 		return e, err
 	}
-	plain, err := json.Marshal(l)
+	if agent != "" && agent != "codex" && agent != "claude" && agent != "opencode" && agent != "pi" {
+		return e, errors.New("invalid agent")
+	}
+	plain, err := json.Marshal(struct {
+		Locator
+		Agent string `json:"agent,omitempty"`
+	}{l, agent})
 	if err != nil {
 		return e, err
 	}
@@ -172,6 +185,20 @@ func openEnvelope(key []byte, e Envelope, now time.Time) (Locator, error) {
 	if err := e.validate(now); err != nil {
 		return l, err
 	}
+	return authenticateEnvelope(key, e)
+}
+
+// Authentication-only decoding is used exclusively for legacy deduplication,
+// never navigation or dispatch; the stored original expiry remains unchanged.
+func authenticateEnvelope(key []byte, e Envelope) (Locator, error) {
+	var l Locator
+	if _, err := decode64(e.Nonce, 12); err != nil {
+		return l, err
+	}
+	c, err := base64.StdEncoding.Strict().DecodeString(e.Ciphertext)
+	if err != nil || len(c) < 16 || len(c) > maxCiphertext {
+		return l, errors.New("invalid ciphertext")
+	}
 	if len(key) != 32 {
 		return l, errors.New("invalid key")
 	}
@@ -184,10 +211,6 @@ func openEnvelope(key []byte, e Envelope, now time.Time) (Locator, error) {
 		return l, err
 	}
 	n, _ := decode64(e.Nonce, 12)
-	c, err := base64.StdEncoding.DecodeString(e.Ciphertext)
-	if err != nil {
-		return l, err
-	}
 	p, err := g.Open(nil, n, c, e.aad())
 	if err != nil {
 		return l, errors.New("authentication failed")

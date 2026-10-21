@@ -729,3 +729,135 @@ does not include these adapters; source push is not publication through the App
 updater. No Release/tag/deployment or second external review is part of this round.
 Local detailed evidence is in `/tmp/mobterm-r2-host-evidence/` and
 `/tmp/mobterm-r2-*.log`; this committed summary is the shareable evidence.
+
+## 2026-10-21 — Agent Jump to reliability, round 1 v1.0
+
+First implementation for the [shared implementation and handoff](https://app.notion.com/p/400cede20823814fb0a4f27f76ec37d7).
+CLI actual start and analysis SHA both equal
+`711bd59ffd21364783fb1508b818ac60abec4588`; branch `main`, initially clean.
+No CLI analysis drift needed resolution. Checks below use the changed working
+tree on that baseline; local package metadata uses the baseline SHA and does not
+claim a clean tagged release. Final delivery commits are recorded in the handoff.
+
+Environment: macOS 15.8.1 (24H32), Intel amd64, Go 1.27.1. Tests use isolated
+configuration, loopback HTTP/HTTPS fixtures, owned temporary tmux sockets and
+subprocesses; no production service or user Agent configuration is changed.
+The current suite contains 80 top-level Go tests (subtests are additional).
+
+Executed checks:
+
+- `test -z "$(gofmt -l .)"`, `go vet ./...`, `git diff --check`: PASS.
+- `go test ./...`: PASS (271.717s). Follow-up changes described below were
+  covered by focused race checks and the subsequent complete race runs.
+- `go test -race -run 'TestReconcileLate|TestPairReconciliation|TestSetupLost|TestIndependentPair|TestTargetStructured|TestStructuredCodex|TestOutboxMigration|TestLegacyNativeReplay' ./...`:
+  PASS (12.376s), including the final concurrent pair-state guard.
+- Focused outbox and pair verification: PASS (56.452s); additional focused
+  compatibility/health/target checks passed.
+- `python3 -m py_compile tests/linux_lifecycle_test.py`: PASS. Its controlled
+  active response now includes installation identity and event acknowledgement
+  includes the matching event ID; the full Linux lifecycle harness was not run
+  in this macOS round.
+
+Evidence in committed tests:
+
+- `health_test.go` exercises Codex TOML argv, original notifier, config-root
+  drift and fake markers; Claude missing/moved/duplicated/modified matcher,
+  timeout and command; OpenCode/Pi ownership, missing assets and safe repair.
+  A marker inside a user's multiline TOML value remains byte-preserved.
+- `outbox_test.go` exercises old 202 without handoff, 202/429/503 with handoff,
+  mismatched acknowledgements, terminal precedence, original-envelope retry,
+  twelve-attempt and Retry-After/expiry bounds, no-rePOST receipt 404, journal
+  recovery, legacy migration, read-only status and missing-shard refusal.
+  Eight concurrent callers and two real CLI-test subprocesses contend on the
+  durable delivery lease; only the owner sends the reserved attempt.
+- Seven-day capacity case: 32 devices x 500 records/day x 7 days = 112,000
+  retained terminal records, written through the production sharded writer and
+  index. A new process reads all 112,000; the index reports zero ciphertext
+  bytes for these terminal records. This covers the promised tombstone retention
+  load, separately from the 512 pending/pair and 16,384 global pending bounds.
+  No pending or retained terminal record is evicted to admit a new record.
+- `pairs_test.go` covers independent active/pending limits, explicit abandonment,
+  lost claim reply recovery, authenticated expiry, unknown remote state, and
+  blocked GET -> abandon -> delayed active/revoked reply. Snapshot comparison
+  under the same lock prevents stale reconciliation from restoring credentials
+  or changing the user's abandonment history. Setup and outbox auth transitions
+  use the same conditional-write mechanism.
+- `target_test.go` uses a real local tmux server and real Darwin boot/process
+  birth data: same-session pane movement resolves, strict verify rejects the old
+  location, respawn retaining pane ID rejects, cross-session movement rejects.
+  An injected same-PID/birth-change race rejects; Herdr socket fixtures cover
+  terminal movement and duplicate candidates. Structured errors distinguish
+  old identity capability, installation replacement, definitive invalid target
+  and unavailable query.
+- `protocol_extended_test.go` reproduces the extended encrypted v1 fixture with
+  optional agent and strong tmux occupant; the original golden fixture is
+  unchanged. API and App consumer results are recorded in their own validation
+  records and the shared handoff.
+
+Initial failures and corrections: existing event fixtures still supplied the
+old five-field tmux query or assumed two immediate POSTs. They now provide an
+actual process PID and trigger the durable retry through explicit flush, keeping
+original-envelope, independent-event and target-identity assertions. A long
+`testing.T` temporary path exceeded the UNIX socket limit; real tmux tests now
+use their own short temporary socket and clean up only that server. Target error
+JSON initially serialized a typed nil map as null; it now emits the fixed
+versioned error object and the regression passes. Legacy native callbacks are
+matched to their original cached locator identity before stable move-aware
+identity is used, including after expiry, preventing an upgrade from generating
+a fresh event for an old callback. Missing Codex entries are restored without
+stripping marker-like text from user TOML values.
+
+The first full race run failed after 424.373s only in four existing
+`TestAsdfCompatibilityEntrypoints/node-home-explicit` launcher probes at their
+unchanged five-second timeout (`signal: killed`); no data race was reported.
+The second complete `go test -race ./...` run failed after 382.839s only in
+`agent-project-explicit/notify` and `/chain` at the same original launcher
+five-second timeout; no other failures were reported and neither run reported a
+data race. The failing preflight executes the original Agent launcher with
+`--version` and `FIXTURE_PREFLIGHT=1` before invoking the CLI under test
+(`compatibility_test.go`); it is not a failure inside the changed CLI `run()`. Complete race execution therefore did not finish entirely green in this
+environment. Instead of repeating the full suite indefinitely, focused runs use
+the original budgets:
+
+- `go test -race -run 'TestAsdfCompatibilityEntrypoints/node-home-explicit|TestOutboxConfirmedPairRetirement|TestReconcileLate' ./...`:
+  PASS (20.931s), including all initially failing node-home launcher cases and
+  the final expired/revoked history and concurrent abandonment regressions.
+- `go test -race -run '^TestAsdfCompatibilityEntrypoints$/^agent-project-explicit$/(notify|chain)$' ./...`:
+  PASS (39.412s), covering both failures from the second full run.
+
+No production timeout or assertion was relaxed.
+
+`python3 scripts/package.py --version v0.0.0 --commit "$(git rev-parse HEAD)"`:
+PASS; produced and verified all four Linux/macOS x amd64/arm64 standalone
+archives, executable mode and metadata. `shasum -a 256 -c checksums.txt` from
+`dist/`: PASS for all four archives (an initial invocation from the repository
+root could not locate the checksum file's relative archive paths; rerunning in
+`dist/` fixed the invocation). The existing focused installer smoke test below
+passed, 1 test with four target subcases in 3.596s, including native installed
+Darwin/amd64 binary execution and the expected version/base SHA. Other binaries
+were installed to isolated fixture paths and inspected, not executed.
+
+```sh
+python3 - <<'PYTEST'
+import importlib.util
+from pathlib import Path
+import subprocess
+import unittest
+spec = importlib.util.spec_from_file_location('install_test', 'tests/install_test.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.DIST = Path('dist').resolve()
+module.COMMIT = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite([module.InstallerTests('test_real_packages')]))
+raise SystemExit(not result.wasSuccessful())
+PYTEST
+```
+
+Not executed: Linux runtime /proc identity checks (Linux targets are
+cross-compiled), arm64 execution, actual Herdr application navigation, paid or
+authenticated model events, production API/APNs delivery, real iPhone display/
+lock-screen preview/tap, or user SSH/Mosh end-to-end navigation. Native adapter
+resources and their event schemas did not change; actual OpenCode/Pi host-loader
+runs from earlier rounds are not claimed as rerun evidence for this round.
+Local fixture API states do not prove APNs acceptance or phone display. No
+release, tag, deployment, or production configuration change is included.

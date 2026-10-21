@@ -159,6 +159,42 @@ distinguish API processing from `apns_accepted`. Neither proves phone delivery.
 unreachable API, revoked pair, unpaired, and missing hooks are different states.
 The phone remains the authority on notification permission and actual display.
 
+Structured `health` diagnoses each Agent's required events, conditions, executable,
+owned assets and configuration root; `complete` means disk configuration only.
+A test notification does not prove Agent activation. Re-run `hooks install` to
+restore missing owned entries; conflicts need review and native adapters need an
+Agent restart. Existing user edits and unrelated notifiers remain intact.
+
+Business events go only to active pairs. Pending attempts have their own 32-entry
+limit, separate from 32 active pairs. Original credentials can be reconciled after
+a lost claim response; unknown authentication is retained for review.
+
+```sh
+mobterm-cli pairs reconcile --pair PAIR_ID --json
+mobterm-cli pairs abandon --pair PENDING_PAIR_ID --json
+mobterm-cli outbox status --pair PAIR_ID --json
+mobterm-cli outbox flush --pair PAIR_ID --json
+mobterm-cli outbox refresh --pair PAIR_ID --json
+```
+
+Abandon removes only the named pending attempt's local secrets; it does not revoke
+a remote active pair. Confirmed revoked/expired records release local capacity.
+Events are durably saved for all active pairs before sending. Pending work waits
+for another Agent event or explicit flush; an idle host does not wake itself.
+Once the service explicitly takes responsibility, refresh queries its receipt
+without posting the event again. Status is read-only. The original one-hour TTL,
+nonce/ciphertext and event ID never change on retry. Terminal results and source
+deduplication are retained for seven days under hard budgets. A full queue reports
+a fixed error rather than evicting a valid pending event.
+
+New tmux notifications prove the process instance using OS boot identity and
+precise process start time, detecting `respawn-pane` even when pane IDs are reused.
+`target resolve --stdin-frame` can find the same pane in another window of the
+same session; `target verify --stdin-frame` still requires the exact position.
+Herdr can resolve a unique terminal across workspace/tab/pane within its original
+namespace/socket incarnation. Old tmux messages need manual connection opening;
+strong automatic navigation requires both an updated App and CLI.
+
 Configuration is under `~/.config/mobterm` (0700), with credential/state files
 0600. `MOBTERM_CONFIG_DIR` may select another private directory; it carries a path,
 never a credential. Codex respects `CODEX_HOME`; Claude respects

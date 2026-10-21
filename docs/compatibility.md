@@ -314,3 +314,37 @@ Generated assets and exact config references have local fingerprint ownership;
 interrupted transactions retain a retryable journal and never restore an entire
 user config as rollback. Edited/unowned files and symlinks are refused. Uninstall
 uses the saved root and remains available without the Agent on PATH.
+
+## Reliability additions — 2026-10-21
+
+See the normative [v1 reliability additions](protocol-v1.md#reliability-and-strong-target-additions-round-1-v10-2026-10-21).
+No Agent version minima, adapter revision 1, upstream event protocol or notifier
+exit semantics changed. Disk health now checks each actual entry/condition and
+is distinct from loaded/restarted state and test-notification delivery. Safe
+repair restores provably missing owned entries/assets; user edits and uncertain
+ownership require review, never wholesale config replacement.
+
+| Combination | Behavior |
+| --- | --- |
+| New CLI + old API | 202 without per-event handoff retains local pending ownership; next event/user flush can retry original envelope. |
+| Old CLI + new API | Original v1 envelope may be durably handed off and recovered by Cron. |
+| New App + old CLI / old tmux notification | Generic/history/manual connection remains; no automatic strong tmux Jump or precise foreground suppression. |
+| Old App + new CLI | Reads top-level v1 fields; original navigation guarantees only, not new respawn protection/movement. |
+| New App + old API | Foreground/tap import works; missing mutable-content cannot promise NSE preview/spool execution. |
+| Old App + new API | Original generic/test loc-keys remain; added extension flag is ignored. |
+| Old CLI cache | legacy_unknown history/deduplication only; no bulk replay, replacement expiry or synthesized occupant. |
+
+New tmux captures require a readable exact OS process birth identity. Linux and
+Darwin amd64/arm64 are supported without cgo; process query failure safely rejects
+capture/resolve instead of weakening identity. Moves are supported within one
+tmux session; Herdr terminal moves are supported within one namespace/socket
+incarnation. Strong tmux validation needs App and CLI together.
+
+Pending work remains short-lived/conditionally triggered. One immediate POST is
+used per hook delivery; future flushes use persisted, bounded attempts and exact
+envelopes. An idle host without another event/user retry will not wake itself.
+Once service handoff is known, only bounded GET refreshes are allowed locally.
+Seven-day tombstones protect recognizable source identities; Claude human waits
+lack upstream occurrence IDs, and arbitrary raw callback replay beyond a retained
+identity cannot be claimed permanently exactly once. No fuzzy time-window merging
+of independent human waits is introduced.

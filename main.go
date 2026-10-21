@@ -39,6 +39,7 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 		probe agentProbe
 	}
 	capabilities := result["capabilities"].(map[string]any)
+	capabilities["target"] = map[string]any{"resolve": true, "tmux_occupant": "tmux-proc-v1"}
 	capabilities["opencode"] = map[string]any{"turn_completed": "session.execution.succeeded: visible root only", "needs_input": []string{"permission.asked", "form.created"}, "managed_hooks": true, "adapter_revision": 1}
 	capabilities["pi"] = map[string]any{"turn_completed": "agent_settled: aborted=false in TUI", "needs_input": false, "reason": "No authoritative pending human-request API", "managed_hooks": true, "adapter_revision": 1}
 	probes := make(chan probeResult, 4)
@@ -74,6 +75,13 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 		installed[agent] = nativeHooksInstalled(s, agent)
 	}
 	result["hooks"] = installed
+	result["health"] = hookHealth(s, capabilities)
+	summary, summaryErr := outboxSummary(ctx, s, pairID)
+	if summaryErr != nil {
+		result["outbox"] = map[string]any{"error": safeCode(summaryErr.Error())}
+	} else {
+		result["outbox"] = summary
+	}
 	pairs, err := s.pairs()
 	if err != nil {
 		return result, err
@@ -82,6 +90,14 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 		p, ok := pairs[pairID]
 		result["pair_id"] = pairID
 		result["local_saved"] = ok
+		if ok {
+			result["local_status"] = p.Status
+			if p.Status == "pending" || p.Status == "pending_review" {
+				result["action"] = "reconcile_or_abandon_pending"
+			} else if p.Status == "review_required" {
+				result["action"] = "reconcile_credentials"
+			}
+		}
 		if !ok {
 			result["status"] = "unpaired"
 			return result, nil
@@ -94,8 +110,8 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 		}
 		if err != nil {
 			var ae *APIError
-			if errors.As(err, &ae) && ae.Status == 410 {
-				result["status"] = "revoked"
+			if errors.As(err, &ae) && ae.Status == 410 && (ae.Code == "pair_revoked" || ae.Code == "pair_expired") {
+				result["status"] = strings.TrimPrefix(ae.Code, "pair_")
 			} else {
 				result["status"] = "api_unavailable"
 			}
@@ -112,11 +128,12 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 			}
 			v = map[string]any{"pair_id": id, "status": "api_unavailable"}
 			var ae *APIError
-			if errors.As(e, &ae) && ae.Status == 410 {
-				v["status"] = "revoked"
+			if errors.As(e, &ae) && ae.Status == 410 && (ae.Code == "pair_revoked" || ae.Code == "pair_expired") {
+				v["status"] = strings.TrimPrefix(ae.Code, "pair_")
 			}
 		}
 		v["local_saved"] = true
+		v["local_status"] = p.Status
 		list = append(list, v)
 	}
 	result["pairs"] = list
@@ -127,7 +144,7 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 }
 func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "mobterm-cli setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | target verify --stdin-frame | upgrade --version vX.Y.Z | version")
+		fmt.Fprintln(out, "mobterm-cli setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | upgrade --version vX.Y.Z | version")
 		return 0
 	}
 	if args[0] == "version" || args[0] == "--version" {
@@ -159,10 +176,14 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 			value, err = setup(ctx, s, a, in)
 		}
 	case "target":
-		if len(args) != 3 || args[1] != "verify" || args[2] != "--stdin-frame" {
+		if len(args) != 3 || (args[1] != "verify" && args[1] != "resolve") || args[2] != "--stdin-frame" {
 			err = errors.New("target verify requires --stdin-frame")
 		} else {
-			value, err = verifyTarget(ctx, s, in)
+			if args[1] == "resolve" {
+				value, err = resolveTarget(ctx, s, in)
+			} else {
+				value, err = verifyTarget(ctx, s, in)
+			}
 		}
 	case "status":
 		var pair string
@@ -176,6 +197,37 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 			err = errors.New("invalid status arguments")
 		} else {
 			value, err = status(ctx, s, a, pair, installation)
+		}
+	case "outbox":
+		if len(args) < 2 || (args[1] != "flush" && args[1] != "refresh" && args[1] != "status") {
+			err = errors.New("outbox requires flush, refresh or status")
+			break
+		}
+		var pair string
+		var j bool
+		f, e := flags("outbox", args[2:], func(f *flag.FlagSet) { f.StringVar(&pair, "pair", "", ""); f.BoolVar(&j, "json", false, "") })
+		if e != nil || f.NArg() != 0 {
+			err = errors.New("invalid outbox arguments")
+		} else if args[1] == "status" {
+			value, err = outboxSummary(ctx, s, pair)
+		} else {
+			value, err = flushOutbox(ctx, s, a, pair, args[1] == "refresh")
+		}
+	case "pairs":
+		if len(args) < 2 || (args[1] != "reconcile" && args[1] != "abandon") {
+			err = errors.New("pairs requires reconcile or abandon")
+			break
+		}
+		var pair string
+		var j bool
+		f, e := flags("pairs", args[2:], func(f *flag.FlagSet) { f.StringVar(&pair, "pair", "", ""); f.BoolVar(&j, "json", false, "") })
+		if e != nil || f.NArg() != 0 {
+			err = errors.New("invalid pair arguments")
+		} else if args[1] == "abandon" {
+			err = s.retirePair(ctx, pair, "abandoned", true)
+			value = map[string]any{"v": 1, "pair_id": pair, "status": "abandoned", "ok": err == nil}
+		} else {
+			value, err = reconcilePairs(ctx, s, a, pair)
 		}
 	case "test":
 		var pair string
@@ -236,7 +288,7 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 			_, err = notify(ctx, s, a, source, payload, "", false)
 		}
 		if err != nil {
-			fmt.Fprintln(diagnostic, "mobterm-cli: notification unavailable (agent continues)")
+			fmt.Fprintln(diagnostic, "mobterm-cli: notification unavailable (agent continues):", safeCode(err.Error()))
 			if source == "opencode" || source == "pi" {
 				return 1
 			}
@@ -262,13 +314,20 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	default:
 		err = errors.New("unknown command")
 	}
+	if object, ok := value.(map[string]any); ok && object == nil {
+		value = nil
+	}
 	if value != nil {
 		printJSON(out, value)
 	}
 	if err != nil {
 		fmt.Fprintln(diagnostic, "mobterm-cli:", err)
 		if value == nil {
-			printJSON(out, map[string]any{"v": 1, "ok": false, "error": "operation_failed"})
+			code := "operation_failed"
+			if args[0] == "target" {
+				code = targetErrorCode(err)
+			}
+			printJSON(out, map[string]any{"v": 1, "ok": false, "error": code})
 		}
 		return 1
 	}

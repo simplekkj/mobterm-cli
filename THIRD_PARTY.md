@@ -27,10 +27,12 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-## Go runtime and standard library
+## Go runtime, standard library and golang.org/x/sys
 
 The statically linked executables include Go 1.27.1 runtime and standard library
-code. The Go distribution's BSD license follows.
+code. Darwin process-birth queries additionally use `golang.org/x/sys` v0.46.0,
+pinned in go.mod/go.sum and distributed under the same BSD-3-Clause license
+and copyright notice reproduced below. No cgo or runtime helper is required.
 
 Copyright 2009 The Go Authors.
 
