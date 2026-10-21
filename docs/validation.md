@@ -654,3 +654,78 @@ PASS (5.756s). Final controlled bridge cases additionally cover missing CLI spaw
 an event-order concern without introducing deferred work: both OpenCode endpoints
 pin `@solid-primitives/event-bus@1.1.2`; its global reducer dispatch occurs before
 typed plugin handlers, so the official pending stores are updated first.
+
+## 2026-10-21 — OpenCode/Pi, round 2 v1.1 (WF-1.0)
+
+Review-fix baseline and actual start: `a2d7de5a9c26d06f60934bedd582427f2ff92b49`,
+branch `main`, clean worktree. The original analysis SHA remains
+`4d61af34b59ca0d090a3d12887a25d17ee9ce6a7`; this round changes only R1/R2 and
+their verification. App R3 starts at `8f77a2967b50bd64861e76e2bbc614ed22afc2a5`.
+API remains unchanged at `64170845c1c08b9f0ef369771fe2ff7773e256c7`.
+Final commits, exact repair compares and closure are recorded in the
+[shared handoff](https://app.notion.com/p/3ffcede2082381eeaae8c70fb0befd2b).
+
+R1 fixes Pi package selection before probe HOME/cwd isolation. The new regression
+subprocess reads the selected package.json VERSION in 24 status/install cases,
+including tilde, relative/absolute/file-URL paths, literal spaces, empty/unset
+overrides and invalid/low/prerelease packages. It checks isolated child config,
+unchanged parent environment and unchanged files in the caller's default/configured
+Pi directories and managed-install directory. The focused test passes (12.673s).
+
+R2 gives each OpenCode activation an owned Solid root and releases it plus earlier
+native listeners on cleanup or partial setup failure. Both adapters distinguish
+intentional cancellation from failures without changing event/metadata contracts.
+
+Executed native-adapter verification:
+
+- Install the test-only pinned runtime with
+  `npm ci --prefix scripts/native-adapter-tests --ignore-scripts --no-audit --no-fund`,
+  then `node scripts/test-native-adapters.mjs`: PASS. The fixture and adapter share
+  the explicit Solid 1.9.15 client module (both fixed OpenCode endpoints pin this
+  version), never Node's no-op SSR export. Five same-router setup/cleanup cycles,
+  repeated cleanup and partial setup exceptions prove old activations stop reading
+  the router while new effects run. No fixture manually clears observers. Existing
+  pending/route-away-and-back/reload deduplication/two-TUI/Pi event tests remain.
+  Real local children prove route and Pi session cancellation stay silent, later
+  nonzero exit still warns, spawn failure is bounded and the original ten-second
+  timeout kills the child with one diagnostic. Controlled events are not model events.
+- `scripts/test-native-adapters-host.py`: PASS OpenCode 2.0.0/2.1.0 actual TUI setup
+  and restart (nine listeners each), Pi 1.1.0/1.3.0 official discovery/TS import and
+  actual TUI session_start (four listeners, mode=tui). These use CLI-generated assets.
+  The same four isolated official distributions listed in round 1 were reused after
+  checking installed versions and registry tarball/SRI records; the 2.1.0 archive
+  SHA-256 again matches the fixed official tap. This is distinct from the same-process
+  Solid lifecycle test and does not prove authenticated model events.
+- Actual Pi 1.1.0 and 1.3.0: ten combinations of tilde/relative/absolute/file-URL/
+  space-containing package overrides pass direct --version, CLI status and
+  hooks install/uninstall. Missing overrides reject installation without creating
+  an extension. No user Agent, Node, configuration or global installation changed.
+- Old baseline binary install -> repaired binary at the same absolute CLI path:
+  PASS for both adapters, including owned-asset update, idempotence, refusal to
+  overwrite a user edit, uninstall, unrelated JSONC/plugin/settings preservation.
+  The local harness was corrected to use 0700 config directories and compare the
+  preserved user content rather than require an optional trailing comma after uninstall.
+- `scripts/package.py --version v0.0.0 --commit <HEAD>`: PASS four standalone
+  Linux/macOS x amd64/arm64 archives and checksums. Existing installer
+  `InstallerTests.test_real_packages` PASS (6.066s), including native package smoke.
+  These are local validation packages, not a tag or Release.
+- API read-only `npm run typecheck` and the existing `tests/protocol.test.mjs`:
+  PASS (2 tests, no skips). CLI/API golden files are byte-identical and App's
+  embedded vector matches. Public envelope, AAD and policy consumers are unchanged.
+
+Environment remains macOS Intel, Go 1.27.1 and Node 22.22.2. An initial full Go
+run hit unchanged five-second launcher/probe timeouts while a temporary simulator
+was booting; Codex configuration fixture failures followed its first timeout.
+An initial R1 focused run and the first upgrade-harness probe also timed out.
+No production timeout or assertion was relaxed. Final serial verification:
+
+- `test -z "$(gofmt -l .)"`, `go vet ./...`, `git diff --check`: PASS.
+- `go test -count=1 ./...`: PASS (107.774s).
+- `go test -race -count=1 ./...`: PASS (148.548s).
+
+No live model, production API/APNs, iPhone notification display/tap or user remote
+SSH/Mosh/Herdr navigation was executed. Release remains v0.1.4 at this check and
+does not include these adapters; source push is not publication through the App
+updater. No Release/tag/deployment or second external review is part of this round.
+Local detailed evidence is in `/tmp/mobterm-r2-host-evidence/` and
+`/tmp/mobterm-r2-*.log`; this committed summary is the shareable evidence.

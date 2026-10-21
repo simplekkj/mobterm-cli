@@ -271,6 +271,9 @@ route changes and lifecycle generations invalidate queued work. No internal tab
 is automatically selected. Two actual TUI instances showing the same root may
 notify their own terminals; native event IDs and bounded per-TUI memory survive
 hot reload without becoming cross-TUI ownership.
+Each activation owns a disposable Solid root for its route observer. Cleanup
+and partial setup failure release that root and all registered native listeners;
+TUI memory identity and deduplication remain available to the next activation.
 
 Pi means the official `@earendil-works/pi-coding-agent` package in
 [earendil-works/pi](https://github.com/earendil-works/pi). Minimum 1.1.0
@@ -291,7 +294,10 @@ OpenCode/Pi version probes resolve launcher/Node/asdf in the original environmen
 first, then isolate HOME/cwd/XDG config/data/cache/state and TMPDIR. OpenCode
 variables and OTEL overrides are removed in the child; updates are disabled.
 Pi gets an isolated `PI_CODING_AGENT_DIR`, offline/version-check flags and no
-`PI_MANAGED_INSTALL_ROOT`; `PI_PACKAGE_DIR` selection is preserved. Actual install
+`PI_MANAGED_INSTALL_ROOT`; a nonempty `PI_PACKAGE_DIR` is resolved against the
+original HOME/cwd before isolation. Pi's tilde, relative, absolute and file-URL
+forms select the same package, including literal spaces in ordinary paths.
+An invalid override fails the probe without trying a different installation. Actual install
 paths use the caller environment, never this probe directory. Pi's output must
 be plain `X.Y.Z`, OpenCode's `opencode vX.Y.Z`; neither permits an extra `v` or
 runtime suffix. SemVer build metadata is accepted; pre-release versions are not.
@@ -300,7 +306,9 @@ The bridge uses a recorded absolute executable, argv and bounded stdin, one chil
 plus at most eight queued jobs, a ten-second deadline and lifecycle cleanup.
 Errors show at most one generic local diagnostic per extension lifetime, with
 stdout/stderr suppressed. New-source CLI failures return nonzero to this child
-bridge; Codex/Claude notifier exit behavior is unchanged. No user model/API
+bridge. Intentional route/session cancellation is silent and does not consume
+the diagnostic for a subsequent spawn, exit or timeout failure. The
+Codex/Claude notifier exit behavior is unchanged. No user model/API
 credentials, message content or original events enter the adapter payload.
 Generated assets and exact config references have local fingerprint ownership;
 interrupted transactions retain a retryable journal and never restore an entire

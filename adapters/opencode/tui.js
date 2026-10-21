@@ -29,19 +29,20 @@ function bridge(source, warn) {
         env: { ...process.env, MOBTERM_CONFIG_DIR: store },
         stdio: ["pipe", "ignore", "ignore"], shell: false,
       });
-      active = child;
-      const timer = setTimeout(() => { diagnostic(); child.kill("SIGKILL"); }, 10000);
+      const running = { child, cancelled: false };
+      active = running;
+      const timer = running.timer = setTimeout(() => { diagnostic(); child.kill("SIGKILL"); }, 10000);
       let finished = false;
       const finish = (failed) => {
         if (finished) return;
         finished = true; clearTimeout(timer);
-        if (failed) diagnostic();
-        if (active === child) active = undefined;
+        if (failed && !running.cancelled) diagnostic();
+        if (active === running) active = undefined;
         queueMicrotask(drain);
       };
       child.once("error", () => finish(true));
       child.once("close", (code) => finish(code !== 0));
-      child.stdin.on("error", () => { diagnostic(); child.kill("SIGKILL"); });
+      child.stdin.on("error", () => { if (!running.cancelled) diagnostic(); child.kill("SIGKILL"); });
       child.stdin.end(body);
     } catch { active = undefined; diagnostic(); queueMicrotask(drain); }
   };
@@ -51,12 +52,12 @@ function bridge(source, warn) {
       if (queue.length >= 8) { diagnostic(); return; }
       queue.push({ payload, valid }); queueMicrotask(drain);
     },
-    cancel() { queue.length = 0; if (active) active.kill("SIGKILL"); },
+    cancel() { queue.length = 0; if (active) { active.cancelled = true; clearTimeout(active.timer); active.child.kill("SIGKILL"); } },
     stop() { stopped = true; this.cancel(); },
   };
 }
 import { Plugin } from "@opencode/plugin/tui";
-import { createEffect } from "solid-js";
+import { createEffect, createRoot } from "solid-js";
 
 export default Plugin.define({
   id: "mobterm.jumpto",
@@ -76,10 +77,6 @@ export default Plugin.define({
       const current = context.ui.router.current();
       return current?.type === "session" && validID(current.sessionID) ? current.sessionID : undefined;
     };
-    createEffect(() => {
-      const current = route();
-      if (current !== previousRoute) { previousRoute = current; routeEpoch++; transport.cancel(); }
-    });
     const root = (sessionID) => {
       const visited = new Set();
       let id = sessionID;
@@ -145,17 +142,39 @@ export default Plugin.define({
           session_id: sessionID, event_id: event.id, instance_id: memory.instance }, valid);
       } catch { /* A changed upstream schema must never interrupt the TUI. */ }
     };
-    const dispose = [
-      context.data.on("session.execution.started", (event) => { if (validID(event.id)) lifecycle(event.data.sessionID, false); }),
-      context.data.on("session.execution.failed", (event) => lifecycle(event.data.sessionID, true)),
-      context.data.on("session.execution.interrupted", (event) => lifecycle(event.data.sessionID, true)),
-      context.data.on("session.execution.succeeded", handle),
-      context.data.on("permission.asked", handle),
-      context.data.on("form.created", handle),
-      context.data.on("permission.replied", (event) => clearRequest(event, event.data.requestID)),
-      context.data.on("form.replied", (event) => clearRequest(event, event.data.id)),
-      context.data.on("form.cancelled", (event) => clearRequest(event, event.data.id)),
-    ];
-    return () => { alive = false; routeEpoch++; transport.stop(); dispose.reverse().forEach((unsubscribe) => unsubscribe()); };
+    const dispose = [];
+    let disposeRoute;
+    const cleanup = () => {
+      if (!alive) return;
+      alive = false; routeEpoch++; transport.stop();
+      disposeRoute?.();
+      for (const unsubscribe of dispose.splice(0).reverse()) {
+        try { unsubscribe(); } catch { /* Continue releasing the other listeners. */ }
+      }
+    };
+    try {
+      // The host calls setup outside a Solid owner. Each activation owns its observer.
+      createRoot((release) => {
+        disposeRoute = release;
+        createEffect(() => {
+          const current = route();
+          if (current !== previousRoute) { previousRoute = current; routeEpoch++; transport.cancel(); }
+        });
+      });
+      for (const [type, handler] of [
+        ["session.execution.started", (event) => { if (validID(event.id)) lifecycle(event.data.sessionID, false); }],
+        ["session.execution.failed", (event) => lifecycle(event.data.sessionID, true)],
+        ["session.execution.interrupted", (event) => lifecycle(event.data.sessionID, true)],
+        ["session.execution.succeeded", handle],
+        ["permission.asked", handle],
+        ["form.created", handle],
+        ["permission.replied", (event) => clearRequest(event, event.data.requestID)],
+        ["form.replied", (event) => clearRequest(event, event.data.id)],
+        ["form.cancelled", (event) => clearRequest(event, event.data.id)],
+      ]) dispose.push(context.data.on(type, handler));
+      return cleanup;
+    } catch {
+      cleanup();
+    }
   },
 });

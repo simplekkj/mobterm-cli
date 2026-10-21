@@ -2,3 +2,4 @@
 /dist/
 /mobterm-cli
 *.test
+/scripts/native-adapter-tests/node_modules/

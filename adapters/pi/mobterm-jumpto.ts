@@ -30,19 +30,20 @@ function bridge(source, warn) {
         env: { ...process.env, MOBTERM_CONFIG_DIR: store },
         stdio: ["pipe", "ignore", "ignore"], shell: false,
       });
-      active = child;
-      const timer = setTimeout(() => { diagnostic(); child.kill("SIGKILL"); }, 10000);
+      const running = { child, cancelled: false };
+      active = running;
+      const timer = running.timer = setTimeout(() => { diagnostic(); child.kill("SIGKILL"); }, 10000);
       let finished = false;
       const finish = (failed) => {
         if (finished) return;
         finished = true; clearTimeout(timer);
-        if (failed) diagnostic();
-        if (active === child) active = undefined;
+        if (failed && !running.cancelled) diagnostic();
+        if (active === running) active = undefined;
         queueMicrotask(drain);
       };
       child.once("error", () => finish(true));
       child.once("close", (code) => finish(code !== 0));
-      child.stdin.on("error", () => { diagnostic(); child.kill("SIGKILL"); });
+      child.stdin.on("error", () => { if (!running.cancelled) diagnostic(); child.kill("SIGKILL"); });
       child.stdin.end(body);
     } catch { active = undefined; diagnostic(); queueMicrotask(drain); }
   };
@@ -52,7 +53,7 @@ function bridge(source, warn) {
       if (queue.length >= 8) { diagnostic(); return; }
       queue.push({ payload, valid }); queueMicrotask(drain);
     },
-    cancel() { queue.length = 0; if (active) active.kill("SIGKILL"); },
+    cancel() { queue.length = 0; if (active) { active.cancelled = true; clearTimeout(active.timer); active.child.kill("SIGKILL"); } },
     stop() { stopped = true; this.cancel(); },
   };
 }

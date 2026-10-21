@@ -211,7 +211,9 @@ jobs:
             --work-dir "$RUNNER_TEMP/mobterm-asdf-probe"
 
       - name: Native OpenCode and Pi adapter contracts
-        run: node scripts/test-native-adapters.mjs
+        run: |
+          npm ci --prefix scripts/native-adapter-tests --ignore-scripts --no-audit --no-fund
+          node scripts/test-native-adapters.mjs
       - name: Install official TUI compatibility endpoints
         env:
           HOME: ${{ runner.temp }}/mobterm-native-home
