@@ -76,7 +76,21 @@ func (p agentCompatibility) evaluate(output string) string {
 	return ""
 }
 
+type probeStatus string
+
+const (
+	probeOK        probeStatus = "ok"
+	probeNotFound  probeStatus = "not_found"
+	probeFailed    probeStatus = "failed"
+	probeTimeout   probeStatus = "timeout"
+	probeCancelled probeStatus = "cancelled"
+)
+
+// Only the initial Agent entry lookup may produce this typed absence result.
+var errAgentNotFound = errors.New("agent entry not found")
+
 type agentProbe struct {
+	status    probeStatus
 	actual    string
 	installed bool
 	reason    string
@@ -85,22 +99,28 @@ type agentProbe struct {
 func probeAgent(ctx context.Context, agent string) agentProbe {
 	p, ok := agentCompatibilities[agent]
 	if !ok {
-		return agentProbe{reason: "unknown_agent"}
+		return agentProbe{status: probeFailed, reason: "unknown_agent"}
 	}
 	// Older official JavaScript CLIs need more than one second to start. Keep
-	// the same bounded budget in install, notify and status. Status probes both
+	// the same bounded budget in install, notify and status. Status probes four
 	// Agents concurrently to leave time for pair readback in its ten-second context.
 	query, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	output, err := agentVersionOutput(query, agent)
 	if err != nil {
 		if errors.Is(query.Err(), context.DeadlineExceeded) {
-			return agentProbe{reason: "probe_timeout"}
+			return agentProbe{status: probeTimeout, reason: "probe_timeout"}
 		}
-		return agentProbe{reason: "probe_failed"}
+		if errors.Is(query.Err(), context.Canceled) {
+			return agentProbe{status: probeCancelled, reason: "probe_failed"}
+		}
+		if errors.Is(err, errAgentNotFound) {
+			return agentProbe{status: probeNotFound, reason: "probe_failed"}
+		}
+		return agentProbe{status: probeFailed, reason: "probe_failed"}
 	}
 	actual := strings.TrimSpace(string(output))
-	result := agentProbe{installed: true, reason: p.evaluate(actual)}
+	result := agentProbe{status: probeOK, installed: true, reason: p.evaluate(actual)}
 	if len(actual) <= 100 {
 		result.actual = actual
 	}

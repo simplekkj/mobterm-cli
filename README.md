@@ -115,7 +115,13 @@ the detected version, minimum and refusal reason. Its `supported` flag means the
 version policy passes; it does not establish live notification delivery. Future
 stable versions have no mechanical upper limit but are not automatically verified.
 
+Before pairing, `status --agents-json` can discover the four Agents without
+creating Mobterm state or contacting the notification API. It distinguishes a
+missing entry from a failed check and reports runtime and configuration separately.
+See the [discovery contract](docs/protocol-v1.md#read-only-agent-discovery).
+
 ```sh
+mobterm-cli status --agents-json
 mobterm-cli hooks install --agent codex --json
 mobterm-cli hooks install --agent claude --json
 mobterm-cli hooks install --agent opencode --json

@@ -861,3 +861,54 @@ resources and their event schemas did not change; actual OpenCode/Pi host-loader
 runs from earlier rounds are not claimed as rerun evidence for this round.
 Local fixture API states do not prove APNs acceptance or phone display. No
 release, tag, deployment, or production configuration change is included.
+
+## 2026-10-23: read-only Agent discovery (round 1 v1.0)
+
+Source work started on `main` at
+`1139b3d2f1aa5a6059c2f856893df3c08158fbfb`, matching the analysis baseline.
+Validation uses Go 1.27.1 on Darwin/amd64 and temporary local Agent executables,
+HOME/configuration roots and state directories. No release, remote installation,
+user remote configuration, live notification API or APNs operation is part of this run.
+
+`discovery_test.go` executes the public `status --agents-json` command and checks
+that an absent Mobterm store stays absent, existing identity/pair/outbox bytes
+remain unchanged, notification HTTP requests stay at zero, each Agent is probed
+once and disposable probe directories are removed. It tests exclusive flags,
+mixed available/missing/old/failed results, unknown/prerelease versions,
+permission/Node/Pi-package failures, cancellation, the real five-second per-Agent
+timeout, partial-result preservation and removal of owned hooks without a runtime.
+Existing asdf/isolation, compatibility, lifecycle, health, native integration and
+protocol tests continue to exercise the unchanged command and ownership gates.
+
+`testdata/agents-discovery-v1.json` was emitted by a locally built modified CLI
+against four isolated supported-version scripts. The Go test compares actual
+command output semantically with this same cross-client response sample. It is a
+fixture, not evidence that real Agents loaded integrations or delivered messages.
+
+An initial suite found that a new cancellation rejection string changed the old
+contract; the implementation now retains `probe_failed` while exposing the typed
+`probe_status:cancelled`. The focused discovery/asdf regression suite then passed
+(11.117s). A subsequent full run (316.852s) and one focused retry hit the unchanged
+five-second deadline before a fixture shell started. During those runs the host
+was compiling the App and booting an iOS Simulator; observed load averages reached
+186.92 / 155.57 / 76.89. After coordinating a quiet window, the exact failed test
+passed unchanged (test 1.58s, package 2.498s). Neither the production timeout nor
+assertions were weakened.
+
+Final-source checks after the environment settled:
+
+- `test -z "$(gofmt -l .)"`: PASS; only changed Go files were formatted.
+- `go test ./...`: PASS, 271.198s.
+- `go vet ./...`: PASS.
+- `go test -race ./...`: PASS, exit 0; package 352.523s, wall time 404.359s
+  including compilation.
+  The earlier race process was interrupted by an agent-server restart before a
+  final result could be confirmed, so only this unconfirmed check was rerun.
+  Its output and exit/elapsed record are retained locally in ignored
+  `.cache/agent-discovery-v1/race-final.log` and `race-final-result.json`.
+- `git diff --check`: PASS.
+
+Real Agent runtime activation, real SSH/jump-host selection, notification API/APNs
+delivery, physical-device display and Jump-to were not tested by these local
+fixtures. The discovery addition does not change event types, encryption vectors,
+pair policy or API contracts. No packaging/release gate is needed for this change.

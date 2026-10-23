@@ -50,7 +50,13 @@ func hookHealth(s Store, capabilities map[string]any) map[string]agentHealth {
 	for _, agent := range []string{"codex", "claude", "opencode", "pi"} {
 		h := inspectHook(s, agent)
 		c, _ := capabilities[agent].(map[string]any)
-		if c["installed"] == false {
+		if status, typed := c["probe_status"].(probeStatus); typed && status != probeOK {
+			if status == probeNotFound {
+				h.State = "not_installed"
+			} else {
+				h.State = "unknown"
+			}
+		} else if c["installed"] == false {
 			h.State = "not_installed"
 		} else if c["supported"] == false {
 			h.State = "unsupported"

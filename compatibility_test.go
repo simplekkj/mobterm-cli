@@ -297,7 +297,7 @@ func TestAsdfProbeIsolationAndFailure(t *testing.T) {
 		if err := os.WriteFile(callback, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
 			t.Fatal(err)
 		}
-		if p := probeAgent(context.Background(), "claude"); p.installed || p.reason != "probe_failed" {
+		if p := probeAgent(context.Background(), "claude"); p.installed || p.reason != "probe_failed" || p.status != probeFailed {
 			t.Fatal("custom selection callback accepted", path)
 		}
 		if err := os.Remove(callback); err != nil {
@@ -310,7 +310,7 @@ func TestAsdfProbeIsolationAndFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("FIXTURE_RESOLVE_FAIL", "1")
-	if p := probeAgent(context.Background(), "claude"); p.installed || p.reason != "probe_failed" {
+	if p := probeAgent(context.Background(), "claude"); p.installed || p.reason != "probe_failed" || p.status != probeFailed {
 		t.Fatal("failed launcher accepted")
 	}
 	if err := changeHooks(context.Background(), s, "claude", "install", "", "/fixture/mobterm-cli", true); err == nil {
@@ -322,12 +322,12 @@ func TestAsdfProbeIsolationAndFailure(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if p := probeAgent(ctx, "claude"); p.installed || p.reason != "probe_failed" {
+	if p := probeAgent(ctx, "claude"); p.installed || p.reason != "probe_failed" || p.status != probeCancelled {
 		t.Fatal("cancelled launcher accepted")
 	}
 	ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	if p := probeAgent(ctx, "claude"); p.installed || p.reason != "probe_timeout" {
+	if p := probeAgent(ctx, "claude"); p.installed || p.reason != "probe_timeout" || p.status != probeTimeout {
 		t.Fatal("expired launcher accepted")
 	}
 	if err := changeHooks(context.Background(), s, "claude", "uninstall", "", "/fixture/mobterm-cli", true); err != nil {

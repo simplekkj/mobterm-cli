@@ -38,6 +38,9 @@ func resolveAgentLaunch(ctx context.Context, agent string, budget *int) (agentLa
 	}
 	entry, err := probeLookPath(agent, searchPath)
 	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			err = errAgentNotFound
+		}
 		return agentLaunch{}, err
 	}
 	entry, searchPath, err = resolveAsdfEntry(ctx, entry, searchPath, budget)
@@ -186,11 +189,18 @@ func absoluteProbePath(path string) (string, error) {
 }
 
 func probeLookPath(name, path string) (string, error) {
+	var entryError error
 	for _, dir := range filepath.SplitList(path) {
 		entry := filepath.Join(dir, name)
 		if found, err := exec.LookPath(entry); err == nil {
 			return found, nil
+		} else if _, statErr := os.Lstat(entry); !errors.Is(statErr, os.ErrNotExist) {
+			// A present but non-executable entry (or unreadable parent) is not absence.
+			entryError = err
 		}
 	}
-	return "", errors.New("probe executable missing")
+	if entryError != nil {
+		return "", entryError
+	}
+	return "", exec.ErrNotFound
 }

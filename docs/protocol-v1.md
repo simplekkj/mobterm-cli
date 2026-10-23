@@ -55,6 +55,65 @@ without knowing the source. A new App facing an old CLI refuses only unsupported
 new management actions and asks for a CLI update. Public envelope fields, AAD,
 locator types, policies and token generations are unchanged.
 
+## Read-only Agent discovery
+
+`mobterm-cli status --agents-json` returns a single JSON line with required
+`v:1`, `scope:"agents"`, `discovery_version:1`, build `version`/`commit`, and
+`capabilities`, `hooks`, `health` objects containing all four known Agent keys.
+The cross-client response fixture is
+[agents-discovery-v1.json](../testdata/agents-discovery-v1.json).
+
+This mode branches before installation initialization. It creates no Mobterm
+state directory, installation ID, lock or pair; reads no pairs or outbox;
+performs no notification API requests, sends, migrations or hook repairs.
+Existing hook ownership/configuration is only read. Agent version commands use
+one isolated disposable directory per probe, cleaned afterward, with the existing
+five-second per-Agent / ten-second command budgets and bounded output. This
+isolates real configuration; it does not claim arbitrary third-party executables
+have no behavior of their own. Agent detection works before pairing.
+
+`--agents-json` is exclusive with `--json`, `--installation-json`, `--pair`
+(including empty or false-valued flags) and repeated mode flags. Invalid
+arguments fail before probing or initializing state. Original `status --json`
+and `status --installation-json` retain their installation/pair contracts.
+
+Each capability adds the required typed `probe_status`:
+
+| Value | Meaning |
+| --- | --- |
+| `ok` | Version command completed; `supported` still applies the existing stable/minimum policy |
+| `not_found` | No Agent entry found in this user's current selection context |
+| `failed` | Present entry could not run, including permissions, Node/asdf selection or Pi package failures |
+| `timeout` | Per-Agent probe budget expired |
+| `cancelled` | Probe context was cancelled |
+
+`installed` retains its prior successful-probe meaning and is not an absence
+signal by itself. Existing version rejection codes remain compatible; use
+`probe_status`, not their strings, to distinguish absent/failed/cancelled probes.
+Unknown output, prereleases and old versions produce `ok` with `supported:false`.
+Only `ok`, `installed:true`, `supported:true` and the applicable integration
+capabilities permit configuration. OpenCode/Pi additionally require
+`managed_hooks:true` and supported `adapter_revision`; Codex/Claude do not.
+
+`health.configuration_state`, `issues`, `restart_required` and `loaded` remain
+independent of runtime availability. `state` can be `not_installed` for absence,
+`unsupported` for a completed unsupported probe, or `unknown` for probe failures;
+these never replace `configuration_state`. `loaded` remains `"unknown"`.
+`hooks` reports ownership facts, not live loading or successful delivery.
+Removal remains available without a compatible runtime and enforces ownership.
+
+One Agent failure/timeout does not discard the other results. An overall command
+cancellation/deadline returns a nonzero generic error instead of a discovery
+snapshot. Callers must validate exit status, scope/version and required structure;
+missing fields or unknown enum values do not mean no Agent was found.
+
+An old CLI rejects this unknown flag. A new App must retain existing pairings and
+show discovery unavailable/failed, never automatically fall back to full status,
+setup or an install command. Explicit advanced diagnostics/maintenance may still
+use the original full status, but must not promote it into a discovery snapshot.
+An old App can ignore the added status fields on a new CLI. There is no migration,
+API change, release or remote upgrade implied by this source change.
+
 ## Encrypted events
 
 ```json

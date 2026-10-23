@@ -32,6 +32,15 @@ five-second budget, bounded by the calling context, with bounded pipe cleanup.
 Status probes the four independent Agents concurrently to retain time for pair
 readback within the command's ten-second context; deadline failures are reported
 as `probe_timeout` without exposing command output.
+`status --agents-json` uses the same runtime selection and isolated probes without
+initializing installation identity, reading pairs/outbox or calling the notification
+API. Each Agent reports `probe_status: ok | not_found | failed | timeout | cancelled`;
+only the initial Agent entry lookup can report `not_found`. An existing launcher
+with missing Node, failed asdf selection, invalid Pi package selection or permission
+failure reports `failed`. Configuration health survives missing/unsupported runtimes.
+The legacy `installed` and rejection-code semantics remain compatible; consumers
+must use the new typed field to distinguish these outcomes. See the
+[discovery contract](protocol-v1.md#read-only-agent-discovery).
 This accommodates older JavaScript CLI startup (Claude 2.0.36 measured 1.4–1.5
 seconds on macOS Intel). Version probing first fixes the effective launcher and
 runtime in the caller's original HOME/cwd/PATH. Generated asdf shims are recognized

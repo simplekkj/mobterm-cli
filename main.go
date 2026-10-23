@@ -33,49 +33,9 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 	if installationOnly {
 		return result, nil
 	}
-	result["capabilities"] = map[string]any{"codex": map[string]any{"turn_completed": "agent-turn-complete", "needs_input": false, "reason": "PermissionRequest is pre-decision; no verified external human-wait event"}, "claude": map[string]any{"turn_completed": "native idle_prompt after user prompt; delayed by Claude", "needs_input": []string{"permission_prompt", "elicitation_dialog"}}, "herdr": map[string]any{"versions": []string{"0.9.1", "0.9.3"}, "source": "native Agent hooks only", "protocol": 22}}
-	type probeResult struct {
-		agent string
-		probe agentProbe
+	for key, value := range agentDiagnostics(ctx, s) {
+		result[key] = value
 	}
-	capabilities := result["capabilities"].(map[string]any)
-	capabilities["target"] = map[string]any{"resolve": true, "tmux_occupant": "tmux-proc-v1"}
-	capabilities["opencode"] = map[string]any{"turn_completed": "session.execution.succeeded: visible root only", "needs_input": []string{"permission.asked", "form.created"}, "managed_hooks": true, "adapter_revision": 1}
-	capabilities["pi"] = map[string]any{"turn_completed": "agent_settled: aborted=false in TUI", "needs_input": false, "reason": "No authoritative pending human-request API", "managed_hooks": true, "adapter_revision": 1}
-	probes := make(chan probeResult, 4)
-	for _, agent := range []string{"codex", "claude", "opencode", "pi"} {
-		go func(agent string) { probes <- probeResult{agent, probeAgent(ctx, agent)} }(agent)
-	}
-	for range 4 {
-		completed := <-probes
-		agent, probe := completed.agent, completed.probe
-		capability := result["capabilities"].(map[string]any)[agent].(map[string]any)
-		policy := agentCompatibilities[agent]
-		capability["version"] = policy.reference
-		capability["version_role"] = "validation_reference"
-		capability["validation_reference"] = policy.reference
-		capability["minimum_version"] = policy.minimum.String()
-		capability["supported_range"] = ">=" + policy.minimum.String() + " stable"
-		capability["installed"] = probe.installed
-		capability["actual_version"] = probe.actual
-		capability["supported"] = probe.reason == ""
-		if probe.reason != "" {
-			capability["version_rejection"] = probe.reason
-		}
-	}
-	installed := map[string]bool{}
-	for _, agent := range []string{"codex", "claude"} {
-		var r HookRecord
-		if s.readJSON("hooks-"+agent+".json", &r) == nil {
-			b, e := secureRead(r.Path, 2*1024*1024)
-			installed[agent] = e == nil && strings.Contains(string(b), r.Managed)
-		}
-	}
-	for _, agent := range []string{"opencode", "pi"} {
-		installed[agent] = nativeHooksInstalled(s, agent)
-	}
-	result["hooks"] = installed
-	result["health"] = hookHealth(s, capabilities)
 	summary, summaryErr := outboxSummary(ctx, s, pairID)
 	if summaryErr != nil {
 		result["outbox"] = map[string]any{"error": safeCode(summaryErr.Error())}
@@ -144,7 +104,7 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 }
 func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "mobterm-cli setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | upgrade --version vX.Y.Z | version")
+		fmt.Fprintln(out, "mobterm-cli setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | upgrade --version vX.Y.Z | version")
 		return 0
 	}
 	if args[0] == "version" || args[0] == "--version" {
@@ -187,14 +147,29 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		}
 	case "status":
 		var pair string
-		var j, installation bool
+		var j, installation, agents bool
 		f, e := flags("status", args[1:], func(f *flag.FlagSet) {
 			f.StringVar(&pair, "pair", "", "")
 			f.BoolVar(&j, "json", false, "")
 			f.BoolVar(&installation, "installation-json", false, "")
+			f.BoolVar(&agents, "agents-json", false, "")
 		})
-		if e != nil || f.NArg() != 0 {
+		// Presence (including =false) matters for exclusive modes. Reject repeated
+		// flags before doing any probe or installation initialization.
+		seen := map[string]bool{}
+		invalid := false
+		for _, argument := range args[1:] {
+			name, _, _ := strings.Cut(strings.TrimLeft(argument, "-"), "=")
+			if strings.HasPrefix(argument, "-") && (name == "agents-json" || name == "installation-json" || name == "json" || name == "pair") {
+				invalid = invalid || seen[name]
+				seen[name] = true
+			}
+		}
+		invalid = invalid || seen["agents-json"] && (!agents || seen["installation-json"] || seen["json"] || seen["pair"])
+		if e != nil || f.NArg() != 0 || invalid {
 			err = errors.New("invalid status arguments")
+		} else if agents {
+			value, err = discoverAgents(ctx, s)
 		} else {
 			value, err = status(ctx, s, a, pair, installation)
 		}
