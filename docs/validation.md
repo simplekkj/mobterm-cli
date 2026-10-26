@@ -58,6 +58,28 @@ Executed checks:
   not retroactively presented as a clean full run.
 - `go vet ./...`, `test -z "$(gofmt -l .)"`, `git diff --check`: PASS.
 
+The first pushed source, `bb0875ef1ab846401f8a7db3f4ce86f1586f328b`, exposed an
+affected Linux black-box fixture in
+[CI run 40344596591](https://github.com/simplekkj/mobterm-cli/actions/runs/40344596591).
+`test_setup_https_repeat_failure_and_credentials_retained_on_hook_removal`
+failed at the single-pair status call with exit 1 / `pair_status_failed`. Its
+HTTPS Handler returned active plus installation identity but omitted `pair_id`;
+the actual API `pairState` has always returned both identities. The preceding
+base's [CI run 39908988546](https://github.com/simplekkj/mobterm-cli/actions/runs/39908988546)
+passed because the old CLI synthesized the requested pair ID instead of checking
+the API value. This was an affected test fixture, not evidence that the real API
+omits the field. The fixture now returns `pair_id` and explicitly checks pair,
+installation and local-save acknowledgement. Production success criteria and
+Hooks behavior are unchanged by this follow-up.
+
+Local follow-up verification: Python compilation and `git diff --check` passed;
+executing the existing Handler's POST claim and GET status over loopback HTTP
+verified both matching identities and active state. This payload check is not a
+Linux HTTPS lifecycle pass. The full Python HTTPS fixture cannot run on this
+Darwin host because it intentionally relies on Linux `SSL_CERT_FILE` loading;
+no local Docker daemon was available. The subsequent Linux CI rerun outcome is
+recorded in the task delivery report.
+
 The public protocol remains v1 with the same six-field frame, successful setup
 receipt and persistence format. Optional failure metadata is additive; old App
 consumers can ignore it, and new Apps must still handle old CLI failures. No

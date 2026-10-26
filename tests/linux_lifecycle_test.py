@@ -268,7 +268,7 @@ class LifecycleTests(unittest.TestCase):
                     test.assertEqual(body, {'installation_id': installation, 'claim_id': pair_id})
                 value = ({'event_id': body['event_id'], 'state': 'apns_accepted'}
                          if self.path.endswith('/events') else
-                         {'status': 'active', 'installation_id': installation})
+                         {'pair_id': pair_id, 'status': 'active', 'installation_id': installation})
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
@@ -305,6 +305,9 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(pairs.read_bytes()).digest(), saved)
         status = json.loads(self.cli('status', '--json', '--pair', pair_id).stdout)
         self.assertEqual(status['status'], 'active')
+        self.assertEqual(status['pair_id'], pair_id)
+        self.assertEqual(status['installation_id'], installation)
+        self.assertTrue(status['local_saved'])
         result = json.loads(self.cli('test', '--pair', pair_id, '--json').stdout)
         self.assertEqual(result['state'], 'apns_accepted')  # Fixture response only.
         for agent in ('codex', 'claude'):
