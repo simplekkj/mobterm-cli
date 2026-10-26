@@ -14,6 +14,14 @@ import (
 )
 
 type API struct{ Client *http.Client }
+
+// Preserve cancellation/timeout evidence without exposing network error text.
+// The displayed legacy error remains unchanged for other API callers.
+type apiConnectionError struct{ cause error }
+
+func (e *apiConnectionError) Error() string { return "API unavailable" }
+func (e *apiConnectionError) Unwrap() error { return e.cause }
+
 type APIError struct {
 	Status     int
 	Code       string
@@ -53,7 +61,7 @@ func (a API) request(ctx context.Context, p Pair, method, path string, body any)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := a.Client.Do(req)
 	if err != nil {
-		return nil, errors.New("API unavailable")
+		return nil, &apiConnectionError{cause: err}
 	}
 	defer resp.Body.Close()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 16385))
@@ -113,65 +121,65 @@ func (a API) send(ctx context.Context, p Pair, e Envelope) (map[string]any, erro
 func setup(ctx context.Context, s Store, a API, in io.Reader) (map[string]any, error) {
 	var p SetupPacket
 	if err := readFrameContext(ctx, in, &p); err != nil {
-		return nil, err
+		return nil, pairingFailure("setup_frame", "invalid_frame", err)
 	}
 	if err := p.validate(); err != nil {
-		return nil, err
+		return nil, pairingFailure("setup_frame", "invalid_frame", err)
 	}
 	id, err := s.installation()
 	if err != nil {
-		return nil, err
+		return nil, pairingFailure("installation", "local_config_failed", err)
 	}
 	if p.InstallationID != id {
-		return nil, errors.New("installation identity changed")
+		return nil, pairingFailure("installation", "installation_changed", errors.New("installation identity changed"))
 	}
 	pair := Pair{p, "pending"}
 	existing, e := s.pairs()
 	if e != nil {
-		return nil, e
+		return nil, pairingFailure("local_save", "local_config_failed", e)
 	}
 	if old, ok := existing[p.PairID]; ok {
 		if old.SetupPacket != p {
-			return nil, errors.New("pair identity conflict")
+			return nil, pairingFailure("local_save", "installation_changed", errors.New("pair identity conflict"))
 		}
 		pair = old
 	}
 
 	if err = s.savePair(ctx, pair); err != nil {
-		return nil, err
+		return nil, pairingFailure("local_save", "local_save_failed", err)
 	}
 	v, err := a.request(ctx, pair, "POST", "/v1/pairs/"+p.PairID+"/claim", map[string]string{"installation_id": id, "claim_id": p.PairID})
 	if err != nil {
 		var ae *APIError
 		if errors.As(err, &ae) && ae.Status == 410 && (ae.Code == "pair_expired" || ae.Code == "pair_revoked") {
 			if retireErr := s.retirePairIfCurrent(ctx, p.PairID, strings.TrimPrefix(ae.Code, "pair_"), false, &pair); retireErr != nil {
-				return nil, retireErr
+				return nil, pairingFailure("local_save", "local_save_failed", retireErr)
 			}
-			return nil, err
+			return nil, pairingFailure("claim", "unknown", err)
 		}
 		// A lost claim response can leave a remotely active, locally pending pair.
 		remote, queryErr := a.request(ctx, pair, "GET", "/v1/pairs/"+p.PairID, nil)
 		if errors.As(queryErr, &ae) && ae.Status == 410 && (ae.Code == "pair_expired" || ae.Code == "pair_revoked") {
 			if retireErr := s.retirePairIfCurrent(ctx, p.PairID, strings.TrimPrefix(ae.Code, "pair_"), false, &pair); retireErr != nil {
-				return nil, retireErr
+				return nil, pairingFailure("local_save", "local_save_failed", retireErr)
 			}
 		}
 		if queryErr != nil || remote["status"] != "active" || remote["installation_id"] != id {
-			return nil, err
+			return nil, pairingFailure("claim", "unknown", err)
 		}
 		v = remote
 	}
 	if v["status"] != "active" {
-		return nil, errors.New("API has not activated pair")
+		return nil, pairingFailure("claim", "pair_status_failed", errors.New("API has not activated pair"))
 	}
 	if err = s.transitionPair(ctx, pair, "active"); err != nil {
-		return nil, err
+		return nil, pairingFailure("local_save", "local_save_failed", err)
 	}
 	pair.Status = "active"
 	// Read the durable local value before acknowledging the SSH machine call.
 	saved, err := s.pairs()
 	if err != nil || saved[p.PairID] != pair {
-		return nil, errors.New("local pair readback failed")
+		return nil, pairingFailure("local_readback", "local_save_failed", errors.New("local pair readback failed"))
 	}
 	return map[string]any{"v": 1, "pair_id": p.PairID, "installation_id": id, "status": "active", "local_saved": true}, nil
 }

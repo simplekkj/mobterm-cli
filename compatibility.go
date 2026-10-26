@@ -103,7 +103,7 @@ func probeAgent(ctx context.Context, agent string) agentProbe {
 	}
 	// Older official JavaScript CLIs need more than one second to start. Keep
 	// the same bounded budget in install, notify and status. Status probes four
-	// Agents concurrently to leave time for pair readback in its ten-second context.
+	// Agents concurrently within the remaining ten-second command context.
 	query, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	output, err := agentVersionOutput(query, agent)

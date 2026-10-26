@@ -24,27 +24,34 @@ func flags(name string, args []string, defs func(*flag.FlagSet)) (*flag.FlagSet,
 	defs(f)
 	return f, f.Parse(args)
 }
-func status(ctx context.Context, s Store, a API, pairID string, installationOnly bool) (map[string]any, error) {
+func status(ctx context.Context, s Store, a API, pairID string, installationOnly bool) (result map[string]any, err error) {
+	if pairID != "" && !opaqueID.MatchString(pairID) {
+		return nil, pairingFailure("pair_status", "pair_status_failed", errors.New("invalid pair identity"))
+	}
 	id, err := s.installation()
 	if err != nil {
-		return nil, err
+		return nil, pairingFailure("installation", "local_config_failed", err)
 	}
-	result := map[string]any{"v": 1, "installation_id": id, "version": version, "commit": commit}
+	result = map[string]any{"v": 1, "installation_id": id, "version": version, "commit": commit}
 	if installationOnly {
 		return result, nil
 	}
-	for key, value := range agentDiagnostics(ctx, s) {
-		result[key] = value
-	}
-	summary, summaryErr := outboxSummary(ctx, s, pairID)
-	if summaryErr != nil {
-		result["outbox"] = map[string]any{"error": safeCode(summaryErr.Error())}
+	if pairID != "" {
+		// Freeze the core result before auxiliary work consumes the remaining
+		// command budget. Cancellation remains authoritative; auxiliary deadline
+		// exhaustion only degrades its own diagnostic fields.
+		defer func() {
+			addStatusDiagnostics(ctx, s, pairID, result)
+			if errors.Is(ctx.Err(), context.Canceled) {
+				err = pairingFailure("pair_status", "cancelled", ctx.Err())
+			}
+		}()
 	} else {
-		result["outbox"] = summary
+		addStatusDiagnostics(ctx, s, pairID, result)
 	}
 	pairs, err := s.pairs()
 	if err != nil {
-		return result, err
+		return result, pairingFailure("pair_status", "local_config_failed", err)
 	}
 	if pairID != "" {
 		p, ok := pairs[pairID]
@@ -60,7 +67,10 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 		}
 		if !ok {
 			result["status"] = "unpaired"
-			return result, nil
+			return result, pairingFailure("pair_status", "pair_status_failed", errors.New("local pair missing"))
+		}
+		if p.InstallationID != id || p.PairID != pairID {
+			return result, pairingFailure("pair_status", "installation_changed", errors.New("local pair identity changed"))
 		}
 		remote, err := a.request(ctx, p, "GET", "/v1/pairs/"+pairID, nil)
 		if remote != nil {
@@ -76,7 +86,20 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 				result["status"] = "api_unavailable"
 			}
 		}
-		return result, err
+		if err != nil {
+			return result, pairingFailure("pair_status", "pair_status_failed", err)
+		}
+		remoteInstallation, validInstallation := remote["installation_id"].(string)
+		if !validInstallation || !opaqueID.MatchString(remoteInstallation) {
+			return result, pairingFailure("pair_status", "pair_status_failed", errors.New("remote installation identity missing"))
+		}
+		if remoteInstallation != id {
+			return result, pairingFailure("pair_status", "installation_changed", errors.New("remote installation identity changed"))
+		}
+		if remote["pair_id"] != pairID || remote["status"] != "active" {
+			return result, pairingFailure("pair_status", "pair_status_failed", errors.New("pair status unconfirmed"))
+		}
+		return result, nil
 	}
 	list := []map[string]any{}
 	var firstErr error
@@ -102,6 +125,18 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 	}
 	return result, firstErr
 }
+func addStatusDiagnostics(ctx context.Context, s Store, pairID string, result map[string]any) {
+	for key, value := range agentDiagnostics(ctx, s) {
+		result[key] = value
+	}
+	summary, err := outboxSummary(ctx, s, pairID)
+	if err != nil {
+		result["outbox"] = map[string]any{"error": safeCode(err.Error())}
+	} else {
+		result["outbox"] = summary
+	}
+}
+
 func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
 		fmt.Fprintln(out, "mobterm-cli setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | upgrade --version vX.Y.Z | version")
@@ -114,6 +149,9 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	s, err := defaultStore()
 	if err != nil {
 		fmt.Fprintln(diagnostic, "mobterm-cli: configuration unavailable")
+		if pairingCommand(args) {
+			printJSON(out, map[string]any{"v": 1, "ok": false, "error": "operation_failed", "failure": pairingFailureMetadata(pairingFailure("configuration", "local_config_failed", err))})
+		}
 		return 1
 	}
 	base, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -131,7 +169,7 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		var framed bool
 		f, e := flags("setup", args[1:], func(f *flag.FlagSet) { f.BoolVar(&framed, "stdin-frame", false, "") })
 		if e != nil || !framed || f.NArg() != 0 {
-			err = errors.New("setup requires --stdin-frame")
+			err = pairingFailure("setup_frame", "invalid_frame", errors.New("setup requires --stdin-frame"))
 		} else {
 			value, err = setup(ctx, s, a, in)
 		}
@@ -292,11 +330,23 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	if object, ok := value.(map[string]any); ok && object == nil {
 		value = nil
 	}
+	if err != nil && pairingCommand(args) {
+		if value == nil {
+			value = map[string]any{"v": 1, "ok": false, "error": "operation_failed"}
+		}
+		if object, ok := value.(map[string]any); ok {
+			object["failure"] = pairingFailureMetadata(err)
+		}
+	}
 	if value != nil {
 		printJSON(out, value)
 	}
 	if err != nil {
-		fmt.Fprintln(diagnostic, "mobterm-cli:", err)
+		if pairingCommand(args) {
+			fmt.Fprintln(diagnostic, "mobterm-cli:", pairingFailureMetadata(err))
+		} else {
+			fmt.Fprintln(diagnostic, "mobterm-cli:", err)
+		}
 		if value == nil {
 			code := "operation_failed"
 			if args[0] == "target" {

@@ -27,11 +27,48 @@ Success is an unframed JSON line:
 {"v":1,"pair_id":"opaque_pair_identifier","installation_id":"opaque_installation_identifier","status":"active","local_saved":true}
 ```
 
-Failure is nonzero with a generic JSON error and sanitized stderr. Pending local
+Failure is nonzero with a JSON error and sanitized stderr. Pending local
 state is retained for an idempotent retry after an ambiguous network failure;
 it does not prove pairing succeeded. The App separately confirms API state and
 `status --json --pair ID`. Cancellation never removes unrelated pairs. A caller
 can abandon/revoke only its own pending attempt via device management.
+
+Pairing failures may add an optional `failure` object to the same JSON result:
+
+```json
+{"v":1,"ok":false,"error":"operation_failed","failure":{"stage":"claim","code":"rate_limited","http_status":429}}
+```
+
+`stage` is one of `configuration`, `installation`, `setup_frame`, `local_save`,
+`claim`, `pair_status`, `local_readback`. `code` is one of `invalid_frame`,
+`installation_changed`, `local_config_failed`, `local_save_failed`,
+`api_unavailable`, `timeout`, `api_rejected`, `rate_limited`, `pair_revoked`,
+`pair_expired`, `pair_status_failed`, `cancelled`, `unknown`. These are fixed
+classifications, never raw exception text, stderr, URLs or response bodies.
+Optional `http_status` is an integer from 100 through 599, present only when an
+HTTP response supplied it. An unavailable connection does not establish whether
+DNS, TLS or another network component failed. `timeout` requires context
+or transport deadline evidence; arbitrary error text is never interpreted.
+
+This metadata also covers configuration/installation failures before setup and
+single-pair status failures. Existing status results keep their pair, local-save,
+status and diagnostic fields; only one JSON object is emitted. Existing `v`,
+`ok`, `error` and successful response meanings remain unchanged. Old consumers
+ignore the optional object; new consumers reject unknown/malformed metadata and
+fall back to the locally known operation stage. No metadata makes a nonzero exit
+successful. No new minimum CLI version or API deployment is required.
+
+For `status --json --pair ID`, the CLI reads the necessary local pair and queries
+its API state **before** Agent probes or outbox scans. A successful result still
+requires a local pair with the same installation identity and an API response
+with the same pair/installation and `status:active`. Missing local state,
+inactive/mismatched/malformed API state and API errors fail with nonzero exit.
+The unchanged `capabilities`, `hooks`, `health` and `outbox` fields are then filled
+within the remaining ten-second command budget. Probe timeout or outbox failure
+is reported in those diagnostics and cannot replace an already confirmed core
+result or change its exit status. Explicit cancellation still fails. This does
+not promise fast diagnostics or turn a real network failure into success.
+Full status and installation-only/agents-only retain their existing roles.
 
 `status --json` adds Agent compatibility diagnostics under `capabilities.codex`
 and `capabilities.claude`, plus `capabilities.opencode` and `capabilities.pi`: `minimum_version`, `supported_range`, and (on refusal)

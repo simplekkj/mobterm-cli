@@ -1,5 +1,70 @@
 # Validation records
 
+## 2026-10-26: pairing confirmation and bounded failure diagnostics
+
+Work started on clean `main` at
+`afa9ec59cc3e5cc95832b6f05b21fc06b4fd4959`. The tests below use the task's working
+tree on Go 1.27.1, Darwin x86_64 / darwin/amd64. They use temporary private stores,
+local TLS or controlled HTTP transports and isolated Agent launchers. They do not
+use the user's Debian account, deployed API, APNs, or real-device credentials.
+
+Before changing production code, the new
+`TestPairStatusSurvivesAuxiliaryDeadline` failed against that base:
+
+```text
+healthy pair lost to auxiliary budget: status=api_unavailable calls=0 err=API unavailable
+--- FAIL: TestPairStatusSurvivesAuxiliaryDeadline (1.61s)
+```
+
+The fixture stores an active pair, serves a healthy local TLS API, and blocks a
+real Agent version process on a FIFO until a 1.5-second command deadline. There
+are no sleep-based synchronization guesses. The old order spends the budget
+before making any API request. With the fix the same test passes: API GET runs
+once, active remains successful, the probe reports timeout and outbox retains an
+error. This reproduces a conditional CLI defect, **not** the user's original
+Debian failure or a claim that healthy diagnostics always exceed a time/output
+limit. Four Agent probes still run concurrently, not sequentially.
+
+Focused tests also cover unavailable/timed-out/rejected API requests, revoked or
+expired pairs, missing local pairs, local/remote identity mismatch, missing
+identity/status, wrong pair and inactive state. Cancellation remains failure even
+when an active body was received. Real `run` calls exercise malformed frames,
+default-store and installation errors, identity changes, save failures, transport
+errors, unknown/malformed responses, HTTP rejection/rate limiting and single-pair
+status errors. They assert one JSON response, exit 1, safe fixed metadata, no
+secrets in added diagnostics/stderr, and retention of existing status fields.
+Existing repeated setup, lost-claim-reply reconciliation, storage safety,
+installation-only and agents-only regressions remain in the full suite.
+
+Executed checks:
+
+- `go test -count=1 -run '^TestPairStatus|^TestPairingRun|^TestAgentDiscovery' -v ./...`:
+  PASS; focused core failures and mode boundaries.
+- `go test -count=1 -json ./...`: PASS, 92 top-level tests / 397 test and subtest
+  pass events, zero skips, 290.741 seconds. The final missing-identity
+  classification and metadata-scope refinements also passed focused reruns;
+  the race run below covers their final integrated source.
+- `go test -race -count=1 -json ./...`: the first full run overlapped a heavy
+  sibling Xcode build and failed only existing `TestAsdfCompatibilityEntrypoints`
+  launcher preflights (`original launcher context is not usable signal: killed`
+  at their five-second fixture deadline). There were 318 pass events, zero skips
+  and no race-detector reports; all new pairing tests passed under race.
+- With Xcode stopped, `go test -race -count=1 -json -run
+  '^TestAsdfCompatibilityEntrypoints$' ./...`: PASS, all 95 test/subtest events,
+  zero skips, 116.771 seconds. No fixture/production timeouts or code were changed
+  for the rerun. Across the full run and this complete failed-class rerun, all
+  92 top-level tests / 398 unique test/subtest cases passed under race; no failed
+  case remains unresolved. The initial full command itself is recorded as FAIL,
+  not retroactively presented as a clean full run.
+- `go vet ./...`, `test -z "$(gofmt -l .)"`, `git diff --check`: PASS.
+
+The public protocol remains v1 with the same six-field frame, successful setup
+receipt and persistence format. Optional failure metadata is additive; old App
+consumers can ignore it, and new Apps must still handle old CLI failures. No
+API changes, releases/tags, Debian installation, production migrations or
+notification delivery were performed. Source push does not update an installed
+CLI. App/SSH integration evidence is recorded with the sibling App task.
+
 ## Linux Agent lifecycle and config preservation — 2026-10-14
 
 Final source validation ran on a disposable Linode (`108108945`) in `us-lax`:
