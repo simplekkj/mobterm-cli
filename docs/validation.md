@@ -999,3 +999,55 @@ Real Agent runtime activation, real SSH/jump-host selection, notification API/AP
 delivery, physical-device display and Jump-to were not tested by these local
 fixtures. The discovery addition does not change event types, encryption vectors,
 pair policy or API contracts. No packaging/release gate is needed for this change.
+
+## 2026-10-27: device registration lifecycle (round 1 v1.0)
+
+Source work started on `main` at
+`8bc77d7da9234eabb14a2cade16afc748a84fd74`, matching the analysis baseline.
+This CLI change updates the public lifecycle contract and compatibility tests;
+CLI runtime, hooks, dependencies, encryption envelope/AAD and golden vectors are
+unchanged. Test fixtures use isolated temporary local stores and loopback HTTP/TLS
+servers with Go 1.27.1 on Darwin/amd64; tmux 3.7c is available.
+
+`TestDeviceRevocationReconcilesOnlyAffectedPairs` checks both authenticated
+`status:revoked` and HTTP 410 `pair_revoked` responses for two pairs belonging to
+one retired device, an unaffected third pair, durable credential/key removal,
+digest-only history and another invocation reopening the store. The CLI fixture
+does not simulate D1 cleanup: actual sender authentication and retained Pair
+terminal responses across cleanup are the API repository's local D1 responsibility.
+`TestUnconfirmedDeviceRetirementRetainsPairCredentials` covers reconcile and send
+with 401/403/404/503, HTTP timeout, unrecognized 410 and mismatched status/code;
+these responses keep the original sender token, key, origin and installation and
+do not retire another device. The existing setup regression now also verifies
+`pair_revoked` during claim; existing lost-claim, late-result and outbox retirement
+checks run unchanged.
+
+Checks on the modified source above:
+
+- `go test -count=1 -run 'TestPairReconciliationTrustAndLostClaim|TestReconcileLateResultCannotReviveAbandonedAttempt|TestSetupLostReplyAndConfirmedExpiry|TestOutboxConfirmedPairRetirement|TestDeviceRevocationReconcilesOnlyAffectedPairs|TestUnconfirmedDeviceRetirementRetainsPairCredentials' ./...`:
+  PASS, 11.406s. An initial new timeout fixture stalled its HTTP server shutdown
+  because it had not consumed the POST request body; the fixture was corrected
+  and the suite rerun without changing production timeouts or assertions.
+- `test -z "$(gofmt -l .)"`: PASS.
+- `go vet ./...`: PASS.
+- `go test -json ./...`: PASS, exit 0; 417 tests/subtests, zero skips or failures.
+  Test process 277.356s; package command elapsed 334.262s including tool cleanup.
+- `go test -race -json ./...`: first run FAIL, exit 1, 403.087s; 352
+  tests/subtests passed and none skipped. Eight pre-existing launcher fixture
+  prerequisites in `TestAsdfCompatibilityEntrypoints` exceeded their unchanged
+  five-second timeout while the App compiled concurrently (observed host load
+  40.43 / 35.84 / 18.93). Failures were `agent-home` entrypoints/notify/one-probe
+  and `agent-project-explicit` entrypoints/notify/chain/installation-only/one-probe.
+  All lifecycle tests passed; no race detector report occurred.
+- After coordinating a window without Xcode compilation,
+  `go test -race -count=1 -json -run '^TestAsdfCompatibilityEntrypoints$/^(agent-home|agent-project-explicit)$/^(entrypoints|notify|chain|installation-only|one-probe)$' ./...`:
+  PASS, exit 0, 73.178s; covers all failed prerequisites and their dependent
+  subcases. No production timeout or assertion was relaxed. The original full
+  race run remains recorded as failed, with all its failures resolved by this
+  focused rerun.
+- `git diff --check`: PASS.
+
+No real notification API, APNs delivery, iPhone display/lock-screen/navigation,
+remote SSH/Mosh target, deployment, remote D1 migration/cleanup, release or tag was
+executed. Local protocol fixtures do not establish production retention, APNs
+acceptance or phone delivery. This change does not require packaging or publishing.

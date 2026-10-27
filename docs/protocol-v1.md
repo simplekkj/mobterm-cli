@@ -237,6 +237,7 @@ routes below. Management requests use the same ID grammar and JSON conventions:
 | `POST /v1/devices` | `{device_id,apns_token,environment}` with the new management bearer; an owned registration retry retains the existing token |
 | `GET /v1/devices/{device}` | `{device_id,environment,token_generation,sendable}`; sendable is service configuration/known token validity, not a delivery receipt |
 | `PUT /v1/devices/{device}/token` | `{apns_token,environment,token_generation}`; atomically updates only the expected generation, then increments it, including explicit same-token registration |
+| `DELETE /v1/devices/{device}` | No body; HTTP 200 JSON `{device_id,environment,status:"revoked"}`; permanently revokes this device and all its pairs; matching retries return the same terminal state |
 | `POST /v1/devices/{device}/pairs` | `{pair_id,installation_id,send_token_hash,policy}`; pending claim expires after 600 seconds; same binding/credential retry returns current state |
 | `DELETE /v1/pairs/{pair}` | Returns `{pair_id,status:"revoked"}` for this owner's pair |
 | `PATCH /v1/pairs/{pair}/policy` | `{turn_completed:boolean,needs_input:boolean}`; disables subsequent authorization for disabled event types |
@@ -250,7 +251,18 @@ each await before writing or publishing readiness. All registration callers must
 share this ownership, including pairing and token refresh. Cancellation alone
 does not prevent an already sent request from executing on the server. Owned
 POST retries do not overwrite the existing token. App and API must both support
-this required conditional-write field; no database migration is needed.
+this required conditional-write field. The conditional-token field itself needs
+no new migration; the device lifecycle extension below does.
+
+A successful POST or GET `sendable:true` is not proof that the current local APNs
+token was uploaded. The App confirms that token only after its PUT succeeds for
+the still-current origin, identity, token revision and operation. Explicit service
+retry repeats this confirmation even for an unchanged token. Only HTTP 409
+`token_generation_conflict` triggers a bounded GET/latest-generation retry; an
+authentication, quota, environment or network failure does not. A lost POST/PUT
+reply leaves the result unconfirmed and must reuse the persisted ID/bearer and
+latest system token, including before the first pair exists. The App persists
+registration intent, not an APNs token or a cross-process claim of readiness.
 
 `send_token_hash` is lowercase SHA-256 hex of the **UTF-8 bearer string**, not of
 its base64-decoded bytes. The device management bearer can also read its own pair
@@ -265,6 +277,103 @@ localization keys are `agentNotificationAlert` and `agentNotificationTestAlert`.
 They contain generic copy without terminal/project details. Neither management
 nor event APIs accept SSH credentials, executable commands, plaintext targets,
 decryption keys, or arbitrary webhook destinations.
+
+### Device revocation and identity recovery
+
+Device DELETE uses the **original origin, device ID and management bearer**. It
+does not require a current APNs token, notification permission or successful
+resolution of the App's current signing environment. Existing ownership is
+authenticated before returning a terminal state; a sender bearer cannot revoke
+the device. Wrong credentials neither overwrite an owner nor reveal revocation.
+Correctly authenticated POST/GET/token PUT/pair creation for a revoked device
+returns HTTP 410 `device_revoked`. This code is a device-management result only;
+clients must not interpret arbitrary 410 responses as proof of device revocation.
+
+One D1 transaction establishes the irreversible `devices.revoked_at` terminal
+state, clears the APNs token and validity, advances the token generation once,
+revokes all associated pairs and disables their policy, and revokes unfinished
+`accepted`/`sending`/`retryable_failed` events while clearing their envelopes and
+leases. Matching repeated DELETEs do not advance the generation again. All final
+conditional writes, lease acquisition, send authorization and completion paths
+respect the device terminal state. A successful batch with zero matching ownership
+is not a successful revocation. Already-issued APNs HTTP requests or notifications
+in Apple's queue cannot be recalled; a late system banner remains possible.
+
+DELETE may arrive before a dispatched first POST. For an absent ID, DELETE applies
+the same first-identity ID/bearer validation, global/hour/day/IP admission rules
+and unique ID/management-hash binding as registration, but inserts a revoked
+identity. This terminates that first registration attempt; it is not authentication
+of a previously existing entity. A later matching POST returns `device_revoked`.
+If POST wins, DELETE revokes the owned row. A bearer already bound to another ID
+cannot be rebound. Existing authenticated devices and matching tombstone retries
+retain ordinary management rate limits but are not blocked by live capacity or
+new-identity daily admission exhaustion.
+
+Sender compatibility is unchanged: after sender authentication, a device-revoked
+pair GET returns its original `pair_id`, `installation_id` and `status:"revoked"`,
+or HTTP 410 `pair_revoked`; claim/send/event-state routes also preserve the existing
+Pair terminal contract, never `device_revoked`. Pair DELETE remains management
+authenticated and idempotent. This lets old CLI versions retire local credentials
+on their next reconcile/setup/send interaction. The CLI has no device management
+bearer, device DELETE command, daemon or automatic re-pair action; device revocation
+does not instantly erase credentials on idle remote servers. An unconfirmed
+401/403/404/503, timeout or unknown 410 retains local token/key for review or retry,
+and retirement of one device's pairs must not affect another device's pairs.
+
+The App first persists revocation intent and disables local pairing, decryption
+and navigation for the device's entire origin scope. Failed/cancelled DELETE or
+an old API's 404/405 retains pending intent and the management credential, never
+claims success or silently creates a new identity. A validated terminal receipt
+is persisted before local cleanup, whose failures remain resumable. A normal
+identity reset requires this remote confirmation and local cleanup before saving
+a new random ID/bearer; old pairs remain retired and must be explicitly paired
+again. Ordinary token resynchronization never resets identity. Only confirmed
+Keychain absence with healthy local metadata permits a separate, informed
+abandon-and-rebuild action. Locked, damaged, unreadable or temporarily unavailable
+credentials do not. That exceptional rebuild retains a non-secret record that the
+old cloud identity could not be revoked; it cannot promise that old generic pushes
+or duplicate notifications will stop. Original origins are never silently migrated.
+
+### Retention, capacity and mixed versions
+
+Explicitly revoked device rows are permanent authentication tombstones: ID,
+management hash, original environment and necessary timestamps remain, but no
+APNs token. Their pairs retain the original sender hash, installation/device
+binding and revoked state so old senders can reconcile beyond the ordinary Pair
+cleanup window. Events retain the existing TTL. No separate compact endpoint or
+public device enumeration API exists.
+
+Ordinary revoked/expired-pending pairs belonging to **unrevoked** devices retain
+their existing over-24-hour cleanup rule and are removed only without event
+references. Unrevoked devices without any pairs retain the over-90-day `updated_at`
+TTL, rechecked at deletion. Active pairs are not deleted because of token invalidity
+or old device timestamps; `updated_at` measures device writes, not recent use or
+proof of uninstall. Without accounts or management credentials, the service cannot
+prove identity loss or automatically revoke a suspected orphan safely.
+
+The 10,000 device capacity limits **unrevoked live devices**, not the total table.
+Permanent tombstones consume real storage and are counted separately; they cannot
+be TTL-deleted to reclaim capacity and permit old requests to resurrect identities.
+Existing new-identity admission limits remain. Operational statistics and cleanup
+candidates are available through the API's documented read-only queries/functions,
+not a public listing route. Production orphan counts and storage use need separate
+authorized measurement.
+
+| Version combination | Behavior |
+| --- | --- |
+| New API + old App/CLI | Unrevoked registration/pairing/events continue; old writes cannot resurrect a revoked device; old CLI understands Pair terminal responses. |
+| New App + old API | Same-identity POST/PUT recovery continues; unsupported DELETE stays locally disabled and pending with credentials retained, without automatic identity replacement. |
+| New App/API + old CLI | Whole-device revocation works; the CLI converges on its next existing terminal-state interaction without a mandatory CLI upgrade. |
+| Different signing environment or historical origin | New registration uses the current official origin; old identity revocation uses its exact original origin; no cross-environment rebinding. |
+
+Deployment order is the additive `revoked_at` migration, then an API enforcing
+revocation everywhere, then the new App; CLI protocol/regression updates can ship
+alongside. Once revocation has occurred, **do not roll back to a Worker that ignores
+`revoked_at`**: old token/pair writes would bypass the terminal state. Rollback must
+retain revocation enforcement; do not remove tombstones or reverse the migration.
+This order is documentation, not authorization to deploy, migrate remote D1,
+clean production data, publish a tag or send a real APNs notification. The v1
+envelope, AAD, cryptography and golden vectors remain unchanged.
 
 ## Retry identity
 
