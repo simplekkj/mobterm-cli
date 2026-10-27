@@ -72,6 +72,12 @@ func changeHooks(ctx context.Context, s Store, agent, action, path, executable s
 	if err != nil {
 		return err
 	}
+	if err = nativeRealParents(path); err != nil {
+		return err
+	}
+	if err = nativeRealParents(filepath.Join(s.Dir, "ownership")); err != nil {
+		return err
+	}
 	if err = ensureDir(filepath.Dir(path), false); err != nil {
 		return err
 	}
@@ -86,14 +92,32 @@ func changeHooks(ctx context.Context, s Store, agent, action, path, executable s
 		return err
 	}
 	defer configUnlock()
+
+	tx, pendingErr := readHookTransaction(s, agent)
+	if pendingErr == nil {
+		if tx.Path != path {
+			return errors.New("hook recovery config root changed; unchanged")
+		}
+		if tx.Action != action {
+			return errors.New("hook operation incomplete; finish the pending operation first")
+		}
+		return finishHookTransaction(s, tx)
+	}
+	if !errors.Is(pendingErr, os.ErrNotExist) {
+		return pendingErr
+	}
 	data, err := secureRead(path, 2*1024*1024)
+	exists := !errors.Is(err, os.ErrNotExist)
 	mode := os.FileMode(0600)
-	if errors.Is(err, os.ErrNotExist) {
+	if !exists {
 		data = nil
 	} else if err != nil {
 		return err
 	} else {
-		info, _ := os.Stat(path)
+		info, e := os.Stat(path)
+		if e != nil {
+			return e
+		}
 		mode = info.Mode().Perm()
 	}
 	recordName := "hooks-" + agent + ".json"
@@ -102,8 +126,24 @@ func changeHooks(ctx context.Context, s Store, agent, action, path, executable s
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return readErr
 	}
-	if readErr == nil && record.Path != path {
-		return errors.New("agent already managed at another path")
+	var before *HookRecord
+	if readErr == nil {
+		if record.Path != path || record.Agent != agent {
+			return errors.New("agent already managed at another path or invalid ownership")
+		}
+		previous := record
+		before = &previous
+	}
+	// An old Codex record can prove the original notify fragment. Treat it as
+	// an unfinished operation only when the exact original fragment and argv
+	// agree; unrelated content is retained. Claude's old records lack this proof.
+	legacyRestored := false
+	if agent == "codex" && record.Managed != "" && record.Original != "" {
+		start, end, argv, e := rootNotify(data)
+		legacyRestored = e == nil && start >= 0 && string(data[start:end]) == record.Original && reflect.DeepEqual(argv, record.Chain)
+		if legacyRestored {
+			record = HookRecord{}
+		}
 	}
 	var result []byte
 	if agent == "codex" {
@@ -114,31 +154,25 @@ func changeHooks(ctx context.Context, s Store, agent, action, path, executable s
 	if err != nil {
 		return err
 	}
-	if bytes.Equal(result, data) {
+	if bytes.Equal(result, data) && !(action == "uninstall" && before != nil && legacyRestored) {
 		return nil
 	}
+	if len(result) > 2*1024*1024 {
+		return errors.New("hook result exceeds configuration size limit")
+	}
+	var after *HookRecord
 	if action == "install" {
-		if err = s.writeJSON(recordName, record); err != nil {
-			return err
-		}
+		after = &record
 	}
-	// Compare immediately before rename so an unrelated editor is never silently overwritten.
-	current, readAgain := secureRead(path, 2*1024*1024)
-	if readAgain != nil && !errors.Is(readAgain, os.ErrNotExist) {
-		return readAgain
-	}
-	if !bytes.Equal(current, data) {
-		return errors.New("agent config changed concurrently; retry")
-	}
-	if err = atomicWrite(path, result, mode); err != nil {
+	tx = hookTransaction{V: 1, Agent: agent, Path: path, Action: action, BeforeSHA: digest(string(data)), BeforeExists: exists, After: result, AfterSHA: digest(string(result)), Mode: uint32(mode), BeforeRecord: before, AfterRecord: after}
+	if err = writeHookTransaction(s, tx); err != nil {
 		return err
 	}
-	if action == "uninstall" {
-		if err = os.Remove(filepath.Join(s.Dir, recordName)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
+	tx, err = readHookTransaction(s, agent)
+	if err != nil {
+		return err
 	}
-	return nil
+	return finishHookTransaction(s, tx)
 }
 func rootNotify(data []byte) (start, end int, argv []string, err error) {
 	var decoded map[string]any

@@ -170,6 +170,11 @@ owned assets and configuration root; `complete` means disk configuration only.
 A test notification does not prove Agent activation. Re-run `hooks install` to
 restore missing owned entries; conflicts need review and native adapters need an
 Agent restart. Existing user edits and unrelated notifiers remain intact.
+Interrupted Codex/Claude writes retain a private operation journal. The optional
+`health.<agent>.recovery_action` tells the App to continue install, finish uninstall,
+or uninstall before a fresh install; a real conflict remains unchanged. Retry the
+indicated operation using the same configuration root. Status/discovery stays
+read-only, and `hooks:false` alone does not mean there is no unfinished operation.
 
 Business events go only to active pairs. Pending attempts have their own 32-entry
 limit, separate from 32 active pairs. Original credentials can be reconciled after
@@ -185,6 +190,15 @@ mobterm-cli outbox refresh --pair PAIR_ID --json
 
 Abandon removes only the named pending attempt's local secrets; it does not revoke
 a remote active pair. Confirmed revoked/expired records release local capacity.
+After cloud cancellation, the App retains a separate remote-cleanup obligation and
+uses a trusted SSH channel to call `pairs retire --stdin-frame --json` for the exact
+origin, Pair and installation. This removes local pending/active credentials and
+prevents late setup from recreating them; it is not independent CLI proof of API
+revocation. Lost receipts are retryable. Old CLIs leave cleanup pending until the
+user updates or maintains the connection. See the [frame/receipt contract](docs/protocol-v1.md#ssh-diagnostics-and-recovery).
+Retirement markers contain only digests/reason/time and are bounded at 4096
+identities; the CLI refuses new retirement identities at that boundary rather
+than evicting markers that still prevent delayed operations from reviving an ID.
 Events are durably saved for all active pairs before sending. Pending work waits
 for another Agent event or explicit flush; an idle host does not wake itself.
 Once the service explicitly takes responsibility, refresh queries its receipt

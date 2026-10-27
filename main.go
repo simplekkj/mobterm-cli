@@ -139,7 +139,7 @@ func addStatusDiagnostics(ctx context.Context, s Store, pairID string, result ma
 
 func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "mobterm-cli setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | upgrade --version vX.Y.Z | version")
+		fmt.Fprintln(out, "mobterm-cli setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | pairs retire --stdin-frame --json | upgrade --version vX.Y.Z | version")
 		return 0
 	}
 	if args[0] == "version" || args[0] == "--version" {
@@ -227,6 +227,16 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 			value, err = flushOutbox(ctx, s, a, pair, args[1] == "refresh")
 		}
 	case "pairs":
+		if len(args) >= 2 && args[1] == "retire" {
+			var framed, j bool
+			f, e := flags("pairs retire", args[2:], func(f *flag.FlagSet) { f.BoolVar(&framed, "stdin-frame", false, ""); f.BoolVar(&j, "json", false, "") })
+			if e != nil || !framed || !j || f.NArg() != 0 {
+				err = errors.New("pairs retire requires --stdin-frame --json")
+			} else {
+				value, err = retireLocalPair(ctx, s, in)
+			}
+			break
+		}
 		if len(args) < 2 || (args[1] != "reconcile" && args[1] != "abandon") {
 			err = errors.New("pairs requires reconcile or abandon")
 			break

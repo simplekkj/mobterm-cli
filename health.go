@@ -22,6 +22,7 @@ type agentHealth struct {
 	Issues             []healthIssue `json:"issues"`
 	RestartRequired    bool          `json:"restart_required"`
 	Loaded             string        `json:"loaded"`
+	RecoveryAction     string        `json:"recovery_action,omitempty"`
 }
 
 func (h *agentHealth) issue(state, code, event, capability string) {
@@ -70,6 +71,28 @@ func inspectHook(s Store, agent string) agentHealth {
 	if agent == "pi" || agent == "opencode" {
 		return inspectNativeHook(s, agent, h)
 	}
+
+	if tx, e := readHookTransaction(s, agent); e == nil {
+		path, pathErr := configPath(agent)
+		path, _ = filepath.Abs(path)
+		_, _, stateErr := hookTransactionState(s, tx)
+		if pathErr != nil || path != tx.Path || stateErr != nil {
+			h.issue("conflict", "recovery_conflict", "all", "all")
+			h.RecoveryAction = "review_conflict"
+		} else {
+			h.issue("partial", "operation_incomplete", "all", "all")
+			h.RecoveryAction = "continue_install"
+			if tx.Action == "uninstall" {
+				h.RecoveryAction = "finish_uninstall"
+			}
+		}
+		h.RestartRequired = true
+		return h
+	} else if !errors.Is(e, os.ErrNotExist) {
+		h.issue("conflict", "recovery_invalid", "all", "all")
+		h.RecoveryAction = "review_conflict"
+		return h
+	}
 	var r HookRecord
 	if err := s.readJSON("hooks-"+agent+".json", &r); err != nil {
 		state := "unknown"
@@ -97,6 +120,15 @@ func inspectHook(s Store, agent string) agentHealth {
 		}
 		h.issue(state, "config_missing_or_unreadable", "all", "all")
 		return h
+	}
+
+	if agent == "codex" && r.Agent == agent && r.Managed != "" && r.Original != "" {
+		start, end, argv, e := rootNotify(data)
+		if e == nil && start >= 0 && string(data[start:end]) == r.Original && reflect.DeepEqual(argv, r.Chain) {
+			h.issue("partial", "legacy_operation_incomplete", "agent-turn-complete", "turn_completed")
+			h.RecoveryAction = "uninstall_before_install"
+			return h
+		}
 	}
 	if agent == "codex" {
 		_, _, argv, err := rootNotify(data)
@@ -232,6 +264,12 @@ func inspectNativeHook(s Store, agent string, h agentHealth) agentHealth {
 		h.issue("conflict", "config_root_changed", "all", "all")
 	}
 	if r.Pending != "" {
+		h.RecoveryAction = "continue_install"
+		if r.Pending == "uninstall" {
+			h.RecoveryAction = "finish_uninstall"
+		} else if executable, e := os.Executable(); e != nil || executable != r.Executable || r.Revision != nativeAdapterRevision || err != nil || path != r.Path {
+			h.RecoveryAction = "uninstall_before_install"
+		}
 		h.issue("partial", "installation_incomplete", "all", "all")
 	}
 	if r.Revision != nativeAdapterRevision {
@@ -250,12 +288,18 @@ func inspectNativeHook(s Store, agent string, h agentHealth) agentHealth {
 		capability += ",needs_input"
 	}
 	for path, file := range r.Files {
+		if r.Pending == "install" && nativeDigest(files[path]) != file.SHA && h.RecoveryAction != "review_conflict" {
+			h.RecoveryAction = "uninstall_before_install"
+		}
 		b, exists, _, err := nativeRead(path)
 		if err != nil {
 			h.issue("unknown", "asset_unreadable", "all", capability)
 		} else if !exists {
 			h.issue("partial", "asset_missing", "all", capability)
 		} else if nativeDigest(b) != file.SHA || !bytes.Equal(b, files[path]) {
+			if r.Pending != "" && !nativeAllowed(b, exists, file, r.Pending) {
+				h.RecoveryAction = "review_conflict"
+			}
 			h.issue("modified", "asset_modified", "all", capability)
 		}
 	}
@@ -268,6 +312,9 @@ func inspectNativeHook(s Store, agent string, h agentHealth) agentHealth {
 				h.issue("partial", "plugin_reference_missing", "all", capability)
 			} else {
 				h.issue("conflict", "plugin_reference_modified", "all", capability)
+				if r.Pending != "" {
+					h.RecoveryAction = "review_conflict"
+				}
 			}
 		}
 	}

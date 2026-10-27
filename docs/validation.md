@@ -1,5 +1,96 @@
 # Validation records
 
+## 2026-10-27: CLI recovery round 1 v1.0
+
+Analysis and implementation both started on clean `main` at
+`3eae811e57e04ec543aa7d308845599fbf27725e`; no baseline drift. This round changes
+only exact local Pair retirement, classic Hook transaction recovery, fixed health
+recovery actions and the shared additive API contract. Go 1.27.1, Darwin/amd64,
+tmux 3.7c; tests use isolated temporary stores/configuration, local TLS and
+controlled process fixtures. No user server or deployed notification API is used.
+
+`recovery_test.go` covers A6/A7 with 32 persisted pending credentials, an unaffected
+active Pair, wrong origin/installation/frame/extra-secret fields, command receipt,
+repeated invocation after lost receipt, absent-before-first-save retirement,
+failed local storage and successful retry, terminal marker admission at 4096
+without eviction, and a real TLS claim blocked before response while exact local
+retirement commits. The late claim cannot activate the deleted Pair. Existing
+reconciliation and outbox retirement tests keep their original authenticated
+terminal/error distinctions. Active/pending limits remain 32 each.
+
+A8/A9 persist both Codex and Claude operation journals and reopen the Store at
+journal-only, ownership-written, config-renamed and ownership-completed stages,
+for both install and uninstall. Fixtures include an existing nonempty Codex notify
+chain and Claude user hooks with the same matcher. They check exact preserved
+content, original file permissions, completed journal removal, repeated operations,
+read-only health, rejection of the opposite pending action, real user edits,
+symlinks, changed roots, corrupt journals and changed ownership (including a valid-JSON journal with a damaged ownership
+fragment). Overlarge duplicated ownership is rejected before the first write,
+so every committed record fits the normal reader. An old Codex
+record can use its exact original fragment/argv to safely finish cleanup; old
+Claude records without before-state evidence remain conflicts. Native interrupted
+operations and `hooks:false` recovery actions remain covered. The journal stores
+one bounded replacement plus hashes/ownership (private mode 0600), enabling exact
+retry without inventing an unsafe reconstruction from edited configuration.
+
+Initial checks and repairs:
+
+- New fixture tests initially failed because a manually prepared journal's private
+  Store directory had not been created. The fixture now prepares it explicitly;
+  no production permissions or recovery assertions were weakened.
+- `go test -run 'TestLocalRetire|TestRetirementMarker|TestClassic|TestLegacyCodex|TestRetireCommand' ./...`:
+  PASS, 7.320s.
+- `go test -count=1 -run 'TestLocalRetire|TestRetirementMarker|TestClassic|TestLegacyCodex|TestRetireCommand|TestConfigLifecycle|TestNative' ./...`:
+  PASS, 14.562s after the final transaction/retirement helper changes.
+- Initial `go test ./...`: FAIL, 322.266s, only
+  `TestAsdfCompatibilityEntrypoints/node-project/notify` failed its existing
+  five-second original-launcher prerequisite while Xcode compiled concurrently.
+  The changed recovery paths did not fail. In the subsequent compilation pause,
+  `go test -count=1 -run '^TestAsdfCompatibilityEntrypoints$/^node-project$/^notify$' ./...`:
+  PASS, 8.626s. Original budgets and assertions are unchanged.
+- `go vet ./...`, `test -z "$(gofmt -l .)"`, `git diff --check`: PASS.
+- `python3 tests/install_test.py`: PASS, 25 tests in 229.562s, with one explicit
+  SKIP (`test_real_packages` needs `--dist`/`--commit`). The 24 executed installer
+  checks include checksum/download failures, signals before/after atomic move,
+  readback, destination protections and preservation of unrelated staging files.
+  Installer/packaging code is unchanged; no package publication was performed.
+
+- Initial `go test -race -json ./...`: FAIL, 411.353s, 376 passing
+  tests/subtests, zero skips, no race-detector report. The only failures were 13
+  unchanged original-launcher five-second prerequisites during parallel Xcode/
+  simulator work: all five entrypoints/notify/chain/installation-only/one-probe
+  cases in `agent-project-explicit` and `node-home-explicit`, and the first three
+  in `node-project`. The 17 failure records include their four parent summaries.
+  Every other executed test, including the new recovery and existing seven-day
+  112000-record outbox test, passed.
+- In a coordinated window without API/Xcode/simulator tests,
+  `go test -race -count=1 -json -run '^TestAsdfCompatibilityEntrypoints$/^(agent-project-explicit|node-home-explicit|node-project)$/^(entrypoints|notify|chain|installation-only|one-probe)$' ./...`:
+  PASS, 91.552s, 81 tests/subtests, zero failures/skips. This includes every
+  original launcher failure under the unchanged five-second budget.
+- Final-source recovery/Hook/native/health/discovery/Pair checks:
+  `go test -count=1 -json -run 'Test(LocalRetire|RetirementMarker|Classic|LegacyCodex|RetireCommand|ExactRetirement|Native|ConfigLifecycle|Codex|Claude|Structured|AgentDiscovery|NotifyChain|Reconcile|PairReconciliation|IndependentPair|SetupLost|DeviceRevocation|UnconfirmedDevice|OutboxConfirmed)' ./...`:
+  PASS, 89.706s, 203 tests/subtests, zero failures/skips. This includes the final
+  ownership-digest corruption and reader-size boundaries plus persisted-marker
+  recovery before credential commit.
+- The same final-source selection with `-race`: FAIL, 99.558s, 202 passing
+  tests/subtests and one failed existing discovery prerequisite:
+  `TestAgentDiscoveryContractAndNoInitialization` could not start its OpenCode
+  probe script within the unchanged five-second budget (no probe-count file was
+  created). All new recovery, retirement and Hook cases passed; no data race was
+  reported. Immediately running
+  `go test -race -count=1 -json -run '^TestAgentDiscoveryContractAndNoInitialization$' ./...`:
+  PASS, 2.989s, unchanged assertions and budgets. Thus every failed path has a
+  successful focused revalidation; neither full-suite invocation nor the combined
+  final race invocation is represented as a single all-green run.
+- Final `go vet ./...`, gofmt check and `git diff --check`: PASS.
+
+No real remote SSH/jump-host transition, Agent host activation, production API,
+APNs acceptance, phone display/navigation, release, deployment, remote migration
+or real-user cleanup is claimed. CLI API fixtures do not prove D1 retention;
+actual D1 timing/cancellation tests belong to the API repository. Installation
+fixtures do not prove a real-server update. Public protocol documents the planned
+migration/API/CLI/App upgrade order and rollback constraints, not an executed rollout.
+
 ## 2026-10-26: pairing confirmation and bounded failure diagnostics
 
 Work started on clean `main` at

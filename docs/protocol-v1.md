@@ -239,8 +239,9 @@ routes below. Management requests use the same ID grammar and JSON conventions:
 | `PUT /v1/devices/{device}/token` | `{apns_token,environment,token_generation}`; atomically updates only the expected generation, then increments it, including explicit same-token registration |
 | `DELETE /v1/devices/{device}` | No body; HTTP 200 JSON `{device_id,environment,status:"revoked"}`; permanently revokes this device and all its pairs; matching retries return the same terminal state |
 | `POST /v1/devices/{device}/pairs` | `{pair_id,installation_id,send_token_hash,policy}`; pending claim expires after 600 seconds; same binding/credential retry returns current state |
+| `DELETE /v1/devices/{device}/pairs/{pair}` | Device-authenticated exact cancellation; `{device_id,pair_id,status:"revoked"}`, including an admitted never-created Pair |
 | `DELETE /v1/pairs/{pair}` | Returns `{pair_id,status:"revoked"}` for this owner's pair |
-| `PATCH /v1/pairs/{pair}/policy` | `{turn_completed:boolean,needs_input:boolean}`; disables subsequent authorization for disabled event types |
+| `PATCH /v1/pairs/{pair}/policy` | `{turn_completed:boolean,needs_input:boolean,policy_generation?:integer}`; conditional policy commit, including same-value commits; disables subsequent authorization for disabled event types |
 
 Token PUT requires a nonnegative safe integer `token_generation` from the device
 POST/GET response (new devices start at 1). A stale generation returns HTTP 409
@@ -343,13 +344,42 @@ binding and revoked state so old senders can reconcile beyond the ordinary Pair
 cleanup window. Events retain the existing TTL. No separate compact endpoint or
 public device enumeration API exists.
 
-Ordinary revoked/expired-pending pairs belonging to **unrevoked** devices retain
-their existing over-24-hour cleanup rule and are removed only without event
-references. Unrevoked devices without any pairs retain the over-90-day `updated_at`
-TTL, rechecked at deletion. Active pairs are not deleted because of token invalidity
-or old device timestamps; `updated_at` measures device writes, not recent use or
-proof of uninstall. Without accounts or management credentials, the service cannot
-prove identity loss or automatically revoke a suspected orphan safely.
+Ordinary revoked/expired Pair rows compact after the ordinary cleanup window
+into minimal durable authentication terminals. Original sender hashes,
+installation/owner bindings and policy generation remain; event ciphertext and
+per-retry history do not. Related device management identity is retained for
+terminal retries. Active pairs are not deleted because of token invalidity or
+old device timestamps. Before this upgrade, physically deleted sender hashes
+cannot be reconstructed: a device-authenticated cancellation still completes
+cloud responsibility, while explicit trusted SSH retirement below completes the
+local responsibility without claiming authenticated sender evidence.
+
+The recovery extension is additive migration `0008_pair_recovery.sql`. A new
+unknown cancellation identity shares the per-device daily pair-create admission
+(default 40, `PAIR_CREATE_DAILY_LIMIT`), with a permanent 1024 unknown-terminal
+identities/device bound (`409 pair_cancellation_capacity`). Retries of an existing
+Pair/terminal do not consume another new-identity admission; normal request limits
+still apply. Bad management/sender credentials return 401; another device's Pair
+returns `403 pair_mismatch`. A never-created Pair terminal has no sender hash and
+does not authenticate arbitrary senders (the original sender GET remains 401).
+The original management identity of a revoked device may confirm its terminal,
+but cannot reactivate any Pair. Create/claim conditional writes check cancellation
+inside their final transaction, so delayed requests cannot revive it.
+
+Pair reads and policy writes add `policy_generation` (initially 0). A new App
+passes its last trusted generation as the expected value in PATCH. Successful
+same-value writes also increment it, fencing older in-flight requests. The
+response is the exact committed Pair snapshot. A stale value returns
+`409 policy_generation_conflict`; invalid values return
+`400 invalid_policy_generation` (integer >= 0 and < MAX_SAFE_INTEGER required).
+Only explicit conflict warrants bounded GET/retry with the latest persisted local
+intent; an equal-value GET is never commit evidence. Policy updates and affected
+event retirement share the conditional transaction. Old generation-less PATCH
+remains accepted and increments generation, but old clients do not gain ordering
+guarantees. New App/old API retains unconfirmed local disabled intent when version
+capability is absent. Deploy migration, compatible API, CLI/user update, then App;
+rollback must retain terminals and generation gates and cannot use an old API
+that ignores them. This order is a plan, not release/deployment authorization.
 
 The 10,000 device capacity limits **unrevoked live devices**, not the total table.
 Permanent tombstones consume real storage and are counted separately; they cannot
@@ -481,11 +511,30 @@ strong occupant fields using the same key/nonce/AAD convention.
 `capabilities.target:{resolve:true,tmux_occupant:"tmux-proc-v1"}`. Each
 `health.<agent>` has `state`, `configuration_state`, `issues` (at most 12 fixed
 `code/event/capability` objects), `restart_required`, and `loaded:"unknown"`.
+An optional `recovery_action` is one of `continue_install`, `finish_uninstall`,
+`uninstall_before_install`, `review_conflict`. Unknown values must not trigger
+writes. These supplement, rather than replace, disk configuration state.
 States are `not_installed`, `unsupported`, `not_configured`, `complete`, `partial`,
 `modified`, `conflict`, `unknown`. Version and disk state are independent.
 `complete` proves disk entry/conditions only, never that an Agent loaded them or
 produced a real event. Old `hooks` remains its existing boolean ownership signal.
 Tests of notification delivery do not alter hook health.
+
+Codex/Claude persist a private bounded operation journal before ownership/config
+writes. A retry of the same install/uninstall resumes only when configuration and
+ownership match the recorded before/after states; a third state remains a
+conflict. The journal contains configuration hashes, one bounded replacement and
+before/after ownership, is mode 0600, and is deleted only after both commits.
+Read-only discovery/health never completes it. Legacy Codex records can recover
+an exact original notify fragment with matching preserved argv (health exposes
+`uninstall_before_install` because an old record cannot identify the interrupted
+action); old Claude records
+without sufficient before-state evidence remain conflicts. No notifier chain,
+other hook, unknown shape or later edit is silently adopted. Native OpenCode/Pi
+retain their existing transactions: pending uninstall finishes first; changed
+CLI/assets during pending install may require explicit uninstall before install.
+The App must expose this even when `hooks:false`; disk completion still requires
+an Agent restart and does not prove the running Agent loaded the configuration.
 
 Codex parses root TOML notify argv, executable and preserved notifier chain;
 Claude checks both UserPromptSubmit and Notification commands, type, timeout 10,
@@ -512,12 +561,32 @@ action independently of remote `status`.
   local token/key and keeps a bounded redacted summary. This is **not** remote
   revocation or evidence that remote capacity has been freed.
 
+- `pairs retire --stdin-frame --json`: exact local management through trusted SSH,
+  permitted by the App only after durable cloud cancellation confirmation. The
+  bounded v1 frame contains only `{v:1,api_url,pair_id,installation_id}`; origin is
+  HTTPS and IDs use the existing opaque grammar. No device bearer or encryption
+  key is accepted. CLI verifies current installation and the exact existing
+  Pair's origin/installation/ID, compares the expected record inside the Store
+  lock, persists a digest-only retirement marker before deleting credentials,
+  and rereads persistence before success. The receipt is
+  `{v:1,ok:true,api_url,pair_id,installation_id,status:"local_retired"|"local_absent"}`.
+  Absence still requires a durable marker, preventing a delayed first setup save;
+  repeated lost-receipt recovery is idempotent. This is local SSH management intent,
+  **not** independent CLI proof of API revocation. Use authenticated
+  `pairs reconcile --json --pair ID` first where sender terminal proof is available.
+  An old CLI without this command leaves the App cleanup obligation visible with
+  explicit update/maintenance guidance; never guess-delete unknown 401/404 rows.
+
 Local active/review records and pending/pending_review records have separate
 32-entry limits. Only active records send. Unknown authentication/404 retains
 credentials for review; a transient active-pair network failure never deletes or
 rebinds it. A lost claim reply is reconciled using the same authenticated pair GET
 and installation. Confirmed inactive records and explicitly abandoned attempts
-leave no local token/key, with at most 128 digest-only historical summaries.
+leave no local token/key, with at most 4096 digest-only retirement markers.
+Markers are not evicted: reaching the bound rejects a new identity with
+`retired_pair_capacity_reached`, while existing marker retries remain usable.
+This protects delayed setup/transition from resurrecting an old ID after a rolling
+history window. It does not increase the active/pending 32-entry limits.
 Retirement does not affect another device. `unauthorized` suspends this pair;
 policy denial terminates only that delivery. No automatic re-pair loop exists.
 
