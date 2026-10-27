@@ -698,15 +698,43 @@ New API response fields do not require a new envelope or access permission.
 APNs keeps original generic/test loc-keys and encrypted envelope, adds a safe
 `title:"MobTerm"`, `mutable-content:1`, and a per-pair/event 64-hex collapse ID: SHA-256 of UTF-8
 `mobterm-apns-v1\nPAIR_ID\nEVENT_ID` with no trailing newline.
-Different events never collapse by target. The final UTF-8 payload still must fit
-4096 bytes. An old App ignores extension flags; an old API still provides generic
-notifications but cannot guarantee NSE spool/preview invocation. New NSE detail
-is opt-in and device-decrypted; Agent and separately permitted local connection
-name are the only preview context. A processing-time locked key, missing group,
-timeout or error falls back to original safe content.
+Different events never collapse by target. The shared HTTP/retry/Cron builder
+optionally adds `aps["thread-id"] = "mobterm-pair-v1:" + pair_id`. All three event
+kinds on the same Pair share that display group; another Pair or re-pairing uses a
+new group. The opaque Pair ID already exists in the envelope and is not a secret;
+no connection name, account, address or target is included. Grouping is never an
+authentication or navigation identity, and iOS/user settings control its display.
 
-Release order is separately authorized: additive migration/API first, then App,
-then CLI. API rollback must stop new handoff and drain/explicitly terminate
+The complete base payload still must fit 4096 UTF-8 bytes or returns the original
+413. Add `thread-id` only if the complete candidate fits both that wire limit and
+the old App Foundation reserialization limit of 4096 bytes. For these validated
+ASCII fields the conservative consumer budget is wire bytes plus the number of
+raw `/` characters, accounting for Foundation's Base64 slash escaping. When either
+candidate budget exceeds the limit, omit only `thread-id` and send the original
+base payload. Do not reject a base payload using the new consumer budget, truncate
+IDs/ciphertext, or drop alert/sound/mutable-content. A base payload already too
+large for the old consumer remains a pre-existing limitation.
+
+`turn_completed`, `needs_input` and `test` keep ordinary Active notifications and
+`sound:"default"`. `apns-priority:10` is transport priority, not Time Sensitive.
+No `aps.badge` or `interruption-level` is sent; this version does not implement a
+system icon count or Time Sensitive opt-in.
+
+A new API keeps the original envelope/loc-keys for old App/NSE consumers, and
+recovered old queue envelopes use the same optional grouping builder. An old App
+ignores extension flags; an old API still provides generic ungrouped notifications
+but cannot guarantee NSE spool/preview invocation. New NSE detail is opt-in and
+device-decrypted; Agent and separately permitted local connection name are the
+only preview context. A processing-time locked key, missing group, timeout or
+error falls back to original safe content while retaining the system thread ID.
+
+The optional grouping increment requires no new migration, CLI runtime change,
+re-pairing or coordinated App/API/CLI upgrade. New App settings work with an old
+API; system grouping requires a separately authorized new API deployment. A
+rollback of grouping must still preserve existing handoff/recovery obligations.
+
+The earlier durable handoff release order remains separately authorized: additive
+migration/API first, then App, then CLI. API rollback must stop new handoff and drain/explicitly terminate
 outstanding responsibility, or retain the recovery implementation. Do not roll
 back responsibility into a service that cannot recover it. No production release,
 remote migration, Apple group creation or APNs operation is authorized by this
