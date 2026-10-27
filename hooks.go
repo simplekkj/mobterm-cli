@@ -106,19 +106,13 @@ func changeHooks(ctx context.Context, s Store, agent, action, path, executable s
 	if !errors.Is(pendingErr, os.ErrNotExist) {
 		return pendingErr
 	}
-	data, err := secureRead(path, 2*1024*1024)
+	data, mode, err := secureReadWithMode(path, 2*1024*1024)
 	exists := !errors.Is(err, os.ErrNotExist)
-	mode := os.FileMode(0600)
 	if !exists {
 		data = nil
+		mode = 0600
 	} else if err != nil {
 		return err
-	} else {
-		info, e := os.Stat(path)
-		if e != nil {
-			return e
-		}
-		mode = info.Mode().Perm()
 	}
 	recordName := "hooks-" + agent + ".json"
 	var record HookRecord

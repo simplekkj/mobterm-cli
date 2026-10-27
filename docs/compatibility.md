@@ -357,3 +357,14 @@ Seven-day tombstones protect recognizable source identities; Claude human waits
 lack upstream occurrence IDs, and arbitrary raw callback replay beyond a retained
 identity cannot be claimed permanently exactly once. No fuzzy time-window merging
 of independent human waits is introduced.
+
+## Classic Hook recovery permissions
+
+Codex/Claude v1 journals retain the original file mode. Before replacing a
+configuration, recovery reads content and permissions from the same no-follow
+regular-file handle and rechecks both after ownership persistence. A changed
+mode (including 0644 to 0600) is a conflict: configuration, ownership and journal
+remain intact for diagnosis. If the configuration already matches the committed
+after-state, recovery finishes ownership/journal cleanup without rewriting the
+file or changing its current permissions. Read-only health never resumes writes;
+OpenCode/Pi recovery and the journal format remain unchanged.

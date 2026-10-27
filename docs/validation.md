@@ -1,5 +1,50 @@
 # Validation records
 
+## 2026-10-27 — CLI recovery review fixes, round 2 v1.0
+
+[Requirement](https://app.notion.com/p/406cede2082380ca9c90e8e3254aa415) ·
+[Delivery](https://app.notion.com/p/406cede208238192a5b7cd8522463008).
+Review and actual starting SHA: `0c2f99f33eb379d11774f8a9c49ca5eed30bec1c`,
+clean `main`, no drift. The delivery page records the final commit and exact compare;
+these checks cover that commit's production and test source.
+
+F2 adds a same-handle content/mode reader while preserving `O_NOFOLLOW`, regular-file,
+size and root checks. Existing v1 journal modes are checked both on initial recovery
+and after ownership persistence, immediately before config replacement. A changed
+before-state mode is a conservative conflict; an after-state file is never rewritten
+for ownership/journal cleanup. No protocol, journal-format, native Hook, installer,
+packaging, dependency or API change.
+
+Go 1.27.1, darwin/amd64 on macOS 15.8.1. Isolated temporary Store/configuration,
+existing local TLS/Agent/tmux fixtures; no real remote server or APNs operation.
+
+- PASS: `go test -count=1 -run '^TestClassic' ./...` (9.323s). New
+  `TestClassicJournalPreservesTightenedPermissions` covers Codex/Claude × install/
+  uninstall × journal/ownership-written/config-written/ownership-completed (16 cases),
+  actual chmod 0644→0600, v1 journal restart, read-only health, final mode/content/inode,
+  ownership/journal preservation on conflict and idempotent after-state completion.
+  Existing ordinary recovery, content/ownership edits, symlink, changed roots and
+  old ownership tests remain intact.
+- PASS: `test -z "$(gofmt -l .)"`, `go vet ./...`, `git diff --check`.
+- PASS: `go test -count=1 -json ./...` — 105 top-level tests, 476 passing test/subtest
+  events, 0 failures/skips, package 296.136s.
+- FAIL / interrupted, retained: initial `go test -race -count=1 -json ./...` overlapped
+  the simulator run. Six existing Asdf launcher preflight paths hit their unchanged
+  five-second deadline (`original launcher context is not usable signal: killed`):
+  agent-home/{entrypoints,notify,chain,installation-only,one-probe} and
+  agent-project-explicit/entrypoints. Eight failure events include parent summaries;
+  56 pass events were recorded. The task's process group was interrupted at 121.289s
+  to stop contention. No data-race report; this was not a passing full run.
+- PASS, final isolated full race: after Xcode completed, the same
+  `go test -race -count=1 -json ./...` — 105 top-level tests, 476 passing test/subtest
+  events, 0 failures/skips, 388.635s, no data race. All initial failed paths passed
+  at the original assertions/time budgets; no timeout or project-rule changes.
+
+Local JSON logs: `/tmp/mobterm-cli-review-r2/{test,race,race-isolated}.json`.
+They are local evidence, not shared links. Packaging/installers were unchanged and
+not rerun. No tag/Release, deployment, real server cleanup/update or production APNs.
+
+
 ## 2026-10-27: CLI recovery round 1 v1.0
 
 Analysis and implementation both started on clean `main` at

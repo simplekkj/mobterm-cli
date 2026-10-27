@@ -47,7 +47,7 @@ func hookTransactionState(s Store, tx hookTransaction) ([]byte, bool, error) {
 	if err := nativeRealParents(tx.Path); err != nil {
 		return nil, false, err
 	}
-	data, err := secureRead(tx.Path, 2*1024*1024)
+	data, mode, err := secureReadWithMode(tx.Path, 2*1024*1024)
 	exists := !errors.Is(err, os.ErrNotExist)
 	if err != nil && exists {
 		return nil, false, err
@@ -56,6 +56,12 @@ func hookTransactionState(s Store, tx hookTransaction) ([]byte, bool, error) {
 	after := exists && digest(string(data)) == tx.AfterSHA
 	if !before && !after {
 		return nil, false, errors.New("hook recovery conflicts with user configuration; unchanged")
+	}
+	// v1 journals already record the original permissions. A before-state
+	// replacement must still match them, including at the pre-write recheck.
+	// After-state recovery only finishes ownership and never rewrites config.
+	if exists && !after && mode != os.FileMode(tx.Mode) {
+		return nil, false, errors.New("hook recovery conflicts with configuration permissions; unchanged")
 	}
 	var r HookRecord
 	err = s.readJSON("hooks-"+tx.Agent+".json", &r)

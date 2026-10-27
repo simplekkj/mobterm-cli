@@ -52,26 +52,32 @@ func ensureDir(path string, private bool) error {
 	return nil
 }
 func secureRead(path string, limit int64) ([]byte, error) {
+	data, _, err := secureReadWithMode(path, limit)
+	return data, err
+}
+
+// Read content and permissions from the same no-follow, regular-file handle.
+func secureReadWithMode(path string, limit int64) ([]byte, os.FileMode, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer f.Close()
 	i, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if !i.Mode().IsRegular() {
-		return nil, errors.New("configuration is not a regular file")
+		return nil, 0, errors.New("configuration is not a regular file")
 	}
 	b, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if int64(len(b)) > limit {
-		return nil, errors.New("configuration exceeds size limit")
+		return nil, 0, errors.New("configuration exceeds size limit")
 	}
-	return b, nil
+	return b, i.Mode().Perm(), nil
 }
 func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if i, err := os.Lstat(path); err == nil {

@@ -509,3 +509,106 @@ func TestClassicHookRejectsUnrecoverableOversizedOwnership(t *testing.T) {
 		}
 	}
 }
+
+func TestClassicJournalPreservesTightenedPermissions(t *testing.T) {
+	for _, agent := range []string{"codex", "claude"} {
+		for _, action := range []string{"install", "uninstall"} {
+			for _, stage := range []string{"journal", "record", "config", "ownership_done"} {
+				t.Run(agent+"/"+action+"/"+stage, func(t *testing.T) {
+					s, path, original, installed, record := classicFixture(t, agent)
+					before, after := original, installed
+					var beforeRecord, afterRecord *HookRecord
+					afterRecord = &record
+					if action == "uninstall" {
+						before, after = installed, original
+						beforeRecord, afterRecord = &record, nil
+					}
+					tx := hookTransaction{V: 1, Agent: agent, Path: path, Action: action, BeforeSHA: digest(string(before)), BeforeExists: true, After: after, AfterSHA: digest(string(after)), Mode: 0644, BeforeRecord: beforeRecord, AfterRecord: afterRecord}
+					if err := atomicWrite(path, before, 0644); err != nil {
+						t.Fatal(err)
+					}
+					if beforeRecord != nil {
+						if err := s.writeJSON("hooks-"+agent+".json", beforeRecord); err != nil {
+							t.Fatal(err)
+						}
+					}
+					// The existing v1 encoding is deliberately unchanged.
+					if err := writeHookTransaction(s, tx); err != nil {
+						t.Fatal(err)
+					}
+					if stage != "journal" && action == "install" {
+						if err := s.writeJSON("hooks-"+agent+".json", afterRecord); err != nil {
+							t.Fatal(err)
+						}
+					}
+					configDone := stage == "config" || stage == "ownership_done"
+					if configDone {
+						if err := atomicWrite(path, after, 0644); err != nil {
+							t.Fatal(err)
+						}
+					}
+					recordPath := filepath.Join(s.Dir, "hooks-"+agent+".json")
+					if stage == "ownership_done" && action == "uninstall" {
+						if err := os.Remove(recordPath); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := os.Chmod(path, 0600); err != nil {
+						t.Fatal(err)
+					}
+					info, err := os.Stat(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					contents, _ := os.ReadFile(path)
+					ownership, _ := os.ReadFile(recordPath)
+					journalPath := filepath.Join(s.Dir, hookTransactionName(agent))
+					journal, _ := os.ReadFile(journalPath)
+					// Health is read-only, including when the permission conflict blocks recovery.
+					inspectHook(Store{s.Dir}, agent)
+					unchanged, _ := os.ReadFile(journalPath)
+					if !bytes.Equal(journal, unchanged) {
+						t.Fatal("health changed journal")
+					}
+					err = changeHooks(context.Background(), Store{s.Dir}, agent, action, path, "/bin/mobterm-cli", false)
+					if configDone && err != nil {
+						t.Fatal(err)
+					}
+					if !configDone && (err == nil || !strings.Contains(err.Error(), "permissions")) {
+						t.Fatal("expected permission conflict", err)
+					}
+					current, err := os.Stat(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					actual, _ := os.ReadFile(path)
+					if current.Mode().Perm() != 0600 || !os.SameFile(info, current) || !bytes.Equal(contents, actual) {
+						t.Fatal("recovery rewrote configuration or permissions")
+					}
+					if configDone {
+						if _, err := os.Stat(journalPath); !os.IsNotExist(err) {
+							t.Fatal("journal not finished", err)
+						}
+						var saved HookRecord
+						err := s.readJSON("hooks-"+agent+".json", &saved)
+						if action == "install" && (err != nil || hookRecordDigest(&saved) != hookRecordDigest(afterRecord)) {
+							t.Fatal("ownership not committed", err)
+						}
+						if action == "uninstall" && !os.IsNotExist(err) {
+							t.Fatal("ownership not removed", err)
+						}
+						if err := changeHooks(context.Background(), Store{s.Dir}, agent, action, path, "/bin/mobterm-cli", false); err != nil {
+							t.Fatal("not idempotent", err)
+						}
+					} else {
+						actualJournal, _ := os.ReadFile(journalPath)
+						actualOwnership, _ := os.ReadFile(recordPath)
+						if !bytes.Equal(journal, actualJournal) || !bytes.Equal(ownership, actualOwnership) {
+							t.Fatal("conflict modified recovery evidence")
+						}
+					}
+				})
+			}
+		}
+	}
+}
