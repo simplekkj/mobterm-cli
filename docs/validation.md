@@ -1,5 +1,87 @@
 # Validation records
 
+## 2026-10-28 — Pairing TLS budget and safe timeout classification, round 1 v1.0
+
+[Implementation and acceptance](https://app.notion.com/p/407cede208238185a7a5fa6455f8c297).
+CLI analysis/start: `6fbdeb192073219f8ffb6e5652eafea535eb4665`, clean `main`.
+App analysis/start: `acfd44e97cd36264b278fbe8bf905e903fa9bff5`; API analysis/start:
+`0b0c582bb64956753efc3a401b77d6cdf6e13852`. Both remain unchanged on `main`.
+No baseline drift. Tests below ran on this delivery's final code and test files;
+only this verification record was added after the gates completed.
+
+The API's owned standard transport now allows a 30-second TLS handshake within
+its existing 30-second whole-request budget. It preserves default proxy/dial,
+certificate validation, HTTP/2, connection pooling and redirect refusal behavior.
+Typed network timeouts use the existing `timeout` code, with explicit cancellation
+first. Body-read cancellation/timeouts preserve a cause behind fixed safe text;
+ordinary invalid responses retain their prior behavior. The 65-second command,
+35-second lease, shorter parent deadline and one-second persistence reserve remain.
+
+Environment: macOS 15.8.1, darwin/amd64, Go 1.27.1, tmux 3.7c. Tests use temporary
+stores, controlled transports and loopback TLS; no real remote server was touched.
+Checks ran serially from the CLI root, without concurrent build/test jobs started
+by this task. `-json` only records the required full test commands' output.
+
+- Focused API, classification, setup/recovery, pair-status, budget and lease suite:
+  `go test -count=1 -v -run 'Test(API|PairingTyped|PairingRun|SetupTyped|SetupLost|SetupReadback|NetworkAndLocal|OutboxLease|ExactRetirementFences|PairStatus)' ./...`:
+  PASS, 34.165s. Initial run FAIL, 34.183s: a newly added whole-stdout assertion
+  also covered the legacy status HTTP fixture's existing remote `error` field.
+  Restricted the added assertion to the new typed/body failure cases; all existing
+  assertions remain. No production behavior or timeout was relaxed.
+- Strengthened the real body test to require `apiResponseError`, proving failure
+  happened during body consumption, then ran
+  `go test -count=1 -run '^TestAPIRealBodyCancellationAndDeadline$' ./...`:
+  PASS, 1.400s. Full checks below include this final assertion.
+- `test -z "$(gofmt -l .)"`: PASS.
+- `go test -json ./...`: PASS, 329.266s package time (329.931s wall),
+  115 top-level tests / 517 including subtests, zero failures/skips.
+- `go vet ./...`: PASS (0.584s wall).
+- `go test -race -json ./...`: PASS, 420.071s wall,
+  115 top-level tests / 517 including subtests, zero failures/skips and no data race.
+- `git diff --check`: PASS, including the final documentation update.
+
+`TestAPIRealDelayedTLSHandshake` delays the server's ClientHello processing in
+`GetConfigForClient` for 11 seconds, before TLS completes. It keeps the transport
+constructed by `newAPI`, adding only the loopback certificate to a trusted root
+pool (certificate verification is not disabled). The old-behavior branch changes
+only the TLS limit back to ten seconds: in the full ordinary run it timed out at
+10.002653s before the HTTP handler; production configuration succeeded at
+11.004425s. The old error is a real Go typed timeout, not a context deadline.
+The existing five-second HTTP handler delay test remains separate.
+
+Coverage also includes simulated 29-second success / 31-second delay capped at
+30 seconds, parent deadline minus one second, real headers-then-blocked-body
+cancellation/deadline, typed body errors, ordinary read errors, invalid JSON,
+oversize, late cancellation after a completed read, and safe stdout/stderr/failure
+metadata for the new errors. EOF, certificate failure, ordinary transport errors
+and HTTP 401/429/410 retain their categories. Recovery performs one claim and one
+GET, accepts only confirmed active/matching installation with durable save,
+preserves the original claim error and pending responsibility when unconfirmed,
+and does not acknowledge success after revocation or a fenced local save. Existing
+lease, cancellation, persistence and late-claim retirement regressions passed.
+
+The prior timeout entry below retains its real failed runs. None of those asdf,
+discovery or Claude retry failures recurred in either current full suite; this is
+new execution evidence, not a claim that the historical runs were green.
+Logs: `/tmp/mobterm-cli-v1-focused-final.log`, `/tmp/mobterm-cli-v1-test.log`,
+`/tmp/mobterm-cli-v1-vet.log`, `/tmp/mobterm-cli-v1-race.log` and the wall-time/exit
+summary `/tmp/mobterm-cli-v1-checks.json` on the execution host.
+
+App/API compatibility was inspected, not rebuilt or tested this round: existing
+App timeout/unavailable messages, absent/unknown/malformed failure fallback,
+16 KiB output bounds, 75/90-second waits, and reuse of the resolved absolute CLI
+path remain compatible. API claim/GET routes, credentials and response contracts
+are unchanged. No new fields/enums/version gate or API deployment is needed.
+
+The supplied curl and previously recorded Worker evidence remain distinct from
+these local tests. The source defect is confirmed; the incident's unique cause
+is not. Actual incident App build, CLI path/version/commit and underlying failure
+were not obtained. No new Worker log query, release/tag, deployment, remote
+installation/upgrade, Hook reinstall, real Pair operation, production request,
+real sandbox pairing, APNs display or Jump-to was performed. The delivery is
+source-level remediation awaiting the user's separately initiated static review
+and any separately authorized field verification.
+
 ## 2026-10-28 — Notification API timeout
 
 Notification API requests now allow 30 seconds. Network commands allow 65 seconds,

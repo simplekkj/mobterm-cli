@@ -30,7 +30,11 @@ The phone rechecks its local pair and connection binding before opening a target
 Hook errors are quiet on stdout, sanitized on stderr, and return zero. An existing
 Codex notifier is invoked with its original argv/input and its own output/exit
 status preserved. Mobterm's API commands have a 65-second overall command budget and 30-second HTTP
-timeouts. Local-only commands retain their ten-second budget; upgrade retains two
+timeouts, including a 30-second TLS handshake limit within that same request
+budget on an independent transport. Default proxy rules, certificate verification
+and redirect refusal remain unchanged. Shorter parent deadlines and cancellation
+still win, with the final parent-context second reserved for persistence.
+Local-only commands retain their ten-second budget; upgrade retains two
 minutes. Existing Agent-managed hook timeouts can cancel the CLI earlier; upgrading
 the binary does not change installed Agent configuration or adapter deadlines. Each new delivery makes one immediate POST; later events or explicit
 flush can recover up to 32 due deliveries, with at most four requests at once.
@@ -39,6 +43,14 @@ and exact-envelope reuse protect concurrent hook/flush operations. Per-event
 service handoff ends local POST recovery; receipt refresh only performs GETs. Interactive test/status expose failures instead of
 reporting a phone receipt. The original user notifier remains under the user's
 own timeout/exit semantics.
+
+Pairing classifies typed network timeouts and response-body cancellation/timeouts
+using the existing fixed `timeout`/`cancelled` codes, with cancellation first.
+Underlying causes are kept only internally: displayed response-read errors remain
+`invalid API response`, and transport errors remain `API unavailable`. Raw error
+text, URLs, credentials and response bodies are never added to failure metadata.
+Ordinary body-read errors, invalid JSON and oversized responses keep their previous
+safe behavior; they are not relabeled as connection failures.
 
 Upgrades trust the public project's GitHub release account and HTTPS release
 assets, not arbitrary mirrors or script URLs. SHA-256 verifies integrity against

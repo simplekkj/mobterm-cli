@@ -351,9 +351,25 @@ and build outputs must never be committed.
 
 ### Notification API request deadlines
 
-Notification API requests wait up to 30 seconds. Commands that use the API have a
+Notification API requests wait up to 30 seconds, including DNS, connection, TLS,
+response headers and body. The API client's independent transport allows up to
+30 seconds for TLS negotiation **within**, not in addition to, that request budget;
+certificate verification, proxy rules and redirect refusal remain in place.
+Commands that use the API have a
 65-second total budget, including retries/readback and local persistence; local-only
 commands keep ten seconds and `upgrade` keeps two minutes. A shorter caller deadline
 or cancellation still wins. Existing Agent hook deadlines are unchanged and may
 stop notification commands earlier; no installed hooks are rewritten by this change.
 Older Apps can likewise end their SSH wait before the longer CLI budget expires.
+
+Pairing reports typed network timeouts (including TLS handshake timeouts) as the
+existing `timeout` failure; explicit cancellation takes priority. Response-body
+timeout/cancellation evidence is preserved without displaying raw network errors.
+A generic `api_unavailable` result alone cannot identify the failed network phase.
+
+For a field report, record the App build, API origin, attempt time, and the absolute
+CLI path plus version/commit observed by the App's installation step. Setup and
+readback reuse that path; an interactive shell's `which`, a different installed
+binary, or the latest published release does not establish which binary ran.
+Pairing does not automatically upgrade the CLI. `status --installation-json` can
+initialize installation state, so it is not a side-effect-free version probe.

@@ -47,8 +47,13 @@ Pairing failures may add an optional `failure` object to the same JSON result:
 classifications, never raw exception text, stderr, URLs or response bodies.
 Optional `http_status` is an integer from 100 through 599, present only when an
 HTTP response supplied it. An unavailable connection does not establish whether
-DNS, TLS or another network component failed. `timeout` requires context
-or transport deadline evidence; arbitrary error text is never interpreted.
+DNS, TLS or another network component failed. `timeout` requires a context deadline
+or a typed `net.Error` with `Timeout()==true`, including TLS handshake timeouts;
+explicit cancellation takes precedence. Body-read cancellation/timeouts retain
+their cause behind fixed safe error text. Other body-read failures, invalid JSON
+and oversized responses retain the existing invalid-response behavior. A completed
+successful read is not reclassified using a later context state. Arbitrary error
+text is never interpreted.
 
 This metadata also covers configuration/installation failures before setup and
 single-pair status failures. Existing status results keep their pair, local-save,
@@ -603,7 +608,11 @@ There is no daemon, cron installation, port, detached child, or idle wake-up.
 The 65-second budget covers `setup`, full/pair `status`, `notify`, `test`,
 `outbox flush|refresh` and `pairs reconcile`. It allows two full requests plus
 local result persistence; a request still reserves the final second of its parent
-context for persistence. Local-only commands retain ten seconds and `upgrade` two
+context for persistence. Each API client clones the standard transport and sets
+its TLS handshake limit to 30 seconds, included in the same 30-second request
+budget covering connection through body read. Global transport settings, proxy
+rules, certificate verification, HTTP/2 and redirect refusal remain unchanged.
+Local-only commands retain ten seconds and `upgrade` two
 minutes. Existing Claude/OpenCode/Pi hook caller deadlines remain unchanged and
 can stop a CLI process before its API timeout; this binary change does not rewrite
 Agent configuration or installed adapters. Cancellation remains authoritative.

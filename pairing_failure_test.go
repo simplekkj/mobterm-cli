@@ -158,6 +158,9 @@ func TestPairingRunEmitsOneSafeFailure(t *testing.T) {
 		{"local_save", "local_save", "local_save_failed", 0},
 		{"unreachable", "claim", "api_unavailable", 0},
 		{"timeout", "claim", "timeout", 0},
+		{"typed_timeout", "claim", "timeout", 0},
+		{"body_timeout", "claim", "timeout", 0},
+		{"body_cancelled", "claim", "cancelled", 0},
 		{"http_unknown", "claim", "api_rejected", 503},
 		{"rate_limit", "claim", "rate_limited", 429},
 		{"unknown", "claim", "unknown", 0},
@@ -204,6 +207,16 @@ func TestPairingRunEmitsOneSafeFailure(t *testing.T) {
 				if scenario.name == "timeout" {
 					return nil, context.DeadlineExceeded
 				}
+				if scenario.name == "typed_timeout" {
+					return nil, fixtureTimeout{}
+				}
+				if scenario.name == "body_timeout" || scenario.name == "body_cancelled" {
+					var cause error = fixtureTimeout{}
+					if scenario.name == "body_cancelled" {
+						cause = errors.Join(errors.New(secret), context.Canceled)
+					}
+					return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(failureReader{cause})}, nil
+				}
 				if scenario.name == "unknown" {
 					return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(secret))}, nil
 				}
@@ -218,6 +231,13 @@ func TestPairingRunEmitsOneSafeFailure(t *testing.T) {
 			var out, diag bytes.Buffer
 			if code := run(args, bytes.NewReader(input), &out, &diag); code != 1 {
 				t.Fatal("failure did not exit 1", code)
+			}
+			if scenario.name == "typed_timeout" || scenario.name == "body_timeout" || scenario.name == "body_cancelled" {
+				for _, marker := range []string{secret, "PRIVATE_NETWORK_SENTINEL", p.SendToken, p.EncryptionKey, p.APIURL} {
+					if strings.Contains(out.String(), marker) || strings.Contains(diag.String(), marker) {
+						t.Fatal("private data reached stdout or stderr")
+					}
+				}
 			}
 			var response map[string]json.RawMessage
 			decoder := json.NewDecoder(&out)

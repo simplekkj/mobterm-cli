@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 )
 
@@ -18,6 +19,11 @@ type PairingFailure struct {
 func (e *PairingFailure) Error() string { return e.Stage + ": " + e.Code }
 func (e *PairingFailure) Unwrap() error { return e.cause }
 
+func isTimeoutError(err error) bool {
+	var network net.Error
+	return errors.Is(err, context.DeadlineExceeded) || errors.As(err, &network) && network.Timeout()
+}
+
 func pairingFailure(stage, code string, err error) error {
 	if err == nil {
 		return nil
@@ -28,7 +34,7 @@ func pairingFailure(stage, code string, err error) error {
 	switch {
 	case errors.Is(err, context.Canceled):
 		failure.Code = "cancelled"
-	case errors.Is(err, context.DeadlineExceeded):
+	case isTimeoutError(err):
 		failure.Code = "timeout"
 	case errors.As(err, &api):
 		failure.Code = "api_rejected"

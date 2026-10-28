@@ -25,6 +25,11 @@ type apiConnectionError struct{ cause error }
 func (e *apiConnectionError) Error() string { return "API unavailable" }
 func (e *apiConnectionError) Unwrap() error { return e.cause }
 
+type apiResponseError struct{ cause error }
+
+func (e *apiResponseError) Error() string { return "invalid API response" }
+func (e *apiResponseError) Unwrap() error { return e.cause }
+
 type APIError struct {
 	Status     int
 	Code       string
@@ -33,7 +38,13 @@ type APIError struct {
 
 func (e *APIError) Error() string { return fmt.Sprintf("API HTTP %d (%s)", e.Status, e.Code) }
 func newAPI() API {
-	return API{&http.Client{Timeout: apiRequestTimeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return errors.New("redirect refused") }}}
+	transport := http.DefaultTransport
+	if base, ok := transport.(*http.Transport); ok {
+		owned := base.Clone()
+		owned.TLSHandshakeTimeout = apiRequestTimeout
+		transport = owned
+	}
+	return API{&http.Client{Transport: transport, Timeout: apiRequestTimeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return errors.New("redirect refused") }}}
 }
 func (a API) request(ctx context.Context, p Pair, method, path string, body any) (map[string]any, error) {
 	// Keep the last second of a finite command budget for durable result commits.
@@ -68,6 +79,9 @@ func (a API) request(ctx context.Context, p Pair, method, path string, body any)
 	}
 	defer resp.Body.Close()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 16385))
+	if err != nil && (errors.Is(err, context.Canceled) || isTimeoutError(err)) {
+		return nil, &apiResponseError{cause: err}
+	}
 	if err != nil || len(b) > 16384 {
 		return nil, errors.New("invalid API response")
 	}
