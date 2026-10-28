@@ -348,3 +348,12 @@ notification events and phone delivery/navigation remain separate verification.
 See [protocol v1](docs/protocol-v1.md), [security](docs/security.md), and the
 honest scope of [validation](docs/validation.md). Secrets, transcripts, caches,
 and build outputs must never be committed.
+
+### Notification API request deadlines
+
+Notification API requests wait up to 30 seconds. Commands that use the API have a
+65-second total budget, including retries/readback and local persistence; local-only
+commands keep ten seconds and `upgrade` keeps two minutes. A shorter caller deadline
+or cancellation still wins. Existing Agent hook deadlines are unchanged and may
+stop notification commands earlier; no installed hooks are rewritten by this change.
+Older Apps can likewise end their SSH wait before the longer CLI budget expires.

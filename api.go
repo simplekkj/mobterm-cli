@@ -13,6 +13,9 @@ import (
 	"time"
 )
 
+const apiRequestTimeout = 30 * time.Second
+const networkCommandTimeout = 2*apiRequestTimeout + 5*time.Second
+
 type API struct{ Client *http.Client }
 
 // Preserve cancellation/timeout evidence without exposing network error text.
@@ -30,11 +33,11 @@ type APIError struct {
 
 func (e *APIError) Error() string { return fmt.Sprintf("API HTTP %d (%s)", e.Status, e.Code) }
 func newAPI() API {
-	return API{&http.Client{Timeout: 4 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return errors.New("redirect refused") }}}
+	return API{&http.Client{Timeout: apiRequestTimeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return errors.New("redirect refused") }}}
 }
 func (a API) request(ctx context.Context, p Pair, method, path string, body any) (map[string]any, error) {
 	// Keep the last second of a finite command budget for durable result commits.
-	deadline := time.Now().Add(4 * time.Second)
+	deadline := time.Now().Add(apiRequestTimeout)
 	if end, ok := ctx.Deadline(); ok && end.Add(-time.Second).Before(deadline) {
 		deadline = end.Add(-time.Second)
 	}

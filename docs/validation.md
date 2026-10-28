@@ -1,5 +1,46 @@
 # Validation records
 
+## 2026-10-28 — Notification API timeout
+
+Notification API requests now allow 30 seconds. Network commands allow 65 seconds,
+local-only commands retain ten seconds, and upgrade retains two minutes. Durable
+outbox leases last 35 seconds so another invocation cannot take over a request
+still within its 30-second network budget. Existing Agent hook caller deadlines
+are unchanged and can cancel earlier. App SSH wait compatibility is described in
+protocol-v1.md. No API wire format, remote installation, release or deployment
+changed in this work.
+
+Verification:
+
+- `test -z "$(gofmt -l .)"`, `go vet ./...`, `git diff --check`: PASS.
+- Four focused timeout/budget/lease regressions: PASS (8.698s). They include a real
+  local TLS response delayed five seconds, simulated 29-second success / 30-second
+  request timeout, parent-deadline persistence reserve, local/network command
+  selection, and a concurrent delivery attempt after 20 seconds that cannot steal
+  a still-running 29-second request. Virtual time establishes timer semantics,
+  not real Internet performance.
+- After refining status flag parsing, the command budget regression passes both
+  normally (2.008s) and with `-race` (2.906s), including pair values named
+  `agents-json` and `installation-json`.
+- `go test ./...`: FAIL (467.502s), during concurrent build/test load. Failures:
+  existing five-second original-launcher prerequisites in
+  `TestAsdfCompatibilityEntrypoints` / `TestAsdfProbeIsolationAndFailure`, discovery
+  probe timeouts in `TestAgentDiscoveryContractAndNoInitialization`,
+  `TestAgentDiscoveryMixedResults`, `TestAgentDiscoveryLocalTimeoutRetainsOtherAgents`,
+  and one `TestClaudeWaitNotifyEncryptedRetries/permission_prompt/missing` fixture
+  with two requests instead of four. The complete Claude retry test passes when
+  rerun alone without source changes (21.809s).
+- `go test -race ./...`: FAIL (599.180s), only the same original-launcher prerequisite
+  and discovery contract/mixed-result timeout families; no race detector report.
+  No timeout, lease or Claude regression failed in that run.
+- A serialized focused race rerun covering all failure families plus the four new
+  regressions: FAIL (180.451s). All `TestAsdfCompatibilityEntrypoints` cases and
+  Claude retries recovered; `TestAsdfProbeIsolationAndFailure` and the three
+  discovery tests still exceeded their unchanged five-second fixture budgets.
+  The four new regressions passed. These remaining environment/fixture failures
+  are recorded as a verification gap; the full suite is not claimed green.
+- Final-source timeout/budget/lease regressions alone with `-race`: PASS (7.595s).
+
 ## 2026-10-27 — CLI recovery review fixes, round 2 v1.0
 
 [Requirement](https://app.notion.com/p/406cede2082380ca9c90e8e3254aa415) ·

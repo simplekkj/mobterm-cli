@@ -64,7 +64,7 @@ requires a local pair with the same installation identity and an API response
 with the same pair/installation and `status:active`. Missing local state,
 inactive/mismatched/malformed API state and API errors fail with nonzero exit.
 The unchanged `capabilities`, `hooks`, `health` and `outbox` fields are then filled
-within the remaining ten-second command budget. Probe timeout or outbox failure
+within the remaining 65-second command budget. Probe timeout or outbox failure
 is reported in those diagnostics and cannot replace an already confirmed core
 result or change its exit status. Explicit cancellation still fails. This does
 not promise fast diagnostics or turn a real network failure into success.
@@ -484,8 +484,8 @@ consume the management credential budget or prohibit policy disable/revoke,
 device reads or token updates; those retain separate ordinary abuse protection.
 Global exhaustion temporarily affects every user's new notifications.
 
-The CLI preserves one initial POST plus at most one retry, a four-second HTTP
-timeout and the command's ten-second context. A next-day Retry-After exits promptly
+The CLI preserves one initial POST plus at most one retry, a 30-second HTTP
+timeout and the API command's 65-second context. A next-day Retry-After exits promptly
 without a second POST; it never rotates event ID/nonce/ciphertext to evade a quota.
 The 512-entry replay cache is not a daemon, spool or scheduled retry queue. App
 clients do not automatically poll or re-pair on 429. Old App versions show a generic
@@ -594,11 +594,26 @@ policy denial terminates only that delivery. No automatic re-pair loop exists.
 
 Every eligible pair is independently persisted **before the first network send**.
 A failed save is `not_saved`, never claimed queued. The command remains bounded to
-10 seconds, each HTTP to 4 seconds. New events run before old due work. This
+65 seconds, each HTTP to 30 seconds. New events run before old due work. This
 implementation uses one immediate POST per hook delivery (within the maximum of
 two); subsequent invocations/explicit flush retry persisted work. Flush selects
 at most 32 records with at most 4 concurrent requests and pair round-robin.
 There is no daemon, cron installation, port, detached child, or idle wake-up.
+
+The 65-second budget covers `setup`, full/pair `status`, `notify`, `test`,
+`outbox flush|refresh` and `pairs reconcile`. It allows two full requests plus
+local result persistence; a request still reserves the final second of its parent
+context for persistence. Local-only commands retain ten seconds and `upgrade` two
+minutes. Existing Claude/OpenCode/Pi hook caller deadlines remain unchanged and
+can stop a CLI process before its API timeout; this binary change does not rewrite
+Agent configuration or installed adapters. Cancellation remains authoritative.
+Old App SSH waits may stop a slow command earlier; an App with extended notification
+command waits is needed to use the full budget from the phone. API wire formats and
+credentials are unchanged, so the API needs no deployment for this timeout change.
+An updated App uses a 75-second notification command wait and a 90-second outer
+setup wait. Existing CLI processes retain their earlier ten-second budget and
+15-second leases; new processes honor persisted lease deadlines and write
+35-second leases, so a binary replacement does not shorten an in-flight lease.
 
 Each delivery retains its original event ID, nonce, ciphertext, first creation
 and one-hour expiry. Across calls at most 12 POST attempts are reserved durably.
@@ -629,7 +644,7 @@ increase Store.readJSON's 2 MiB limit for other configuration. A dedicated bound
 index (32 MiB) maintains exact pair/global counts. A bounded transaction journal
 (36 MiB) atomically repairs interrupted shard/index commits. Every read/modify
 uses the existing cross-process private lock and 0600 atomic writes. Network IO
-never holds that lock; persisted lease owner and 15-second expiry prevent hook /
+never holds that lock; persisted lease owner and 35-second expiry prevent hook /
 flush competition. Late results must still own the lease.
 
 Pending limits are 512 per pair, 16384 per installation, 80 MiB serialized

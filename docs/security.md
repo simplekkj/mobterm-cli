@@ -29,8 +29,10 @@ The phone rechecks its local pair and connection binding before opening a target
 
 Hook errors are quiet on stdout, sanitized on stderr, and return zero. An existing
 Codex notifier is invoked with its original argv/input and its own output/exit
-status preserved. Mobterm's work has a ten-second overall command budget and four-second HTTP
-timeouts. Each new delivery makes one immediate POST; later events or explicit
+status preserved. Mobterm's API commands have a 65-second overall command budget and 30-second HTTP
+timeouts. Local-only commands retain their ten-second budget; upgrade retains two
+minutes. Existing Agent-managed hook timeouts can cancel the CLI earlier; upgrading
+the binary does not change installed Agent configuration or adapter deadlines. Each new delivery makes one immediate POST; later events or explicit
 flush can recover up to 32 due deliveries, with at most four requests at once.
 A delivery reserves at most 12 POST attempts across calls. Durable owner leases
 and exact-envelope reuse protect concurrent hook/flush operations. Per-event

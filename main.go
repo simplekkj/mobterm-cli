@@ -137,6 +137,41 @@ func addStatusDiagnostics(ctx context.Context, s Store, pairID string, result ma
 	}
 }
 
+// Network commands allow two full API requests plus local persistence. Local-only
+// discovery, hooks and target verification retain their existing short budget.
+func commandTimeout(args []string) time.Duration {
+	if len(args) == 0 {
+		return 10 * time.Second
+	}
+	switch args[0] {
+	case "upgrade":
+		return 2 * time.Minute
+	case "setup", "notify", "test":
+		return networkCommandTimeout
+	case "status":
+		var installation, agents bool
+		f, err := flags("status", args[1:], func(f *flag.FlagSet) {
+			f.BoolVar(&installation, "installation-json", false, "")
+			f.BoolVar(&agents, "agents-json", false, "")
+			f.Bool("json", false, "")
+			f.String("pair", "", "")
+		})
+		if err == nil && f.NArg() == 0 && (installation || agents) {
+			return 10 * time.Second
+		}
+		return networkCommandTimeout
+	case "outbox":
+		if len(args) > 1 && (args[1] == "flush" || args[1] == "refresh") {
+			return networkCommandTimeout
+		}
+	case "pairs":
+		if len(args) > 1 && args[1] == "reconcile" {
+			return networkCommandTimeout
+		}
+	}
+	return 10 * time.Second
+}
+
 func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
 		fmt.Fprintln(out, "mobterm-cli setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | pairs retire --stdin-frame --json | upgrade --version vX.Y.Z | version")
@@ -156,11 +191,7 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	}
 	base, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	timeout := 10 * time.Second
-	if args[0] == "upgrade" {
-		timeout = 2 * time.Minute
-	}
-	ctx, cancel := context.WithTimeout(base, timeout)
+	ctx, cancel := context.WithTimeout(base, commandTimeout(args))
 	defer cancel()
 	a := newAPI()
 	var value any

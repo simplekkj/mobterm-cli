@@ -30,7 +30,7 @@ multiple versions and unknown forms fail safely. Probe output is bounded by the
 2 MiB command limit and by 100 bytes in status. Each Agent probe has the same
 five-second budget, bounded by the calling context, with bounded pipe cleanup.
 Status probes the four independent Agents concurrently to retain time for pair
-readback within the command's ten-second context; deadline failures are reported
+readback within the full status command's 65-second context; deadline failures are reported
 as `probe_timeout` without exposing command output.
 `status --agents-json` uses the same runtime selection and isolated probes without
 initializing installation identity, reading pairs/outbox or calling the notification

@@ -470,7 +470,8 @@ func deliverOne(ctx context.Context, s Store, a API, d delivery) (map[string]any
 			return nil
 		}
 		current.Owner = owner
-		current.Lease = now + 15
+		// Keep ownership throughout a full API request and its result commit.
+		current.Lease = now + int64((apiRequestTimeout+5*time.Second)/time.Second)
 		current.Posts++
 		return nil
 	})
