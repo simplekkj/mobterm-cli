@@ -3,15 +3,39 @@ import assert from 'node:assert/strict';
 import { readFile, mkdtemp, writeFile, chmod, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawn as spawnChild } from 'node:child_process';
 // Explicit client runtime: Node's default solid-js export is SSR (no-op effects).
 import { createEffect, createRoot, createSignal } from './native-adapter-tests/node_modules/solid-js/dist/solid.js';
 const temp = await mkdtemp(join(tmpdir(), 'mobterm-native-contract-'));
 const output = join(temp, 'events.jsonl');
 const recorder = join(temp, 'notify');
-await writeFile(recorder, `#!${process.execPath}\nconst fs=require('node:fs');let b='';process.stdin.on('data',x=>b+=x);process.stdin.on('end',()=>fs.appendFileSync(${JSON.stringify(output)},b+'\\n'));`);
+// A deliberate first-write delay exceeds the former two-second sleep. This
+// proves assertions observe completed children instead of a timing assumption.
+await writeFile(recorder, `#!${process.execPath}\nconst fs=require('node:fs');let b='';process.stdin.on('data',x=>b+=x);process.stdin.on('end',()=>{const first=!fs.existsSync(${JSON.stringify(output)});setTimeout(()=>fs.appendFileSync(${JSON.stringify(output)},b+'\\n'),first?2200:0);});`);
 await chmod(recorder, 0o700);
-const pause = () => new Promise(resolve => setTimeout(resolve, 2000));
-const allEvents = async () => { await pause(); try { return (await readFile(output, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); } catch { return []; } };
+const children = new Set();
+const notificationChildren = new Set();
+const spawn = (...args) => {
+  const child = spawnChild(...args);
+  children.add(child);
+  if (args[1]?.[0] === 'notify') notificationChildren.add(child);
+  child.once('close', () => { children.delete(child); notificationChildren.delete(child); });
+  return child;
+};
+// A state and reminder may use several real children in the serial bridge.
+// Wait for their close events and the bridge's next drain microtask; a fixed
+// sleep could inspect an incomplete queue, especially during Simulator tests.
+const settleChildren = async (pending = children) => waitFor(async () => {
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  return pending.size === 0;
+}, 'native child queue did not settle', 30000);
+const allEvents = async () => {
+  // A legitimate native approval waiter is independent of event observation.
+  await settleChildren(notificationChildren);
+  try { return (await readFile(output, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); }
+  catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+};
 // Preserve the earlier reminder ownership assertions while states use their own channel.
 const events = async () => (await allEvents()).filter(v => ["session.execution.succeeded","permission.asked","form.created"].includes(v.event) || v.event === "agent_settled" && v.aborted === false);
 const waitFor = async (condition, message, budget = 5000) => {
@@ -22,10 +46,11 @@ const waitFor = async (condition, message, budget = 5000) => {
   }
 };
 let diagnostics = 0;
-globalThis.__mobtermFixture = { Plugin: { define: x => x }, createEffect, createRoot };
+globalThis.__mobtermFixture = { Plugin: { define: x => x }, createEffect, createRoot, spawn };
 async function load(source, version = '1.3.0', executable = recorder) {
   let text = await readFile(new URL(`../adapters/${source === 'pi' ? 'pi/mobterm-jumpto.ts' : 'opencode/tui.js'}`, import.meta.url), 'utf8');
   text = text.replaceAll('__MOBTERM_CLI_JSON__', JSON.stringify(executable)).replaceAll('__MOBTERM_STORE_JSON__', JSON.stringify(temp))
+    .replace('import { spawn } from "node:child_process";', 'const {spawn} = globalThis.__mobtermFixture;')
     .replace('import { Plugin } from "@opencode/plugin/tui";', 'const {Plugin} = globalThis.__mobtermFixture;')
     .replace('import { createEffect, createRoot } from "solid-js";', 'const {createEffect, createRoot} = globalThis.__mobtermFixture;')
     .replace('import { VERSION } from "@earendil-works/pi-coding-agent";', `const VERSION = ${JSON.stringify(version)};`);
@@ -158,11 +183,11 @@ try {
     }
     send('cancel-active');await waitFor(readyPID,source+' child starts');
     const pid=await readyPID();cancel();await waitFor(()=>exited(pid),source+' cancelled child exits');
-    await new Promise(resolve=>setTimeout(resolve,100));
+    await settleChildren();
     assert.equal(diagnostics,0,source+' active cancellation has no failure diagnostic');
     await writeFile(childMode,'fail');await rm(childReady,{force:true});
     send('real-failure');await waitFor(()=>diagnostics===1,source+' later nonzero exit still warns');
-    send('another-failure');await pause();
+    send('another-failure');await settleChildren();
     assert.equal(diagnostics,1,source+' failures stay bounded');stop();
   }
   diagnostics=0;
@@ -228,10 +253,15 @@ try {
   await waitFor(()=>nativeReplies.length===1,'native permission reply not delivered');
   assert.deepEqual(nativeReplies[0],{sessionID:'root',requestID:request.id,reply:'once'});
   approving.emit('permission.asked','approval-event',request);
-  await pause();assert.equal(nativeReplies.length,1,'same occurrence not replayed');
+  await settleChildren();assert.equal(nativeReplies.length,1,'same occurrence not replayed');
   approving.context.client.permission.get=async()=>({...request,resources:['changed command']});
   approving.emit('permission.asked','changed-approval-event',request);
-  await pause();assert.equal(nativeReplies.length,1,'changed native request must not be approved');
+  await settleChildren();assert.equal(nativeReplies.length,1,'changed native request must not be approved');
   disposeApproval();
   console.log('PASS native adapter contracts: ownership, pending, lifecycle, reload, identity, Pi settled/mode, bridge metadata');
-} finally { delete globalThis.__mobtermFixture; await rm(temp,{recursive:true,force:true}); }
+} finally {
+  for (const child of children) child.kill('SIGKILL');
+  await settleChildren();
+  delete globalThis.__mobtermFixture;
+  await rm(temp,{recursive:true,force:true});
+}

@@ -37,6 +37,20 @@ approval=true; local opt-in survives unrelated global policy generation changes.
 - `node scripts/test-native-adapters.mjs`: PASS, including OpenCode exact native
   pending re-query, one reply, changed-request refusal, root/family ownership,
   separate approval child control, Pi UI waits and aborted/non-aborted settlement.
+  Before final handoff the coordinator also ran the required pinned install,
+  `npm ci --prefix scripts/native-adapter-tests --ignore-scripts --no-audit --no-fund`,
+  using isolated cache `/tmp/mobterm-round1-adapter-npm-cache`: PASS. Its first
+  subsequent script run failed `root success once` (0 rather than 1): the fixture
+  read events after a fixed two-second sleep while state and completion used
+  successive real child processes. The final fixture tracks real notification
+  child close events and bridge queue advancement before reading; independent
+  pending approval children do not block event observations. A deliberate 2.2s
+  first recorder delay now exercises this regression. Exact counts, cancellation,
+  approval checks and the actual production ten-second timeout assertion remain.
+  `node --check scripts/test-native-adapters.mjs` and the full script after the
+  pinned install both PASS; log `/tmp/mobterm-round1-adapter-after-ci-final.log`.
+  This follow-up changes only the test fixture and this evidence record; the
+  already validated Go code, adapters and production budgets are unchanged.
 - `scripts/test-native-adapters-host.py`: PASS with official OpenCode 2.1.0 TUI
   setup and restart (13 listeners) and official Pi 1.3.0 discovery/import plus
   actual TUI session_start (8 listeners). Generated adapters were loaded by the
