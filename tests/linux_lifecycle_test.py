@@ -31,6 +31,7 @@ import unittest
 
 BINARY = None
 AGENT_PATH = None
+CLAUDE_NATIVE_HOOKS = False
 
 
 def frame(value):
@@ -142,7 +143,11 @@ class LifecycleTests(unittest.TestCase):
         self.hook('claude')
         self.assertEqual(self.claude.read_bytes(), installed)
         settings = json.loads(installed)
-        self.assertEqual(settings['hooks']['Stop'], self.original_claude['hooks']['Stop'])
+        expected_stop = copy.deepcopy(self.original_claude['hooks']['Stop'])
+        if CLAUDE_NATIVE_HOOKS:
+            expected_stop.append({'hooks': [{'type': 'command', 'timeout': 10,
+                                           'command': shlex.quote(str(self.binary)) + ' observe --source claude'}]})
+        self.assertEqual(settings['hooks']['Stop'], expected_stop)
         for event in ('Notification', 'UserPromptSubmit'):
             managed = [hook for entry in settings['hooks'][event] for hook in entry['hooks']
                        if 'mobterm-cli' in hook.get('command', '')]
@@ -333,6 +338,7 @@ if __name__ == '__main__':
         parser.error('The HTTPS fixture requires Linux; use --config-only on macOS')
     BINARY = str(Path(args.binary).resolve(strict=True))
     AGENT_PATH = os.environ['PATH']
+    CLAUDE_NATIVE_HOOKS = tuple(map(int, args.expect_claude_version.split('.'))) >= (2, 1, 301)
     with tempfile.TemporaryDirectory(prefix='mobterm-agent-versions-') as home:
         env = dict(PATH=AGENT_PATH, HOME=home, CODEX_HOME=home + '/.codex',
                    CLAUDE_CONFIG_DIR=home + '/.claude', DISABLE_UPDATES='1',
