@@ -184,12 +184,12 @@ func TestApprovalCASAcrossPairsAndDisableRelease(t *testing.T) {
 	s.writeJSON("approval-policy-v2.json", map[string]map[string]int64{p.PairID: {"codex": 1}, second.PairID: {"codex": 2}})
 	birth, _ := processIdentity(os.Getpid())
 	parent, _ := processIdentity(os.Getppid())
-	request := ApprovalRequest{V: 2, RequestID: randomID(), Digest: digest("{}"), OperationJSON: "{}", Agent: "codex", Locator: l, CreatedAt: time.Now().Unix(), ExpiresAt: time.Now().Unix() + 120, PID: os.Getpid(), Birth: birth, ParentPID: os.Getppid(), ParentBirth: parent, State: "pending", Pairs: map[string]int64{p.PairID: 3, second.PairID: 3}}
+	request := ApprovalRequest{V: 3, RequestID: randomID(), Digest: digest("{}"), OperationJSON: "{}", Agent: "codex", Locator: l, CreatedAt: time.Now().Unix(), ExpiresAt: time.Now().Unix() + 120, PID: os.Getpid(), Birth: birth, ParentPID: os.Getppid(), ParentBirth: parent, State: "pending", Pairs: map[string]int64{p.PairID: 3, second.PairID: 3}}
 	s.writeJSON("approval-"+request.RequestID+".json", request)
 	api := API{server.Client()}
 	frames := make([]ApprovalFrame, 2)
 	for i, pair := range []Pair{p, second} {
-		frames[i] = ApprovalFrame{V: 2, PairID: pair.PairID, RequestID: request.RequestID, Digest: request.Digest, DecisionID: randomID(), Action: []string{"allow_once", "deny"}[i], PolicyGeneration: 3, ExpiresAt: request.ExpiresAt}
+		frames[i] = ApprovalFrame{V: 3, PairID: pair.PairID, RequestID: request.RequestID, Digest: request.Digest, DecisionID: randomID(), Action: []string{"allow_once", "deny"}[i], PolicyGeneration: 3, ExpiresAt: request.ExpiresAt}
 		key, _ := decode64(pair.EncryptionKey, 32)
 		frames[i].Proof, _ = approvalMAC(key, frames[i])
 	}
@@ -254,7 +254,7 @@ func TestApprovalInputRefusesUnknownAndOversize(t *testing.T) {
 			t.Fatal("unsafe approval input")
 		}
 	}
-	if !approvalInputSupported("codex", activityInput{ToolName: "Bash", ToolInput: json.RawMessage(`{"command":"pwd"}`)}) {
+	if !approvalInputSupported("codex", activityInput{Cwd: "/work/project", ToolName: "Bash", ToolInput: json.RawMessage(`{"command":"pwd"}`)}) {
 		t.Fatal("valid input refused")
 	}
 }
@@ -285,7 +285,7 @@ func TestNativeWaitConsumedWithoutReplay(t *testing.T) {
 	s.writeJSON("approval-policy-v2.json", map[string]map[string]int64{p.PairID: {"codex": 1}})
 	api := API{server.Client()}
 	a := Activity{Agent: "codex", Session: "session", Instance: "instance", Run: "run", Occurrence: "native-wait", State: "waiting_approval", Reminder: "needs_input"}
-	input := activityInput{HookEventName: "PermissionRequest", ToolName: "Bash", ToolUseID: "native-request-1", ToolInput: json.RawMessage(`{"command":"printf fixture"}`)}
+	input := activityInput{Cwd: "/work/project", HookEventName: "PermissionRequest", ToolName: "Bash", ToolUseID: "native-request-1", ToolInput: json.RawMessage(`{"command":"printf fixture"}`)}
 	type result struct {
 		value any
 		err   error
@@ -313,7 +313,7 @@ func TestNativeWaitConsumedWithoutReplay(t *testing.T) {
 	if request.RequestID == "" {
 		t.Fatal("waiter not created")
 	}
-	f := ApprovalFrame{V: 2, PairID: p.PairID, RequestID: request.RequestID, Digest: request.Digest, DecisionID: randomID(), Action: "allow_once", PolicyGeneration: 3, ExpiresAt: request.ExpiresAt}
+	f := ApprovalFrame{V: 3, PairID: p.PairID, RequestID: request.RequestID, Digest: request.Digest, DecisionID: randomID(), Action: "allow_once", PolicyGeneration: 3, ExpiresAt: request.ExpiresAt}
 	key, _ := decode64(p.EncryptionKey, 32)
 	f.Proof, _ = approvalMAC(key, f)
 	if _, err = approvalCommand(ctx, s, api, "decide", bytes.NewReader(framed(f))); err != nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -69,39 +70,48 @@ func runCapabilities(ctx context.Context, a API, p Pair) (RunCapabilities, error
 			return c, errors.New("invalid_capability_receipt")
 		}
 	}
-	if json.Unmarshal(b, &c) != nil || c.V != 2 || c.ExpiresAt <= time.Now().Unix() || c.ExpiresAt > time.Now().Add(5*time.Minute).Unix() || (c.Enabled && c.CapabilityGeneration <= 0) {
+	if json.Unmarshal(b, &c) != nil || c.V != 2 || c.ExpiresAt <= time.Now().Unix() || c.ExpiresAt > time.Now().Add(61*time.Second).Unix() || (c.Enabled && c.CapabilityGeneration <= 0) {
 		return c, errors.New("invalid_capability_receipt")
 	}
 	return c, nil
 }
 
+type PendingRequest struct {
+	State    string        `json:"state"`
+	Approval *ApprovalHint `json:"approval,omitempty"`
+}
+
 type Activity struct {
-	Agent        string
-	Session      string
-	Run          string
-	Instance     string
-	Occurrence   string
-	State        string
-	ToolID       string
-	ToolCategory string
-	ToolStatus   string
-	Reminder     string
-	Approval     *ApprovalHint
+	RequestID      string
+	ResolveRequest bool
+	Agent          string
+	Session        string
+	Run            string
+	Instance       string
+	Occurrence     string
+	State          string
+	ToolID         string
+	ToolCategory   string
+	ToolStatus     string
+	Reminder       string
+	Approval       *ApprovalHint
 }
 type StoredRun struct {
-	Agent    string              `json:"agent"`
-	Session  string              `json:"session"`
-	Run      string              `json:"run"`
-	Instance string              `json:"instance"`
-	Locator  Locator             `json:"locator"`
-	Revision int64               `json:"revision"`
-	State    string              `json:"state"`
-	Updated  int64               `json:"updated"`
-	Seen     []string            `json:"seen"`
-	Tools    map[string]RunTool  `json:"tools"`
-	Streams  map[string]string   `json:"streams"`
-	Pending  map[string]Envelope `json:"pending"`
-	Approval *ApprovalHint       `json:"approval,omitempty"`
+	FirstOccurrence string                    `json:"first_occurrence,omitempty"`
+	Requests        map[string]PendingRequest `json:"requests,omitempty"`
+	Agent           string                    `json:"agent"`
+	Session         string                    `json:"session"`
+	Run             string                    `json:"run"`
+	Instance        string                    `json:"instance"`
+	Locator         Locator                   `json:"locator"`
+	Revision        int64                     `json:"revision"`
+	State           string                    `json:"state"`
+	Updated         int64                     `json:"updated"`
+	Seen            []string                  `json:"seen"`
+	Tools           map[string]RunTool        `json:"tools"`
+	Streams         map[string]string         `json:"streams"`
+	Pending         map[string]Envelope       `json:"pending"`
+	Approval        *ApprovalHint             `json:"approval,omitempty"`
 }
 type RunIntent struct {
 	PairID     string     `json:"pair_id"`
@@ -113,6 +123,8 @@ type RunIntent struct {
 	Envelope   *Envelope  `json:"envelope,omitempty"`
 }
 type RunStore struct {
+	LastPair  [2]string            `json:"last_pair,omitempty"`
+	Retired   map[string]int64     `json:"retired,omitempty"`
 	NextState map[string]int64     `json:"next_state"`
 	Intents   map[string]RunIntent `json:"intents"`
 	Runs      map[string]StoredRun `json:"runs"`
@@ -121,9 +133,21 @@ type RunStore struct {
 
 func loadRuns(s Store) (RunStore, error) {
 	r := RunStore{Runs: map[string]StoredRun{}, Current: map[string]string{}, Intents: map[string]RunIntent{}}
-	err := s.readJSON("runs-v2.json", &r)
+	raw, err := secureRead(filepath.Join(s.Dir, "runs-v2.json"), runStoreLimit)
+	// One bounded legacy recovery allowance; never applied to keys/configuration.
+	// A compact rewrite still must fit the normal write budget, otherwise retain
+	// the original file and report capacity rather than destroying responsibility.
+	if err != nil && err.Error() == "configuration exceeds size limit" {
+		raw, err = secureRead(filepath.Join(s.Dir, "runs-v2.json"), 2*runStoreLimit)
+	}
+	if err == nil {
+		err = json.Unmarshal(raw, &r)
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		err = nil
+	}
+	if r.Retired == nil {
+		r.Retired = map[string]int64{}
 	}
 	if r.Intents == nil {
 		r.Intents = map[string]RunIntent{}
@@ -135,6 +159,59 @@ func loadRuns(s Store) (RunStore, error) {
 		return r, errors.New("run_store_corrupt")
 	}
 	return r, err
+}
+
+// Runs have their own bounded compact format. This accommodates the old valid
+// 128 x 256 occurrence ledger without increasing limits for keys/configuration.
+const runStoreLimit = 16 * 1024 * 1024
+
+func saveRuns(s Store, db RunStore) error {
+	raw, err := json.Marshal(db)
+	if err != nil {
+		return err
+	}
+	if len(raw) > runStoreLimit {
+		return errors.New("run_store_capacity")
+	}
+	return atomicWrite(filepath.Join(s.Dir, "runs-v2.json"), raw, 0600)
+}
+func reclaimRuns(db *RunStore, now int64, needSlot bool) {
+	for pair, next := range db.NextState {
+		if next <= now {
+			delete(db.NextState, pair)
+		}
+	}
+	for key, until := range db.Retired {
+		if until <= now {
+			delete(db.Retired, key)
+		}
+	}
+	busy := map[string]bool{}
+	for _, intent := range db.Intents {
+		if intent.ExpiresAt > now {
+			busy[intent.Key] = true
+		}
+	}
+	keys := []string{}
+	for key, run := range db.Runs {
+		if !busy[key] && terminalRun(run.State) && (run.Approval == nil || run.Approval.ExpiresAt <= now) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool { return db.Runs[keys[i]].Updated < db.Runs[keys[j]].Updated })
+	for _, key := range keys {
+		run := db.Runs[key]
+		if run.Updated >= now-86400 && (!needSlot || len(db.Runs) < 128) {
+			continue
+		}
+		db.Retired[key] = now + 86400
+		if run.FirstOccurrence != "" {
+			target, _ := json.Marshal(run.Locator)
+			instance := digest(run.Agent + "\x00" + run.Session + "\x00" + run.Instance + "\x00" + string(target))
+			db.Retired[digest(instance+"\x00occurrence\x00"+run.FirstOccurrence)] = now + 86400
+		}
+		delete(db.Runs, key)
+	}
 }
 func terminalRun(state string) bool {
 	return state == "turn_completed" || state == "failed" || state == "interrupted"
@@ -168,6 +245,9 @@ func applyActivity(ctx context.Context, s Store, l Locator, a Activity) (string,
 	target, _ := json.Marshal(l)
 	instance := digest(a.Agent + "\x00" + a.Session + "\x00" + a.Instance + "\x00" + string(target))
 	if a.Run == "" {
+		if db.Retired[digest(instance+"\x00occurrence\x00"+a.Occurrence)] > time.Now().Unix() {
+			return "", StoredRun{}, false, nil
+		}
 		for key, r := range db.Runs {
 			if r.Agent == a.Agent && r.Session == a.Session && r.Instance == a.Instance && r.Locator == l {
 				for _, occurrence := range r.Seen {
@@ -190,15 +270,17 @@ func applyActivity(ctx context.Context, s Store, l Locator, a Activity) (string,
 	r, exists := db.Runs[key]
 	now := time.Now().Unix()
 	if !exists {
-		for k, v := range db.Runs {
-			if v.Updated < now-86400 {
-				delete(db.Runs, k)
-			}
+		reclaimRuns(&db, now, true)
+		if db.Retired[key] > now {
+			return key, r, false, nil
 		}
-		if len(db.Runs) >= 128 {
-			return "", r, false, errors.New("run_capacity")
+		// 128 is the retained snapshot target, not a daily business limit.
+		// Reserve bounded overflow for critical obligations while active runs
+		// occupy all ordinary slots. Never evict a run with an unsent intent.
+		if len(db.Runs) >= 128 && a.Reminder == "" || len(db.Runs) >= 512 {
+			return "", r, false, errors.New("run_capacity_retry_after_flush")
 		}
-		r = StoredRun{Agent: a.Agent, Session: a.Session, Run: a.Run, Instance: a.Instance, Locator: l, Tools: map[string]RunTool{}, Streams: map[string]string{}, Pending: map[string]Envelope{}}
+		r = StoredRun{FirstOccurrence: a.Occurrence, Agent: a.Agent, Session: a.Session, Run: a.Run, Instance: a.Instance, Locator: l, Tools: map[string]RunTool{}, Streams: map[string]string{}, Pending: map[string]Envelope{}}
 	}
 	for _, id := range r.Seen {
 		if id == a.Occurrence {
@@ -211,6 +293,22 @@ func applyActivity(ctx context.Context, s Store, l Locator, a Activity) (string,
 	r.Revision++
 	r.Updated = now
 	r.State = a.State
+	if r.Requests == nil {
+		r.Requests = map[string]PendingRequest{}
+	}
+	if a.RequestID != "" {
+		if a.ResolveRequest {
+			if _, known := r.Requests[a.RequestID]; !known {
+				return key, db.Runs[key], false, nil
+			}
+			delete(r.Requests, a.RequestID)
+		} else {
+			if _, exists := r.Requests[a.RequestID]; !exists && len(r.Requests) >= 64 {
+				return key, r, false, errors.New("request_capacity")
+			}
+			r.Requests[a.RequestID] = PendingRequest{State: a.State, Approval: a.Approval}
+		}
+	}
 	r.Approval = a.Approval
 	r.Seen = append(r.Seen, a.Occurrence)
 	if len(r.Seen) > 256 {
@@ -246,6 +344,23 @@ func applyActivity(ctx context.Context, s Store, l Locator, a Activity) (string,
 			}
 		}
 	}
+	if !terminalRun(r.State) {
+		requestIDs := make([]string, 0, len(r.Requests))
+		for id := range r.Requests {
+			requestIDs = append(requestIDs, id)
+		}
+		sort.Strings(requestIDs)
+		for _, id := range requestIDs {
+			request := r.Requests[id]
+			if r.State != "waiting_approval" || request.State == "waiting_approval" {
+				r.State = request.State
+				r.Approval = request.Approval
+			}
+		}
+	} else {
+		r.Requests = nil
+		r.Approval = nil
+	}
 	pairs, err := s.pairs()
 	if err != nil {
 		return key, r, false, err
@@ -272,8 +387,19 @@ func applyActivity(ctx context.Context, s Store, l Locator, a Activity) (string,
 		if kind == "state" {
 			ik = digest(pid + "\x00state\x00" + key)
 		}
-		if _, ok := db.Intents[ik]; !ok && len(db.Intents) >= 512 {
-			return key, r, false, errors.New("activity_pending_capacity")
+		if kind != "state" {
+			delete(db.Intents, digest(pid+"\x00state\x00"+key))
+		}
+		if _, ok := db.Intents[ik]; !ok {
+			stateCount := 0
+			for _, intent := range db.Intents {
+				if intent.Kind == "state" {
+					stateCount++
+				}
+			}
+			if len(db.Intents) >= 512 || kind == "state" && stateCount >= 256 {
+				return key, r, false, errors.New("activity_pending_capacity")
+			}
 		}
 		db.Intents[ik] = RunIntent{PairID: pid, Key: key, Occurrence: a.Occurrence, Kind: kind, Payload: payloadForRun(r, stream), ExpiresAt: now + 3600}
 		if kind != "state" {
@@ -287,7 +413,7 @@ func applyActivity(ctx context.Context, s Store, l Locator, a Activity) (string,
 	if len(db.Current) > 256 {
 		db.Current = map[string]string{instance: a.Run}
 	}
-	err = s.writeJSON("runs-v2.json", db)
+	err = saveRuns(s, db)
 	return key, r, true, err
 }
 func payloadForRun(r StoredRun, stream string) RunPayload {
@@ -317,7 +443,15 @@ func payloadForRun(r StoredRun, stream string) RunPayload {
 }
 func publishActivity(ctx context.Context, s Store, api API, l Locator, a Activity) error {
 	if _, _, _, err := applyActivity(ctx, s, l, a); err != nil {
-		return err
+		if err.Error() != "run_capacity_retry_after_flush" && err.Error() != "activity_pending_capacity" && err.Error() != "run_store_capacity" {
+			return err
+		}
+		// Capacity is recoverable: hand off pending responsibility before one retry.
+		// Failure leaves the prior readable store and outbox untouched.
+		_ = flushRunSnapshots(ctx, s, api)
+		if _, _, _, retryErr := applyActivity(ctx, s, l, a); retryErr != nil {
+			return retryErr
+		}
 	}
 	return flushRunSnapshots(ctx, s, api)
 }
@@ -333,7 +467,7 @@ func removeRunIntent(ctx context.Context, s Store, key, occurrence string) error
 	}
 	if db.Intents[key].Occurrence == occurrence {
 		delete(db.Intents, key)
-		return s.writeJSON("runs-v2.json", db)
+		return saveRuns(s, db)
 	}
 	return nil
 }
@@ -366,7 +500,7 @@ func encodeRunIntent(ctx context.Context, s Store, key string, intent RunIntent,
 	current.Payload = intent.Payload
 	current.Envelope = &e
 	db.Intents[key] = current
-	return current, s.writeJSON("runs-v2.json", db)
+	return current, saveRuns(s, db)
 }
 func enqueueRunReminder(ctx context.Context, s Store, intent RunIntent) (delivery, error) {
 	unlock, err := s.lock(ctx)
@@ -397,11 +531,41 @@ func enqueueRunReminder(ctx context.Context, s Store, intent RunIntent) (deliver
 	return d, s.saveShard(idx, key, old, sh)
 }
 func flushRunSnapshots(ctx context.Context, s Store, api API) error {
+	// Three short phases: fresh business first, due durable reminders next,
+	// coalesced observations last. All inherit the native caller's deadline.
+	budget := 2 * time.Second
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 5*time.Second {
+		budget = 600 * time.Millisecond
+	}
+	fresh, cancel := context.WithTimeout(ctx, budget)
+	first := flushRunIntents(fresh, s, api, false)
+	cancel()
+	recovery, cancel := context.WithTimeout(ctx, budget)
+	_, retryErr := flushOutbox(recovery, s, api, "", false)
+	cancel()
+	stateErr := flushRunIntents(ctx, s, api, true)
+	if first != nil {
+		return first
+	}
+	if retryErr != nil {
+		return retryErr
+	}
+	return stateErr
+}
+func flushRunIntents(ctx context.Context, s Store, api API, states bool) error {
 	unlock, err := s.lock(ctx)
 	if err != nil {
 		return err
 	}
 	db, err := loadRuns(s)
+	var keys []string
+	if err == nil {
+		previous := db.LastPair
+		keys = scheduleRunIntents(&db, states)
+		if db.LastPair != previous {
+			err = saveRuns(s, db)
+		}
+	}
 	unlock()
 	if err != nil {
 		return err
@@ -410,17 +574,7 @@ func flushRunSnapshots(ctx context.Context, s Store, api API) error {
 	if err != nil {
 		return err
 	}
-	keys := make([]string, 0, len(db.Intents))
-	for key := range db.Intents {
-		keys = append(keys, key)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		a, b := db.Intents[keys[i]], db.Intents[keys[j]]
-		if (a.Kind == "state") != (b.Kind == "state") {
-			return a.Kind != "state"
-		}
-		return a.Payload.OccurredAt < b.Payload.OccurredAt
-	})
+
 	var last error
 	count := 0
 	for _, key := range keys {
@@ -428,6 +582,9 @@ func flushRunSnapshots(ctx context.Context, s Store, api API) error {
 			break
 		}
 		intent := db.Intents[key]
+		if (intent.Kind == "state") != states {
+			continue
+		}
 		if intent.Kind == "state" && db.NextState[intent.PairID] > time.Now().Unix() {
 			continue
 		}
@@ -438,7 +595,7 @@ func flushRunSnapshots(ctx context.Context, s Store, api API) error {
 		}
 		count++
 		if intent.Envelope == nil {
-			c, e := runCapabilities(ctx, api, p)
+			c, e := cachedRunCapabilities(ctx, s, api, p)
 			if e != nil {
 				last = e
 				continue
@@ -478,6 +635,9 @@ func flushRunSnapshots(ctx context.Context, s Store, api API) error {
 				continue
 			}
 		}
+		if intent.Kind == "state" && !states {
+			continue
+		}
 		if intent.Kind != "state" {
 			d, e := enqueueRunReminder(ctx, s, intent)
 			if e != nil {
@@ -493,8 +653,16 @@ func flushRunSnapshots(ctx context.Context, s Store, api API) error {
 			}
 			continue
 		}
+		release, claimErr := claimStateSend(ctx, s, p.PairID)
+		if claimErr != nil {
+			last = claimErr
+			continue
+		}
+		if release == nil {
+			continue
+		}
 		response, e := api.request(ctx, p, "PUT", "/v2/pairs/"+p.PairID+"/snapshots/"+intent.Envelope.StreamID, intent.Envelope)
-		delay := time.Second
+		delay := 2 * time.Second
 		if e != nil {
 			delay = 5 * time.Second
 			var ae *APIError
@@ -502,14 +670,7 @@ func flushRunSnapshots(ctx context.Context, s Store, api API) error {
 				delay = ae.RetryAfter
 			}
 		}
-		if unlock, lockErr := s.lock(ctx); lockErr == nil {
-			latest, readErr := loadRuns(s)
-			if readErr == nil {
-				latest.NextState[p.PairID] = time.Now().Add(delay).Unix()
-				_ = s.writeJSON("runs-v2.json", latest)
-			}
-			unlock()
-		}
+		release(delay)
 		if e != nil {
 			last = e
 			var ae *APIError

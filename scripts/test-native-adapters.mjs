@@ -222,7 +222,7 @@ try {
   for(const value of await events()) {
     assert.equal(value.adapter_revision,2);
     assert.equal(typeof value.run_id,'string');
-    for(const key of Object.keys(value)) assert.ok(['aborted','adapter_revision','runtime_version','event','session_id','run_id','event_id','instance_id','hook_event_name','tool_name','tool_use_id','tool_input'].includes(key));
+    for(const key of Object.keys(value)) assert.ok(['aborted','adapter_revision','runtime_version','event','session_id','run_id','event_id','instance_id','hook_event_name','tool_name','tool_use_id','tool_input','request_id'].includes(key));
   }
   ctx.mode='tui';session='state-session';emit('session_start');emit('agent_start');
   emit('tool_execution_start',{toolCallId:'tool-one',toolName:'bash',args:{secret:'not uploaded'}});
@@ -239,6 +239,47 @@ try {
   assert.ok(states.some(e=>e.event==='agent_settled'&&e.aborted===true));
   assert.equal(JSON.stringify(states).includes('not uploaded'),false);
   emit('session_shutdown');
+  // Resolved requests emit exact same-session/run observations, without a
+  // second reminder, even if no later tool/completion event is emitted.
+  const resolving=host(), disposeResolving=plugin.setup(resolving.context);
+  resolving.emit('session.execution.started','resolve-start',{sessionID:'root'});
+  resolving.pending.set('root',[{id:'permission-one',sessionID:'root'},{id:'form-two',sessionID:'root'}]);
+  resolving.emit('permission.asked','resolve-asked',{id:'permission-one',sessionID:'root'});
+  resolving.emit('form.created','resolve-form',{form:{id:'form-two',sessionID:'root'}});
+  const beforeResolve=(await allEvents()).filter(e=>e.event_id.startsWith('resolve-'));
+  const asked=beforeResolve.find(e=>e.event_id==='resolve-asked');
+  assert.equal(asked.request_id,'permission-one');
+  resolving.emit('permission.replied','resolve-replied',{requestID:'permission-one',sessionID:'root'});
+  resolving.emit('permission.replied','resolve-duplicate',{requestID:'permission-one',sessionID:'root'});
+  resolving.emit('form.cancelled','resolve-cancelled',{id:'form-two',sessionID:'root'});
+  let resolutionEvents=(await allEvents()).filter(e=>e.event_id.startsWith('resolve-'));
+  const replied=resolutionEvents.find(e=>e.event_id==='resolve-replied');
+  assert.equal(replied.request_id,'permission-one');assert.equal(replied.run_id,asked.run_id);
+  assert.equal(replied.session_id,asked.session_id);
+  assert.ok(resolutionEvents.some(e=>e.event==='form.cancelled'&&e.request_id==='form-two'));
+  assert.ok(!resolutionEvents.some(e=>e.event_id==='resolve-duplicate'));
+  resolving.pending.set('child',[{id:'child-form',sessionID:'child'}]);
+  resolving.emit('form.created','resolve-child-form',{form:{id:'child-form',sessionID:'child'}});
+  await allEvents();
+  resolving.emit('form.replied','resolve-child-reply',{id:'child-form',sessionID:'child'});
+  resolutionEvents=await allEvents();
+  assert.ok(resolutionEvents.some(e=>e.event_id==='resolve-child-reply'&&e.session_id==='child'&&e.run_id===asked.run_id));
+  resolving.pending.set('root',[{id:'stale-form',sessionID:'root'}]);
+  resolving.emit('form.created','resolve-stale-form',{form:{id:'stale-form',sessionID:'root'}});
+  await allEvents();resolving.route('other');resolving.route('root');
+  resolving.emit('form.replied','resolve-stale-reply',{id:'stale-form',sessionID:'root'});
+  assert.ok(!(await allEvents()).some(e=>e.event_id==='resolve-stale-reply'));
+  resolving.emit('session.execution.started','resolve-next-run',{sessionID:'root'});
+  resolving.pending.set('root',[{id:'terminal-form',sessionID:'root'}]);
+  resolving.emit('form.created','resolve-terminal-form',{form:{id:'terminal-form',sessionID:'root'}});
+  await allEvents();
+  resolving.emit('session.execution.succeeded','resolve-terminal',{sessionID:'root'});
+  await allEvents();
+  resolving.emit('form.replied','resolve-after-terminal',{id:'terminal-form',sessionID:'root'});
+  assert.ok(!(await allEvents()).some(e=>e.event_id==='resolve-after-terminal'));
+  disposeResolving();
+  resolving.emit('form.replied','resolve-after-cleanup',{id:'stale-form',sessionID:'root'});
+  assert.ok(!(await allEvents()).some(e=>e.event_id==='resolve-after-cleanup'));
   // Exact OpenCode native approval handoff, distinct from the observation queue.
   const decider=join(temp,'decider');
   await writeFile(decider, `#!${process.execPath}\nlet b='';process.stdin.on('data',x=>b+=x);process.stdin.on('end',()=>{const p=JSON.parse(b);if(p.tool_input?.action==='bash')process.stdout.write(JSON.stringify({expires_at:Math.floor(Date.now()/1000)+30,hookSpecificOutput:{decision:{behavior:'allow'}}}));});`);

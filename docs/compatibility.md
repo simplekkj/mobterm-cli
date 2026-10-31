@@ -405,3 +405,13 @@ Official sources read this round: [Codex Hooks](https://learn.chatgpt.com/docs/h
 [Claude Hooks](https://code.claude.com/docs/en/hooks),
 [OpenCode fixed client types](https://github.com/anomalyco/opencode/blob/63f7ceecbed2d7d9a627518d935dd963b9d4ac9f/packages/client/src/promise/generated/types.ts),
 [Pi fixed extension types](https://github.com/earendil-works/pi/blob/35dfa757378bd7a8570670e99c2687bdd1039a06/packages/coding-agent/src/core/extensions/types.ts).
+
+OpenCode revision-2 request observations now include optional `request_id` and
+forward `permission.replied`, `form.replied`, and `form.cancelled` to the exact
+observed session/run. The CLI retains a bounded pending-request set alongside
+active tools, removes only the resolved request, and emits no reminder for
+resolution. Child-family ownership, location and route/lifecycle generations
+remain checked; route switches and cleanup invalidate pending callbacks. Older
+revision-2 producers without request IDs remain accepted with their previous
+limited observation semantics. Install the matching CLI with the updated adapter;
+a downgrade requires restoring its owned adapter as well.

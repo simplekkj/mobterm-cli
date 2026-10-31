@@ -12,6 +12,8 @@ import (
 )
 
 type activityInput struct {
+	Cwd              string          `json:"cwd,omitempty"`
+	RequestID        string          `json:"request_id"`
 	AdapterRevision  int             `json:"adapter_revision"`
 	RuntimeVersion   string          `json:"runtime_version"`
 	Event            string          `json:"event"`
@@ -86,12 +88,16 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 			a.State = "interrupted"
 			a.Reminder = "interrupted"
 		case "permission.asked":
+			a.RequestID = p.RequestID
 			a.State = "waiting_approval"
 			a.Reminder = "needs_input"
 		case "form.created", "ui_prompt_start":
+			a.RequestID = p.RequestID
 			a.State = "waiting_input"
 			a.Reminder = "needs_input"
 		case "ui_prompt_end", "permission.replied", "form.replied", "form.cancelled":
+			a.RequestID = p.RequestID
+			a.ResolveRequest = true
 			a.State = "running"
 		case "tool_execution_start":
 			a.State = "tool_running"
@@ -107,6 +113,9 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 			}
 		default:
 			return a, p, nil
+		}
+		if p.RequestID != "" && !valid(p.RequestID) {
+			return a, p, errors.New("invalid_request_identity")
 		}
 		if strings.HasPrefix(p.Event, "tool_") {
 			if !valid(p.ToolID) {

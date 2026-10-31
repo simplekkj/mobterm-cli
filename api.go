@@ -49,8 +49,14 @@ func newAPI() API {
 func (a API) request(ctx context.Context, p Pair, method, path string, body any) (map[string]any, error) {
 	// Keep the last second of a finite command budget for durable result commits.
 	deadline := time.Now().Add(apiRequestTimeout)
-	if end, ok := ctx.Deadline(); ok && end.Add(-time.Second).Before(deadline) {
-		deadline = end.Add(-time.Second)
+	if end, ok := ctx.Deadline(); ok {
+		reserve := time.Second
+		if remaining := time.Until(end); remaining < 5*time.Second {
+			reserve = remaining / 5
+		}
+		if end.Add(-reserve).Before(deadline) {
+			deadline = end.Add(-reserve)
+		}
 	}
 	requestCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()

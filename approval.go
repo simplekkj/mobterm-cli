@@ -15,7 +15,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
+	"unicode"
 )
 
 type ApprovalRequest struct {
@@ -72,7 +74,7 @@ func approvalRead(s Store, id string) (ApprovalRequest, error) {
 		return r, errors.New("invalid_request")
 	}
 	err := s.readJSON("approval-"+id+".json", &r)
-	if err == nil && (r.V != 2 || r.RequestID != id || r.OperationJSON != "" && digest(r.OperationJSON) != r.Digest || (r.State == "pending" || r.State == "decision_recorded") && r.OperationJSON == "" || len(r.OperationJSON) > 8192) {
+	if err == nil && ((r.V != 2 && r.V != 3) || r.RequestID != id || r.OperationJSON != "" && digest(r.OperationJSON) != r.Digest || (r.State == "pending" || r.State == "decision_recorded") && r.OperationJSON == "" || len(r.OperationJSON) > 8192) {
 		err = errors.New("invalid_request")
 	}
 	return r, err
@@ -176,7 +178,7 @@ func approvalCommand(ctx context.Context, s Store, api API, command string, in i
 	if err := readFrameContext(ctx, in, &f); err != nil {
 		return nil, err
 	}
-	if f.V != 2 || !opaqueID.MatchString(f.PairID) || !opaqueID.MatchString(f.RequestID) {
+	if f.V != 3 || !opaqueID.MatchString(f.PairID) || !opaqueID.MatchString(f.RequestID) {
 		return nil, errors.New("invalid_approval_frame")
 	}
 	pairs, err := s.pairs()
@@ -190,6 +192,9 @@ func approvalCommand(ctx context.Context, s Store, api API, command string, in i
 	r, err := approvalRead(s, f.RequestID)
 	if err != nil {
 		return nil, err
+	}
+	if r.V != 3 {
+		return nil, errors.New("approval_context_upgrade_required")
 	}
 	generation, ok := r.Pairs[f.PairID]
 	if !ok {
@@ -247,14 +252,23 @@ func approvalCommand(ctx context.Context, s Store, api API, command string, in i
 	return approvalResult(r, f.PairID, generation, false), err
 }
 func approvalResult(r ApprovalRequest, pair string, generation int64, inspect bool) map[string]any {
-	v := map[string]any{"v": 2, "pair_id": pair, "request_id": r.RequestID, "digest": r.Digest, "expires_at": r.ExpiresAt, "policy_generation": generation, "state": r.State, "agent": r.Agent}
+	v := map[string]any{"v": 3, "pair_id": pair, "request_id": r.RequestID, "digest": r.Digest, "expires_at": r.ExpiresAt, "policy_generation": generation, "state": r.State, "agent": r.Agent}
 	if inspect {
 		v["operation_json"] = r.OperationJSON
 		v["allowed_decisions"] = []string{"allow_once", "deny"}
 	}
 	return v
 }
+
+// Use only the native request's absolute execution directory, never process cwd
+// or a cached project/terminal title. Preserve its exact bytes in the digest.
+func approvalCwdValid(cwd string) bool {
+	return strings.HasPrefix(cwd, "/") && len(cwd) <= 4096 && strings.IndexFunc(cwd, func(r rune) bool { return unicode.IsControl(r) || unicode.In(r, unicode.Cf) }) < 0
+}
 func approvalInputSupported(agent string, p activityInput) bool {
+	if (agent == "codex" || agent == "claude") && !approvalCwdValid(p.Cwd) {
+		return false
+	}
 	if len(p.ToolInput) == 0 || len(p.ToolInput) > 6144 {
 		return false
 	}
@@ -302,6 +316,26 @@ func approvalInputSupported(agent string, p activityInput) bool {
 	}
 	return true
 }
+func approvalOperation(l Locator, a Activity, input activityInput, id string, created, expires int64) ([]byte, error) {
+	if !approvalInputSupported(a.Agent, input) {
+		return nil, errors.New("invalid_approval_context")
+	}
+	var semanticInput any
+	decoder := json.NewDecoder(bytes.NewReader(input.ToolInput))
+	decoder.UseNumber()
+	if decoder.Decode(&semanticInput) != nil {
+		return nil, errors.New("invalid_approval_context")
+	}
+	operation := map[string]any{"context_version": 3, "agent": a.Agent, "session_id": a.Session, "run_id": a.Run, "request_id": id, "native_request_id": input.ToolUseID, "locator": l, "tool_name": input.ToolName, "tool_input": semanticInput, "allowed_decisions": []string{"allow_once", "deny"}, "created_at": created, "expires_at": expires}
+	if a.Agent == "codex" || a.Agent == "claude" {
+		operation["cwd"] = input.Cwd
+	}
+	raw, err := json.Marshal(operation)
+	if err != nil || len(raw) > 8192 {
+		return nil, errors.New("invalid_approval_context")
+	}
+	return raw, nil
+}
 func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, input activityInput) (any, error) {
 	// Opt-in is local as well as remote: disabled hooks never wait on an API lookup.
 	configured, err := localApprovals(s)
@@ -347,18 +381,11 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 		}
 		a.Run = r.Run
 	}
-	var semanticInput any
-	decoder := json.NewDecoder(bytes.NewReader(input.ToolInput))
-	decoder.UseNumber()
-	if decoder.Decode(&semanticInput) != nil {
+	raw, err := approvalOperation(l, a, input, id, created, expires)
+	if err != nil {
 		return nil, nil
 	}
-	operation := map[string]any{"agent": a.Agent, "session_id": a.Session, "run_id": a.Run, "request_id": id, "native_request_id": input.ToolUseID, "locator": l, "tool_name": input.ToolName, "tool_input": semanticInput, "allowed_decisions": []string{"allow_once", "deny"}, "created_at": created, "expires_at": expires}
-	raw, err := json.Marshal(operation)
-	if err != nil || len(raw) > 8192 {
-		return nil, nil
-	}
-	r := ApprovalRequest{V: 2, RequestID: id, Digest: digest(string(raw)), Agent: a.Agent, OperationJSON: string(raw), Locator: l, ExpiresAt: expires, CreatedAt: created, PID: os.Getpid(), Birth: birth, ParentPID: os.Getppid(), ParentBirth: parentBirth, State: "pending", Pairs: map[string]int64{}}
+	r := ApprovalRequest{V: 3, RequestID: id, Digest: digest(string(raw)), Agent: a.Agent, OperationJSON: string(raw), Locator: l, ExpiresAt: expires, CreatedAt: created, PID: os.Getpid(), Birth: birth, ParentPID: os.Getppid(), ParentBirth: parentBirth, State: "pending", Pairs: map[string]int64{}}
 	if input.ToolUseID != "" {
 		r.NativeIdentity = digest(a.Agent + "\x00" + a.Session + "\x00" + a.Run + "\x00" + input.ToolUseID + "\x00" + l.InstallationID + "\x00" + l.OccupantID)
 	}

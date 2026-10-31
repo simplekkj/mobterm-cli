@@ -49,7 +49,10 @@ function bridge(source, warn) {
   return {
     enqueue(payload, valid) {
       if (stopped) return;
-      const critical = ["session.execution.succeeded","session.execution.failed","session.execution.interrupted","permission.asked","form.created","agent_settled","ui_prompt_start"].includes(payload.event);
+      const critical = ["session.execution.succeeded","session.execution.failed","session.execution.interrupted","permission.asked","form.created","agent_settled","ui_prompt_start","permission.replied","form.replied","form.cancelled"].includes(payload.event);
+      // A resolved/invalidated pending request must not occupy the bounded
+      // queue ahead of the observation that clears its waiting state.
+      for (let i=queue.length-1;i>=0;i--) { if (!queue[i].valid()) queue.splice(i,1); }
       if (queue.length >= 8) {
         const replace=queue.findIndex(job=>!job.critical);
         if(critical&&replace>=0)queue.splice(replace,1);else{diagnostic();return;}
@@ -79,6 +82,7 @@ export default Plugin.define({
     const tools = new Map();
     const approvalChildren = new Map();
     const resolved = new Set();
+    const pendingObservations = new Map();
     const transport = bridge("opencode", () => context.ui.toast.show({
       title: "MobTerm", message: "Notification unavailable. Check MobTerm integration.", variant: "warning",
     }));
@@ -103,8 +107,17 @@ export default Plugin.define({
     };
     const locationKey = (location) => location ? JSON.stringify([location.directory, location.workspaceID ?? null]) : "";
     const remember = (id) => update((draft) => { draft.seen.push(id); if (draft.seen.length > 512) draft.seen.shift(); });
+    const forgetRequests = (sessionID) => {
+      for (const [key, observation] of pendingObservations) {
+        if (observation.payload.session_id === sessionID || root(observation.payload.session_id) === sessionID) {
+          approvalChildren.get(key)?.kill("SIGTERM"); approvalChildren.delete(key);
+          pendingObservations.delete(key);
+        }
+      }
+    };
     const lifecycle = (sessionID, terminal) => {
       if (!validID(sessionID)) return;
+      forgetRequests(sessionID);
       const previous = lifecycles.get(sessionID);
       lifecycles.delete(sessionID);
       lifecycles.set(sessionID, { generation: (previous?.generation ?? 0) + 1, terminal, run: terminal ? previous?.run ?? randomUUID() : randomUUID() });
@@ -112,16 +125,24 @@ export default Plugin.define({
     };
     const clearRequest = (event, id) => {
       if (!validID(id) || !validID(event.data.sessionID)) return;
-      resolved.add(event.data.sessionID + ":" + id);
-      approvalChildren.get(event.data.sessionID + ":" + id)?.kill("SIGTERM");
-      approvalChildren.delete(event.data.sessionID + ":" + id);
+      const key = event.data.sessionID + ":" + id;
+      if (resolved.has(key)) return;
+      resolved.add(key);
+      approvalChildren.get(key)?.kill("SIGTERM");
+      approvalChildren.delete(key);
+      const observed = pendingObservations.get(key);
+      pendingObservations.delete(key);
+      if (observed && validID(event.id) && observed.valid() &&
+          (!event.location || locationKey(event.location) === observed.location)) {
+        transport.enqueue({...observed.payload, event:event.type, event_id:event.id}, observed.valid);
+      }
       if (resolved.size > 512) resolved.delete(resolved.values().next().value);
     };
     const state = (event, name, extra = {}) => {
       const sessionID = event.data?.sessionID;
       if (!alive || !validID(event.id) || !validID(sessionID) || root(route()) !== sessionID || root(sessionID) !== sessionID) return;
       const current = lifecycles.get(sessionID);
-      if (!current?.run) return;
+      if (!current?.run || current.terminal) return;
       const epoch = routeEpoch, location = locationKey(context.data.session.get(sessionID)?.location);
       if (event.location && locationKey(event.location) !== location) return;
       transport.enqueue({adapter_revision:2,runtime_version:version,event:name,session_id:sessionID,
@@ -200,16 +221,28 @@ export default Plugin.define({
         remember(event.id);
         const runID = lifecycles.get(eventRoot)?.run ?? generation?.run ?? randomUUID();
         const payload = { adapter_revision: 2, runtime_version: version, event: nativeType,
-          session_id: sessionID, run_id: runID, event_id: event.id, instance_id: memory.instance };
+          session_id: sessionID, run_id: runID, event_id: event.id, instance_id: memory.instance,
+          ...(completion ? {} : {request_id:requestID}) };
+        if (!completion) {
+          const rootGeneration=lifecycles.get(eventRoot);
+          const validResolved=()=>alive && epoch===routeEpoch && route()===selected &&
+            root(sessionID)===selectedRoot && root(selected)===selectedRoot &&
+            locationKey(context.data.session.get(sessionID)?.location)===location &&
+            lifecycles.get(sessionID)===generation && lifecycles.get(eventRoot)===rootGeneration &&
+            !generation?.terminal && !rootGeneration?.terminal;
+          if (pendingObservations.size>=128 && !pendingObservations.has(requestKey)) return;
+          pendingObservations.set(requestKey,{payload,valid:validResolved,location});
+        }
         if (nativeType === "permission.asked") startApproval(payload, requestID, eventLocation, valid);
         else transport.enqueue(payload, valid);
+        if (completion) { if (generation) generation.terminal=true; forgetRequests(sessionID); }
       } catch { /* A changed upstream schema must never interrupt the TUI. */ }
     };
     const dispose = [];
     let disposeRoute;
     const cleanup = () => {
       if (!alive) return;
-      alive = false; routeEpoch++; transport.stop();
+      alive = false; routeEpoch++; transport.stop(); pendingObservations.clear();
       for(const child of approvalChildren.values())child.kill("SIGTERM"); approvalChildren.clear();
       disposeRoute?.();
       for (const unsubscribe of dispose.splice(0).reverse()) {
@@ -222,7 +255,7 @@ export default Plugin.define({
         disposeRoute = release;
         createEffect(() => {
           const current = route();
-          if (current !== previousRoute) { previousRoute = current; routeEpoch++; transport.cancel(); for(const child of approvalChildren.values())child.kill("SIGTERM"); approvalChildren.clear(); }
+          if (current !== previousRoute) { previousRoute = current; routeEpoch++; transport.cancel(); pendingObservations.clear(); for(const child of approvalChildren.values())child.kill("SIGTERM"); approvalChildren.clear(); }
         });
       });
       for (const [type, handler] of [

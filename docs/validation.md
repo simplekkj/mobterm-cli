@@ -1414,3 +1414,80 @@ No real notification API, APNs delivery, iPhone display/lock-screen/navigation,
 remote SSH/Mosh target, deployment, remote D1 migration/cleanup, release or tag was
 executed. Local protocol fixtures do not establish production retention, APNs
 acceptance or phone delivery. This change does not require packaging or publishing.
+
+## Round 2 v1.1 Review fixes (2026-10-31)
+
+Review/start baseline: `d39d03b15b81089bf8552ea708e36573b21abb7f`, branch `main`,
+initially clean. Results below are for that baseline plus this round's task
+working tree. The full race run used the final production code; the subsequent
+addition was the real two-process regression, independently run with and without
+race instrumentation. No commit, push, release or deployment is implied by a
+local test result; the final task commit and push evidence are recorded in the
+single Notion delivery page by the primary agent.
+
+Environment: macOS/Darwin x86_64, Go 1.27.1, Node 22.22.2, npm 11.21.0.
+Logs are retained at `/tmp/mobterm-round2-cli-evidence/`.
+
+| Review item | Implementation and focused evidence |
+| --- | --- |
+| R1 | Native Codex/Claude cwd is validated, bound to canonical operation bytes/digest and returned only over SSH. Inspection/decision frames use v3; configure and HMAC domain remain v2. `approval_context_test.go`, the shared approval vector and existing approval CAS/default-off/native-wait tests cover different directories, relative file/patch inputs, missing/invalid/oversize context, old requests and tampering. App presentation is verified in the App repository. |
+| R2 | `flushRunSnapshots` runs fresh business, due durable outbox, then coalesced state within the caller budget. `scheduleRunIntents` persists a per-phase Pair cursor. `TestRichNotifyRecoversDurableOutbox` uses the real rich notify entry: capability success followed by 503/429/lost receipt, no early retry, then automatic recovery of the identical v2 envelope on a later rich event. `TestRunIntentPairRotationSurvivesRestart` covers multiple Pairs and persistent fairness. Existing outbox lease, handoff, retry and v1/v2 tests remain enabled. |
+| R3 | `saveRuns` checks the exact compact serialized bytes before atomic replacement (16 MiB); other configuration writes now match their existing 2 MiB reader. A bounded 32 MiB legacy read retry never clears an oversized source. `TestRunStorageOversizeLegacyRecoveryAndAtomicBudget` reproduces 128 x 256 real SHA-256 occurrences beyond the old reader limit, verifies readable compaction and preservation after rejected writes. `TestRunConcurrentPersistenceReadable` covers concurrent goroutines; the separate process test below covers actual processes. |
+| R5 | Only completed runs without unsent intents are reclaimed; active runs are retained even beyond 24 hours. Lightweight terminal/start tombstones use the total byte budget instead of an independent historical count gate. State has 128 ordinary slots; critical obligations can use bounded overflow up to 512 runs, and 256 state intents reserve room within the 512-intent total. Capacity attempts bounded recovery before one admission retry. `TestRunRetentionDoesNotLimitDailyBusiness` executes 160 runs; `TestCriticalRunOverflowProtectsUnfinishedRuns` protects 128 active runs; `TestRetainedTerminalCapacityWithPairsKeepsCriticalDelivery` covers two-Pair v2 handoff after 128 completed runs and 4200 tombstones, with duplicate admission suppressed. |
+| R6 | `cachedRunCapabilities` is bounded, credential/scope-specific, at most 60 seconds and persists capability Retry-After. Approval authorization continues using uncached `runCapabilities`. Snapshot claims and cooldowns use the shared store lock and a crash-expiring lease. `TestCapabilityCacheAndStateClaimAcrossObservers`, `TestCapabilitiesRetryAfterPersistsAcrossCalls` and the process test below cover cache sharing, current authorization bypass, one claim and backoff. The API repository tests the actual separated edge/D1 route budgets. |
+| R7 | The OpenCode adapter forwards precise request IDs and resolved/cancelled events, retains route/location/root-family/lifecycle ownership, releases children and removes invalid queued requests. The CLI aggregates the remaining pending-request/tool sets and ignores unknown/duplicate/terminal resolutions. `TestResolvedRequestPreservesOtherWaitsAndTools` checks aggregation; `scripts/test-native-adapters.mjs` checks the actual child input payloads for permission/form resolution, exact session/run, child family, duplicate, route switch, terminal and cleanup cases. No resolution creates a business reminder. |
+
+Executed checks:
+
+- `test -z "$(gofmt -l .)"`, `go vet ./...`, `git diff --check`: PASS.
+- `go test -json ./...`: FAIL, 433.319 seconds (433.329 command package elapsed),
+  502 test/subtest passes, zero skips. Seven leaf prerequisites in the existing
+  `TestAsdfCompatibilityEntrypoints` exceeded their unchanged five-second launcher
+  preflight during concurrent host load (observed load 188/229/128):
+  `agent-project-explicit/{entrypoints,notify,chain,installation-only}` and
+  `node-home-explicit/{entrypoints,notify,installation-only}`. Including parents,
+  there were ten failed test records plus the package failure. No task behavior
+  assertion failed. This original full command remains recorded as FAIL.
+- After coordinating lower host load,
+  `go test -count=1 -json -run '^TestAsdfCompatibilityEntrypoints$/^(agent-project-explicit|node-home-explicit)$' ./...`:
+  PASS, 67 tests/subtests, zero failures/skips, 62.343 seconds. This runs both
+  complete failed contexts and their dependent matrices, without relaxing a
+  preflight or assertion (`asdf-rerun.json`).
+- `go test -count=1 -json -run 'TestRichNotify|TestRunStorage|TestRunRetention|TestCriticalRun|TestCapabilityCache|TestCapabilitiesRetryAfter|TestRetainedTerminalCapacity|TestRunConcurrentPersistence|TestRunIntentPairRotation|TestResolvedRequest|TestActivity|TestToolAggregation|TestRunParallel|TestApproval' ./...`:
+  PASS, 44 tests/subtests, zero failures/skips, 32.509 seconds
+  (`final-focused.json`).
+- `go test -race -json ./...`: PASS, 571 tests/subtests, zero failures/skips or
+  race reports, 460.119 seconds (`go-race.json`). This also covers every Asdf
+  context and the final shared approval vector.
+- `go test -count=1 -json -run '^TestActivityStorageAndTransportAcrossProcesses$' ./...`:
+  PASS, 1.347 seconds. The test starts two real test-binary child processes,
+  concurrently persists eight distinct observations of one run, then releases
+  a flush barrier. All eight revisions/occurrences survive reload; the local
+  HTTP server observes exactly one capability GET and one snapshot PUT.
+- The same process test with `-race`: PASS, 4.241 seconds. Both child processes
+  use the race-instrumented binary. Children have bounded contexts and explicit
+  cleanup; these are actual processes, not goroutines (`process-race.json`).
+- `npm ci --prefix scripts/native-adapter-tests --cache /tmp/mobterm-round2-native-cache --ignore-scripts --no-audit --no-fund`:
+  PASS; lockfiles unchanged.
+- `node scripts/test-native-adapters.mjs`: PASS on final adapter code
+  (`native-adapters.log`). During development its strict field whitelist
+  correctly rejected the newly added `request_id`; the contract assertion was
+  extended alongside direct resolution payload assertions, then rerun. A first
+  short-phase transport experiment exposed the prior fixed one-second HTTP
+  reserve; short phases now retain a proportional commit margin, and the final
+  real notify recovery regression passes.
+- `go build -trimpath -o /tmp/mobterm-round2-cli-evidence/mobterm-cli .`, followed by
+  `python3 scripts/test-native-adapters-host.py opencode /tmp/mobterm-round1-native-hosts/node_modules/.bin/opencode /tmp/mobterm-round2-cli-evidence/mobterm-cli 2.1.0`:
+  PASS. The pinned, previously isolated official OpenCode 2.1.0 host loaded the
+  newly built adapter at both setup and restart, registering 13 listeners each
+  (`opencode-host.log`). The script created and removed its own temporary
+  HOME/XDG/config/store, scrubbed model credentials and sent no model request.
+
+The 16 MiB run budget and finite live queues are deliberate limits, not an
+unbounded throughput guarantee. If genuine live responsibility exceeds them,
+prior data is preserved and an explicit capacity error remains until bounded
+recovery/expiry frees capacity. Older CLIs must not overwrite the new run file;
+mobile approval v3 requires the matching App/CLI, while v1 notification/AAD
+vectors and older adapter input remain compatible. No daemon or idle automatic
+retry is claimed. No real Agent approval, user Hook configuration, SSH server,
+APNs, physical device, remote migration, deployment, release or tag was operated.

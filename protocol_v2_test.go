@@ -55,8 +55,11 @@ func TestApprovalGolden(t *testing.T) {
 	for i := range key {
 		key[i] = byte(i)
 	}
-	f := ApprovalFrame{V: 2, PairID: "pair_fixture_000000000000000001", RequestID: "request_fixture_00000000000001", Digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", DecisionID: "decision_fixture_0000000000001", Action: "allow_once", PolicyGeneration: 3, ExpiresAt: 2000000000}
-	operation, _ := json.Marshal(map[string]any{"agent": "codex", "session_id": "session_fixture", "run_id": "run_fixture", "request_id": f.RequestID, "native_request_id": "tool_fixture", "locator": fixtureLocator(), "tool_name": "Bash", "tool_input": map[string]any{"command": "printf 'hello <world>'", "description": "Fixture operation"}, "allowed_decisions": []string{"allow_once", "deny"}, "created_at": 1999999880, "expires_at": f.ExpiresAt})
+	f := ApprovalFrame{V: 3, PairID: "pair_fixture_000000000000000001", RequestID: "request_fixture_00000000000001", Digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", DecisionID: "decision_fixture_0000000000001", Action: "allow_once", PolicyGeneration: 3, ExpiresAt: 2000000000}
+	operation, err := approvalOperation(fixtureLocator(), Activity{Agent: "codex", Session: "session_fixture", Run: "run_fixture"}, activityInput{Cwd: "/work/示例 project", ToolUseID: "tool_fixture", ToolName: "Bash", ToolInput: json.RawMessage(`{"command":"printf 'hello <world>'","description":"Fixture operation"}`)}, f.RequestID, 1999999880, f.ExpiresAt)
+	if err != nil {
+		t.Fatal(err)
+	}
 	f.Digest = digest(string(operation))
 	proof, err := approvalMAC(key, f)
 	if err != nil {

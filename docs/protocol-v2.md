@@ -1,6 +1,6 @@
 # Notification protocol v2
 
-Round 1 v1.0, 2026-10-31. This contract adds encrypted run state, recoverable
+Updated for Round 2 v1.1, 2026-10-31. This contract adds encrypted run state, recoverable
 reminders and an opt-in native approval bridge. [Protocol v1](protocol-v1.md)
 and its golden vectors are unchanged. Native target stdin frames still contain
 only the v1 locator whitelist. The API cannot decrypt or execute approvals.
@@ -108,10 +108,41 @@ or APNs through this hint. `test` never contributes business unread.
 The local run store atomically persists state plus bounded per-Pair sending
 intents before networking. State intents coalesce; low-frequency reminders have
 separate identities and use the existing durable outbox/lease mechanism after
-format selection. At most 128 retained runs and 512 unencoded intents are kept;
-file writes retain the existing 2 MiB/private-directory/atomic-write guard.
-State requests obey a separate local throttle and server Retry-After. A later
-event or explicit `activity flush`/unfiltered `outbox flush` resumes pending work.
+format selection. Retention targets 128 runs: oldest terminal runs without unsent
+intents are reclaimed first, retaining bounded 24-hour terminal/start tombstones
+(within the run file byte budget) to reject late resurrection. Outbox records own admitted
+reminders independently of retained run snapshots. If all ordinary slots are
+unfinished, critical observations may use reserved overflow up to 512 total runs;
+512 sending intents (at most 256 state intents) remain the hard queue bound.
+Expired tombstones are pruned; there is no independent historical run count gate.
+Exhaustion first attempts bounded delivery recovery and retries admission once,
+then returns an explicit
+retry-after-flush capacity error without overwriting prior responsibilities.
+The run file alone uses compact JSON and an explicit 16 MiB read/write budget;
+this reads valid previous-format files larger than the former 2 MiB reader and
+compacts them on the next write. A legacy-only read retry is bounded at 32 MiB;
+if its compact responsibilities still exceed 16 MiB, the source is preserved and
+a capacity error is reported, never a silent clear or an unreadable rewrite.
+Other JSON configuration retains a matching
+2 MiB read/write limit. Oversize writes fail before atomic replacement. Private
+permissions, no-follow reads and cross-process locks remain mandatory. Downgrade
+must preserve the new run file: old CLIs cannot read a run file over 2 MiB.
+
+Fresh business intents receive the first short transport phase, then due durable
+outbox records are retried fairly across Pairs, then coalesced state. A durable
+per-phase Pair cursor interleaves up to four intents so failed capabilities
+cannot pin every later flush to the same senders. All phases
+inherit the native command deadline; short HTTP budgets reserve a proportional
+local commit margin. State claims are persisted under a process-shared lock
+before I/O (35-second crash lease), with at least two seconds between sends per
+Pair and longer server Retry-After respected. Observation/encoding capabilities
+are cached by exact origin/Pair/installation/credential for at most 60 seconds,
+bounded to 128 cache entries; a capability 429 persists its Retry-After instead
+of polling again on the next event. Approval inspect/decide/native consumption always
+bypass this cache and fetch current authorization. API capability, state and
+reminder routes have separate credential budgets while retaining aggregate abuse
+limits. A later rich event or explicit `activity flush`/unfiltered `outbox flush`
+resumes both intents and due outbox records, retaining event ID/nonce/ciphertext.
 No idle daemon, listening port or automatic future wakeup is created.
 
 ## Inbox, ACK, legacy migration and badge
@@ -130,8 +161,14 @@ An inbox page carries a fixed `watermark`, `next_cursor` and ledger receipt.
 Continue with that watermark, then retrieve later revisions. The receipt contains
 device/environment, `enabled`, `capability_generation`, `cutover_at`,
 `inbox_revision`, `minimum_cursor`, `unread_count`, `legacy_offset` and
-`offset_revision`. A stale cursor receives `full_sync_required`; a cursor=0 full
-snapshot removes absent server-managed records without resurrecting tombstones.
+`offset_revision` and `inbox_semantics:2`. A stale cursor receives
+`full_sync_required`. Each list response includes `snapshot_consistent` and a
+post-query ledger: only if every page is consistent and its revision equals the
+fixed watermark can a completed cursor=0 scan prove an absent managed record was
+removed. Changes during/between queries invalidate completeness; clients retain
+local history and continue bounded synchronization, never creating deletion
+tombstones from uncertainty. Older servers lacking this proof cannot authorize
+absence-based local deletion.
 
 `POST /v2/devices/:device/inbox/ack` accepts
 `{request_id,events:[{pair_id,event_id,disposition}]}` (1–100 exact identities).
@@ -140,6 +177,16 @@ have identical contents. Temporary missing keys or disk errors are not permanent
 rejection. ACK/removal tombstones survive eight days plus cleanup lag. Local ACK
 intent and local read/delete state must persist in one transaction before UI and
 badge update. Reads, deletes and eviction do not decide an approval.
+
+Migration 0010 adds nullable `removal_reason` to inbox rows. Pair revocation
+clears cloud ciphertext and operation authority, but reports `removal_reason:
+"revoked"` to semantics-2 clients. Already authenticated local history remains
+readable for its original retention period; its unread identity moves from the
+server-managed set into the precise local legacy set. The service permits those
+revoked identities in legacy offset, without re-enabling the Pair. Actual user
+dismissed/rejected/retention ACK clears the reason and advances revision; read
+clears legacy unread without pretending revocation was a user read. Old clients
+retain their existing cleanup behavior. No revoked ciphertext is restored.
 
 `PUT /v2/devices/:device/legacy` accepts expected `offset_revision` plus up to 500
 exact local unread `{pair_id,event_id}` identities. The service excludes IDs
@@ -179,9 +226,14 @@ only and never offer native approval. Form/free-input/unknown tools use terminal
 
 `approval inspect|decide|release --stdin-frame` uses the existing four-byte
 big-endian length-prefixed JSON frame, maximum 16384 bytes. Inspect accepts
-`{v:2,pair_id,request_id}` and returns request/digest/expiry/generation/state/agent,
+`{v:3,pair_id,request_id}` and returns request/digest/expiry/generation/state/agent,
 `operation_json` and `allowed_decisions:["allow_once","deny"]`. Inspect actively
 checks the exact locator, live waiting process and current remote eligibility.
+Inspection and decide/release use version 3 so old Apps cannot approve context
+they do not display. New Apps reject old version-2 inspections; old clients and
+old pending requests fall back to the terminal. Configure and encrypted v2
+reminder hints are unchanged, as is the HMAC domain below. Upgrade App and CLI
+together for mobile approval; wait for old waiters to expire before downgrade.
 Only supported native operation structures up to 6144 bytes are accepted;
 canonical full operation output is at most 8192 bytes. No truncation can enable
 approval. Current Codex/Claude supported structures are Bash.command,
@@ -191,12 +243,17 @@ new_string. OpenCode uses the complete native PermissionRequest snapshot.
 `operation_json` is exact UTF-8 JSON with sorted object keys recursively, native
 JSON numeric tokens preserved, Go JSON escaping (including HTML characters), and
 no insignificant whitespace. It binds agent, session_id, run_id, request_id,
-native_request_id, full locator, tool_name, complete tool_input,
+native_request_id, full locator, context_version:3, tool_name, complete tool_input,
+and the native top-level cwd for Codex/Claude (absolute, ≤4096 UTF-8 bytes, no
+control/format characters). The exact directory bytes are bound; no shell cwd,
+pane title or cached project name is substituted. OpenCode retains its complete
+structured permission resource context, without inventing a cwd. Missing/invalid
+required context returns no decision. It also binds
 allowed_decisions, created_at and expires_at. App verifies SHA-256 of the supplied
 bytes; it must not hash a Foundation reserialization. This is not a terminal
 transcript. Unknown or truncated inputs cannot be approved.
 
-Decide/release accept `{v:2,pair_id,request_id,digest,decision_id,action,
+Decide/release accept `{v:3,pair_id,request_id,digest,decision_id,action,
 policy_generation,expires_at,proof}`. Action is allow_once/deny/release. Derive
 32 bytes using HKDF-SHA256: IKM = Pair encryption key, salt = UTF-8 pair_id,
 info = UTF-8 `mobterm/approval/2`. Proof is standard Base64 HMAC-SHA256 over these

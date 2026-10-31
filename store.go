@@ -158,6 +158,9 @@ func (s Store) writeJSON(name string, v any) error {
 	if err != nil {
 		return err
 	}
+	if len(b)+1 > 2*1024*1024 {
+		return errors.New("configuration exceeds size limit")
+	}
 	return atomicWrite(filepath.Join(s.Dir, name), append(b, '\n'), 0600)
 }
 func (s Store) installation() (string, error) {
