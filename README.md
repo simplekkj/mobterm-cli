@@ -139,6 +139,35 @@ its Stop, never Stop alone. Existing user hooks and decisions are preserved. Her
 same native Agent hooks, with an explicit structured terminal query. No second
 Herdr event forwarder is installed.
 
+Codex native hooks follow the existing representation in the selected `CODEX_HOME`:
+
+| Existing native event definitions | Installation target |
+| --- | --- |
+| Only `hooks.json` | Merge into `hooks.json` |
+| Only inline TOML | Keep inline hooks in `config.toml` |
+| Neither | Create native definitions in `hooks.json` |
+| Both | Move only proven Mobterm entries to the user's existing representation; refuse if user events remain in both |
+
+`notify` stays in `config.toml` as the single completion source. `hooks.state`
+trust/enable settings stay untouched in TOML and do not count as inline events.
+Old Mobterm inline installations remain supported; when user JSON hooks coexist,
+`status --agents-json` reports `partial`, enabling the App's repair action. Run
+`hooks install --agent codex --json` (or repair in the App) to migrate them.
+The same repair state upgrades legacy notify-only installs on Codex >=0.166.0.
+No discovery/status command performs a migration. Restart Codex and review the
+result in `/hooks`; moving a hook source does not grant trust.
+
+Migration journals cover both files and ownership. The old source is removed
+before the new source is written, so interrupted migrations can temporarily omit
+Mobterm native handlers until the same operation is resumed, without duplicating
+them. Changes to either file during recovery cause a conflict instead of an
+overwrite. Retain the journal and finish the pending action with this CLI.
+Uninstall removes only recorded Mobterm groups; existing JSON values and later
+user groups are retained. JSON formatting may change, and an empty `hooks` object
+may remain after uninstall. Do not manually move managed entries between files.
+CLIs predating JSON hook ownership cannot manage these installations; uninstall
+with the new CLI before downgrading. Pairing and notification wire formats are unchanged.
+
 OpenCode uses a TUI-only plugin: only successful completion of the currently
 visible root session and verified pending permission/form requests in its family
 form completion/wait reminders. Revision 2 also records native start, tool,
@@ -232,7 +261,7 @@ Configuration is under `~/.config/mobterm` (0700), with credential/state files
 0600. `MOBTERM_CONFIG_DIR` may select another private directory; it carries a path,
 never a credential. Codex respects `CODEX_HOME`; Claude respects
 `CLAUDE_CONFIG_DIR`. Existing TOML comments, unrelated settings, and existing
-notify argv are preserved. Claude JSON is reformatted but preserves unrelated
+notify argv are preserved. Codex/Claude JSON is reformatted but preserves unrelated
 values/hooks. Unsupported config shapes and edited owned entries fail without
 overwriting the user's configuration. Concurrent CLI writers use advisory locks.
 Claude ownership records track the complete entries inserted by Mobterm. A

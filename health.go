@@ -69,6 +69,8 @@ func hookHealth(s Store, capabilities map[string]any) map[string]agentHealth {
 			actual, _ := c["actual_version"].(string)
 			if !codexNativeVersion(actual) {
 				h.RunState, h.MobileApproval = "unsupported_version", "unsupported_version"
+			} else if h.ConfigurationState == "complete" && h.RunState == "not_configured" {
+				h.issue("partial", "native_hooks_missing", "all", "run_state")
 			}
 		}
 		result[agent] = h
@@ -157,14 +159,21 @@ func inspectHook(s Store, agent string) agentHealth {
 			h.issue("partial", "original_notifier_unavailable", "agent-turn-complete", "turn_completed")
 		}
 		h.RunState, h.MobileApproval = "not_configured", "not_configured"
-		if r.CodexNative != "" {
-			if _, err := stripCodexNative(data, r.CodexNative); err != nil || r.CodexNative != codexNativeBlock(expected[0]) {
+		if r.CodexNative != "" || r.CodexJSON != "" {
+			layout, err := inspectCodexLayout(data, r, expected[0])
+			if err != nil {
 				h.issue("conflict", "native_hooks_modified", "all", "all")
+				if errors.Is(err, errCodexMixedHooks) {
+					h.issue("conflict", "native_hook_sources_mixed", "all", "run_state")
+				}
 				h.RunState, h.MobileApproval = "configuration_conflict", "configuration_conflict"
 			} else {
 				h.RunState, h.MobileApproval = "configured_unverified", "configured_default_off"
 				h.NativeTrust = "review_required"
 				h.RestartRequired = true
+				if layout == "json" && r.CodexJSON == "" || layout == "toml" && r.CodexNative == "" {
+					h.issue("partial", "native_hook_migration_required", "all", "run_state")
+				}
 				if codexNativeDisabled(data) {
 					h.RunState, h.MobileApproval, h.NativeTrust = "disabled_by_configuration", "disabled_by_configuration", "disabled_by_configuration"
 				}

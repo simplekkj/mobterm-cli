@@ -160,6 +160,18 @@ use the original full status, but must not promote it into a discovery snapshot.
 An old App can ignore the added status fields on a new CLI. There is no migration,
 API change, release or remote upgrade implied by this source change.
 
+Codex hook representation upgrades retain the existing discovery/receipt schema.
+`configuration_state: partial` with issue `native_hook_migration_required` means
+owned native events can move to the user's existing JSON/TOML representation;
+`native_hooks_missing` means a supported native runtime still has notify-only
+ownership. Both allow an explicit install/repair through existing App controls.
+User events in both sources report `conflict` with `native_hook_sources_mixed`;
+they are never automatically moved. Journal recovery continues to use
+`continue_install`, `finish_uninstall` and `review_conflict`. The legacy `hooks`
+boolean retains its notify-ownership meaning and does not certify native loading.
+Successful native installs in either format return `activation: native_review_required`.
+No API, encrypted event, pairing or App schema change is required.
+
 ## Encrypted events
 
 ```json

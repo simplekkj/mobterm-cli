@@ -373,7 +373,7 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		}
 		if err == nil && args[1] == "install" && agent == "codex" {
 			var record HookRecord
-			if s.readJSON("hooks-codex.json", &record) == nil && record.CodexNative != "" {
+			if s.readJSON("hooks-codex.json", &record) == nil && (record.CodexNative != "" || record.CodexJSON != "") {
 				receipt["activation"] = "native_review_required"
 			}
 		}

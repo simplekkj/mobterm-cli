@@ -1491,3 +1491,51 @@ mobile approval v3 requires the matching App/CLI, while v1 notification/AAD
 vectors and older adapter input remain compatible. No daemon or idle automatic
 retry is claimed. No real Agent approval, user Hook configuration, SSH server,
 APNs, physical device, remote migration, deployment, release or tag was operated.
+
+## Codex hook representation migration (2026-10-31)
+
+Native Codex installation now follows existing JSON/TOML event definitions,
+using JSON for new configurations. Only proven Mobterm entries are migrated;
+user events in both formats are preserved and reported as a conflict. Trust
+state remains in TOML. Version 2 journals guard both files, ownership and modes;
+the source is removed first, so an interruption requires resuming the pending
+action and can temporarily omit native handlers without duplicating them.
+Version 1 journal recovery remains covered by the existing regression suite.
+
+Focused checks passed:
+
+- `go test ./... -run 'TestCodexLayout|TestCodexNotifyOnly|TestRichNotify' -count=1`
+  covers representation selection, both migration directions, unchanged repeat
+  installs, original/later user data, duplicate keys, edited/duplicated ownership,
+  symlinks, all journal write boundaries, conflicting concurrent edits, App
+  repair discovery, native activation receipts and JSON-owned v2 completion retry.
+- `go test ./... -run '^TestCodexJSONUninstall' -count=1` additionally checks that
+  uninstall preserves later user groups in the same event, large integer metadata
+  and user events in both representations.
+- `go vet ./...`, formatting and `git diff --check` passed.
+
+`go test ./...` passed (373.432 seconds). After tightening the file-state
+recheck immediately after the first migration write,
+`go test ./... -run '^TestCodexLayoutRecovery' -count=1` passed (13.049 seconds),
+and `go vet ./...`, formatting and diff checks passed again.
+The final full `go test -race ./...` passed (477.348 seconds), with no race report.
+
+The installed official Codex 0.166.0 was also executed against disposable HOME,
+CODEX_HOME, cwd and Mobterm store directories, with an allowlisted environment
+containing no credentials. A fresh installation was read through the real
+`app-server` `hooks/list` RPC: seven Mobterm hooks plus the original user
+SessionStart, with no warnings/errors. For the upgrade path, v0.1.11 source was
+exported using `git archive`, built in a temporary directory and installed at the
+same temporary executable path as the new build. The old CLI reproduced the
+mixed-representation warning with eight hooks; new discovery reported the repair
+state; migration retained all eight hooks and removed the warning. A repeated
+install still listed eight hooks, and uninstall left only the original user
+SessionStart. TOML trust state was preserved. All temporary binaries/configs and
+app-server processes were cleaned up; no model request or hook trust grant ran.
+
+App compatibility was checked by code inspection: existing `partial` states
+permit repair and bypass the `complete` early return, and unknown issue codes
+are accepted. The API does not consume these local hook files or discovery
+states; wire envelopes and pairing contracts are unchanged. No App build or
+physical push test is claimed. No remote installation, release or deployment
+was performed.

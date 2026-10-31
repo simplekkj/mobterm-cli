@@ -125,7 +125,7 @@ func notify(ctx context.Context, s Store, a API, source string, payload []byte, 
 		_ = json.Unmarshal(payload, &metadata)
 		var managed HookRecord
 		_ = s.readJSON("hooks-"+source+".json", &managed)
-		rich := source == "codex" && managed.CodexNative != "" || source == "claude" && managed.ClaudeOwned["PermissionRequest"] != ""
+		rich := source == "codex" && (managed.CodexNative != "" || managed.CodexJSON != "") || source == "claude" && managed.ClaudeOwned["PermissionRequest"] != ""
 		if metadata.AdapterRevision == 2 || rich && (source == "codex" && metadata.Type == "agent-turn-complete" || source == "claude" && (metadata.HookEventName == "UserPromptSubmit" || metadata.HookEventName == "Notification")) {
 			if metadata.AdapterRevision == 2 || source == "claude" && metadata.HookEventName == "UserPromptSubmit" {
 				short, cancel := context.WithTimeout(ctx, 2*time.Second)

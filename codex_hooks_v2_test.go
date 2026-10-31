@@ -93,7 +93,7 @@ func TestCodexNativeInstalledTransactionAndHealth(t *testing.T) {
 		}
 	}
 	var r HookRecord
-	if err := s.readJSON("hooks-codex.json", &r); err != nil || r.CodexNative == "" {
+	if err := s.readJSON("hooks-codex.json", &r); err != nil || r.CodexJSON == "" || r.CodexNative != "" {
 		t.Fatal("missing native ownership", err)
 	}
 	h := inspectHook(s, "codex")
@@ -106,7 +106,8 @@ func TestCodexNativeInstalledTransactionAndHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	after, _ := os.ReadFile(path)
-	if bytes.Contains(after, []byte("mobterm-cli")) || len(before) == 0 {
+	jsonAfter, _ := os.ReadFile(filepath.Join(filepath.Dir(path), "hooks.json"))
+	if bytes.Contains(after, []byte("mobterm-cli")) || bytes.Contains(jsonAfter, []byte("observe --source codex")) || len(before) == 0 {
 		t.Fatal("uninstall left owned entries")
 	}
 	if _, err := readHookTransaction(s, "codex"); !os.IsNotExist(err) {

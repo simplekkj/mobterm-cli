@@ -18,8 +18,10 @@ import (
 )
 
 func TestRichNotifyRecoversDurableOutbox(t *testing.T) {
-	for _, failure := range []string{"503", "429", "lost_receipt"} {
+	for _, failure := range []string{"503", "429", "lost_receipt", "json_503", "json_429", "json_lost_receipt"} {
 		t.Run(failure, func(t *testing.T) {
+			jsonHooks := strings.HasPrefix(failure, "json_")
+			failure = strings.TrimPrefix(failure, "json_")
 			claudeNotifyEnvironment(t)
 			s := testStore(t)
 			id, _ := s.installation()
@@ -61,7 +63,13 @@ func TestRichNotifyRecoversDurableOutbox(t *testing.T) {
 			p.APIURL = server.URL
 			s.savePair(context.Background(), p)
 			api := API{server.Client()}
-			s.writeJSON("hooks-codex.json", HookRecord{CodexNative: "fixture"})
+			owned := HookRecord{CodexNative: "fixture"}
+			if jsonHooks {
+				owned = HookRecord{CodexJSON: "fixture"}
+			}
+			if err := s.writeJSON("hooks-codex.json", owned); err != nil {
+				t.Fatal(err)
+			}
 			input := func(event, run, id string) []byte {
 				b, _ := json.Marshal(map[string]any{"type": "agent-turn-complete", "thread-id": "s", "turn-id": run})
 				return b

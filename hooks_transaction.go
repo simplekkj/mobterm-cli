@@ -8,22 +8,79 @@ import (
 	"path/filepath"
 )
 
-// The private journal stores one bounded replacement and hashes, not an
+// The private journal stores bounded replacements and hashes, not an
 // unbounded history. No discovery operation writes or resumes this journal.
 type hookTransaction struct {
-	V               int         `json:"v"`
-	Agent           string      `json:"agent"`
-	Path            string      `json:"path"`
-	Action          string      `json:"action"`
-	BeforeSHA       string      `json:"before_sha"`
-	BeforeExists    bool        `json:"before_exists"`
-	After           []byte      `json:"after"`
-	AfterSHA        string      `json:"after_sha"`
-	Mode            uint32      `json:"mode"`
-	BeforeRecord    *HookRecord `json:"before_record,omitempty"`
-	AfterRecord     *HookRecord `json:"after_record,omitempty"`
-	BeforeRecordSHA string      `json:"before_record_sha"`
-	AfterRecordSHA  string      `json:"after_record_sha"`
+	V               int             `json:"v"`
+	Agent           string          `json:"agent"`
+	Path            string          `json:"path"`
+	Action          string          `json:"action"`
+	BeforeSHA       string          `json:"before_sha"`
+	BeforeExists    bool            `json:"before_exists"`
+	After           []byte          `json:"after"`
+	AfterSHA        string          `json:"after_sha"`
+	Mode            uint32          `json:"mode"`
+	BeforeRecord    *HookRecord     `json:"before_record,omitempty"`
+	AfterRecord     *HookRecord     `json:"after_record,omitempty"`
+	BeforeRecordSHA string          `json:"before_record_sha"`
+	AfterRecordSHA  string          `json:"after_record_sha"`
+	JSONFile        *hookFileChange `json:"json_file,omitempty"`
+	JSONFirst       bool            `json:"json_first,omitempty"`
+}
+
+// v2 journals also guard the adjacent hooks.json, including absence. Each file
+// is atomically replaced; the journal makes interrupted multi-file work resumable.
+type hookFileChange struct {
+	Path         string `json:"path"`
+	BeforeSHA    string `json:"before_sha"`
+	BeforeExists bool   `json:"before_exists"`
+	After        []byte `json:"after"`
+	AfterSHA     string `json:"after_sha"`
+	AfterExists  bool   `json:"after_exists"`
+	Mode         uint32 `json:"mode"`
+}
+
+func (f hookFileChange) changed() bool {
+	return f.BeforeExists != f.AfterExists || f.BeforeSHA != f.AfterSHA
+}
+
+func readHookFile(path string) ([]byte, hookFileChange, error) {
+	if err := nativeRealParents(path); err != nil {
+		return nil, hookFileChange{}, err
+	}
+	data, mode, err := secureReadWithMode(path, 2*1024*1024)
+	exists := !errors.Is(err, os.ErrNotExist)
+	if err != nil && exists {
+		return nil, hookFileChange{}, err
+	}
+	if !exists {
+		mode = 0600
+	}
+	return data, hookFileChange{Path: path, BeforeSHA: digest(string(data)), BeforeExists: exists, After: data, AfterSHA: digest(string(data)), AfterExists: exists, Mode: uint32(mode)}, nil
+}
+
+func (f hookFileChange) state() (bool, error) {
+	data, current, err := readHookFile(f.Path)
+	if err != nil {
+		return false, err
+	}
+	after := current.BeforeExists == f.AfterExists && digest(string(data)) == f.AfterSHA
+	before := current.BeforeExists == f.BeforeExists && current.BeforeSHA == f.BeforeSHA
+	if !before && !after || current.BeforeExists && !after && current.Mode != f.Mode {
+		return false, errors.New("hook recovery conflicts with JSON configuration; unchanged")
+	}
+	return after, nil
+}
+
+func (f hookFileChange) finish() error {
+	after, err := f.state()
+	if err != nil || after {
+		return err
+	}
+	if !f.AfterExists {
+		return removeHookFile(f.Path)
+	}
+	return atomicWrite(f.Path, f.After, os.FileMode(f.Mode))
 }
 
 func hookTransactionName(agent string) string { return "hooks-" + agent + "-pending.json" }
@@ -33,17 +90,30 @@ func readHookTransaction(s Store, agent string) (hookTransaction, error) {
 	if err != nil {
 		return tx, err
 	}
-	if json.Unmarshal(b, &tx) != nil || tx.V != 1 || tx.Agent != agent || (tx.Action != "install" && tx.Action != "uninstall") || !filepath.IsAbs(tx.Path) || len(tx.After) > 2*1024*1024 || len(tx.BeforeSHA) != 64 || tx.AfterSHA != digest(string(tx.After)) || tx.BeforeRecordSHA != hookRecordDigest(tx.BeforeRecord) || tx.AfterRecordSHA != hookRecordDigest(tx.AfterRecord) || tx.Mode&^0777 != 0 || tx.Action == "install" && tx.AfterRecord == nil || tx.Action == "uninstall" && tx.AfterRecord != nil {
+	if json.Unmarshal(b, &tx) != nil || (tx.V != 1 && tx.V != 2) || tx.Agent != agent || (tx.Action != "install" && tx.Action != "uninstall") || !filepath.IsAbs(tx.Path) || len(tx.After) > 2*1024*1024 || len(tx.BeforeSHA) != 64 || tx.AfterSHA != digest(string(tx.After)) || tx.BeforeRecordSHA != hookRecordDigest(tx.BeforeRecord) || tx.AfterRecordSHA != hookRecordDigest(tx.AfterRecord) || tx.Mode&^0777 != 0 || tx.Action == "install" && tx.AfterRecord == nil || tx.Action == "uninstall" && tx.AfterRecord != nil {
 		return tx, errors.New("hook recovery journal invalid; configuration unchanged")
 	}
+	if tx.V == 1 && (tx.JSONFile != nil || tx.JSONFirst) || tx.V == 2 && (agent != "codex" || tx.JSONFile == nil) {
+		return tx, errors.New("hook recovery layout invalid")
+	}
+	if f := tx.JSONFile; f != nil {
+		if f.Path != filepath.Join(filepath.Dir(tx.Path), "hooks.json") || len(f.BeforeSHA) != 64 || f.AfterSHA != digest(string(f.After)) || len(f.After) > 2*1024*1024 || f.Mode&^0777 != 0 || !f.AfterExists && len(f.After) != 0 {
+			return tx, errors.New("hook recovery JSON journal invalid")
+		}
+	}
 	for _, r := range []*HookRecord{tx.BeforeRecord, tx.AfterRecord} {
-		if r != nil && (r.Agent != agent || r.Path != tx.Path || r.Managed == "") {
+		if r != nil && (r.Agent != agent || r.Path != tx.Path || r.Managed == "" || r.CodexJSON != "" && tx.JSONFile == nil) {
 			return tx, errors.New("hook recovery ownership invalid")
 		}
 	}
 	return tx, nil
 }
 func hookTransactionState(s Store, tx hookTransaction) ([]byte, bool, error) {
+	if tx.JSONFile != nil {
+		if _, err := tx.JSONFile.state(); err != nil {
+			return nil, false, err
+		}
+	}
 	if err := nativeRealParents(tx.Path); err != nil {
 		return nil, false, err
 	}
@@ -105,8 +175,24 @@ func finishHookTransaction(s Store, tx hookTransaction) error {
 	if !bytes.Equal(current, data) {
 		return errors.New("hook config changed concurrently; retry")
 	}
+	if tx.JSONFile != nil && tx.JSONFirst {
+		if err = tx.JSONFile.finish(); err != nil {
+			return err
+		}
+		if _, after, err = hookTransactionState(s, tx); err != nil {
+			return err
+		}
+	}
 	if !after {
 		if err = atomicWrite(tx.Path, tx.After, os.FileMode(tx.Mode)); err != nil {
+			return err
+		}
+	}
+	if tx.JSONFile != nil && !tx.JSONFirst {
+		if _, _, err = hookTransactionState(s, tx); err != nil {
+			return err
+		}
+		if err = tx.JSONFile.finish(); err != nil {
 			return err
 		}
 	}

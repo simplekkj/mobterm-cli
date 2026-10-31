@@ -24,6 +24,7 @@ type HookRecord struct {
 	Chain       []string          `json:"chain,omitempty"`
 	ClaudeOwned map[string]string `json:"claude_owned,omitempty"`
 	CodexNative string            `json:"codex_native,omitempty"`
+	CodexJSON   string            `json:"codex_json,omitempty"`
 }
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
@@ -148,7 +149,7 @@ func changeHooks(ctx context.Context, s Store, agent, action, path, executable s
 	// an unfinished operation only when the exact original fragment and argv
 	// agree; unrelated content is retained. Claude's old records lack this proof.
 	legacyRestored := false
-	if agent == "codex" && record.Managed != "" && record.Original != "" && record.CodexNative == "" {
+	if agent == "codex" && record.Managed != "" && record.Original != "" && record.CodexNative == "" && record.CodexJSON == "" {
 		start, end, argv, e := rootNotify(data)
 		legacyRestored = e == nil && start >= 0 && string(data[start:end]) == record.Original && reflect.DeepEqual(argv, record.Chain)
 		if legacyRestored {
@@ -156,15 +157,16 @@ func changeHooks(ctx context.Context, s Store, agent, action, path, executable s
 		}
 	}
 	var result []byte
+	var jsonFile *hookFileChange
 	if agent == "codex" {
-		result, record, err = editCodexWithNative(data, action, path, executable, record, installCodexNative)
+		result, record, jsonFile, err = editCodexLayout(data, action, path, executable, record, installCodexNative)
 	} else {
 		result, record, err = editClaudeWithNative(data, action, path, executable, record, installClaudeNative)
 	}
 	if err != nil {
 		return err
 	}
-	if bytes.Equal(result, data) && !(action == "uninstall" && before != nil && legacyRestored) {
+	if bytes.Equal(result, data) && (jsonFile == nil || !jsonFile.changed()) && !(action == "uninstall" && before != nil && legacyRestored) {
 		return nil
 	}
 	if len(result) > 2*1024*1024 {
@@ -175,6 +177,12 @@ func changeHooks(ctx context.Context, s Store, agent, action, path, executable s
 		after = &record
 	}
 	tx = hookTransaction{V: 1, Agent: agent, Path: path, Action: action, BeforeSHA: digest(string(data)), BeforeExists: exists, After: result, AfterSHA: digest(string(result)), Mode: uint32(mode), BeforeRecord: before, AfterRecord: after}
+	if jsonFile != nil {
+		tx.V, tx.JSONFile = 2, jsonFile
+		// Remove the old source before adding the new one. A crash can leave
+		// hooks temporarily absent, but never installs our handlers twice.
+		tx.JSONFirst = before != nil && before.CodexJSON != ""
+	}
 	if err = writeHookTransaction(s, tx); err != nil {
 		return err
 	}

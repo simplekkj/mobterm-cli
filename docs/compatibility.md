@@ -378,9 +378,23 @@ adding separately validated native behavior. Codex 0.166.0 is the validation
 baseline for UserPromptSubmit, PreToolUse, PostToolUse, PermissionRequest,
 Interrupt and SessionStart/End; it is not asserted to be the first supporting
 release. `notify` remains the sole completion source. PreToolUse is pending,
-not proof of execution; tool returns are not proof of task success. The owned
-inline TOML block preserves unrelated config and notify argv. Native trust and
+not proof of execution; tool returns are not proof of task success. Owned native
+events use the user's existing JSON or inline TOML representation (JSON for new
+configurations), preserving unrelated config and notify argv. Native trust and
 disabled hooks settings are never changed; health reports review/restart needs.
+
+Codex 0.166.0's
+[discovery implementation](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/hooks/src/engine/discovery.rs)
+warns only when both sources contain native event groups; `hooks.state` alone is
+not an inline event source. Migration strips only entries proven by the private
+ownership record, selects the remaining user representation, and journals both
+files. User events present in both sources are a conflict requiring user review;
+Mobterm does not move them or silently choose which to discard. An existing
+Mobterm-only TOML installation stays TOML until another user representation
+requires migration. Pending multi-file operations use journal version 2; version
+1 single-file journals remain recoverable. Old CLIs reject version 2 journals
+and do not understand JSON native ownership; complete recovery/removal with the
+new CLI before downgrading.
 
 Claude 2.1.301 is the current fixed schema reference for tool observations and
 PermissionRequest. Stop records a cycle boundary without completing the run;
