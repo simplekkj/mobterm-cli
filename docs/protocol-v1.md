@@ -1,5 +1,9 @@
 # Mobterm notification protocol v1
 
+The optional negotiated [v2 contract](protocol-v2.md) adds run state, inbox/badge
+and native approval. This v1 envelope, AAD, target/setup frames and vectors remain
+unchanged; unknown peers receive only a meaningful supported v1 reminder.
+
 This is the public, implementation-independent wire contract. The normative
 cross-language fixture is [protocol-v1.json](../testdata/protocol-v1.json).
 

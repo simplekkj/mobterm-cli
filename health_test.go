@@ -23,6 +23,12 @@ func TestStructuredClaudeHealthAndSafeRepair(t *testing.T) {
 		t.Fatal(h)
 	}
 	baseline, _ := os.ReadFile(path)
+	if err := changeHooks(context.Background(), s, "claude", "install", path, "/different/mobterm-cli", false); err != nil {
+		t.Fatal("repeat install must retain the proven owned executable", err)
+	}
+	if repeated, _ := os.ReadFile(path); !bytes.Equal(baseline, repeated) {
+		t.Fatal("repeat install changed owned command paths")
+	}
 	for _, change := range []string{"missing", "matcher", "timeout", "moved", "duplicate", "command"} {
 		t.Run(change, func(t *testing.T) {
 			var root map[string]any

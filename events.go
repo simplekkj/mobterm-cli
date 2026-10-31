@@ -116,6 +116,26 @@ func eventEnvelope(ctx context.Context, s Store, p Pair, kind, identity string, 
 	return *d.Envelope, nil
 }
 func notify(ctx context.Context, s Store, a API, source string, payload []byte, pairID string, test bool) ([]map[string]any, error) {
+	if !test {
+		var metadata struct {
+			AdapterRevision int    `json:"adapter_revision"`
+			Type            string `json:"type"`
+			HookEventName   string `json:"hook_event_name"`
+		}
+		_ = json.Unmarshal(payload, &metadata)
+		var managed HookRecord
+		_ = s.readJSON("hooks-"+source+".json", &managed)
+		rich := source == "codex" && managed.CodexNative != "" || source == "claude" && managed.ClaudeOwned["PermissionRequest"] != ""
+		if metadata.AdapterRevision == 2 || rich && (source == "codex" && metadata.Type == "agent-turn-complete" || source == "claude" && (metadata.HookEventName == "UserPromptSubmit" || metadata.HookEventName == "Notification")) {
+			if metadata.AdapterRevision == 2 || source == "claude" && metadata.HookEventName == "UserPromptSubmit" {
+				short, cancel := context.WithTimeout(ctx, 2*time.Second)
+				defer cancel()
+				ctx = short
+			}
+			_, e := observe(ctx, s, a, source, payload)
+			return nil, e
+		}
+	}
 	id, err := s.installation()
 	if err != nil {
 		return nil, err

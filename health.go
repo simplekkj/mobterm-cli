@@ -23,6 +23,9 @@ type agentHealth struct {
 	RestartRequired    bool          `json:"restart_required"`
 	Loaded             string        `json:"loaded"`
 	RecoveryAction     string        `json:"recovery_action,omitempty"`
+	RunState           string        `json:"run_state,omitempty"`
+	MobileApproval     string        `json:"mobile_approval,omitempty"`
+	NativeTrust        string        `json:"native_trust,omitempty"`
 }
 
 func (h *agentHealth) issue(state, code, event, capability string) {
@@ -61,6 +64,12 @@ func hookHealth(s Store, capabilities map[string]any) map[string]agentHealth {
 			h.State = "not_installed"
 		} else if c["supported"] == false {
 			h.State = "unsupported"
+		}
+		if agent == "codex" {
+			actual, _ := c["actual_version"].(string)
+			if !codexNativeVersion(actual) {
+				h.RunState, h.MobileApproval = "unsupported_version", "unsupported_version"
+			}
 		}
 		result[agent] = h
 	}
@@ -147,6 +156,20 @@ func inspectHook(s Store, agent string) agentHealth {
 		if len(r.Chain) > 0 && !executableAvailable(r.Chain[0]) {
 			h.issue("partial", "original_notifier_unavailable", "agent-turn-complete", "turn_completed")
 		}
+		h.RunState, h.MobileApproval = "not_configured", "not_configured"
+		if r.CodexNative != "" {
+			if _, err := stripCodexNative(data, r.CodexNative); err != nil || r.CodexNative != codexNativeBlock(expected[0]) {
+				h.issue("conflict", "native_hooks_modified", "all", "all")
+				h.RunState, h.MobileApproval = "configuration_conflict", "configuration_conflict"
+			} else {
+				h.RunState, h.MobileApproval = "configured_unverified", "configured_default_off"
+				h.NativeTrust = "review_required"
+				h.RestartRequired = true
+				if codexNativeDisabled(data) {
+					h.RunState, h.MobileApproval, h.NativeTrust = "disabled_by_configuration", "disabled_by_configuration", "disabled_by_configuration"
+				}
+			}
+		}
 		return h
 	}
 	prefix := strings.TrimSuffix(r.Managed, " notify --source claude")
@@ -170,6 +193,17 @@ func inspectHook(s Store, agent string) agentHealth {
 		return h
 	}
 	expectedEvents := map[string]string{"UserPromptSubmit": "turn_completed", "Notification": "turn_completed,needs_input"}
+	for _, event := range []string{"PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "Stop"} {
+		if _, ok := r.ClaudeOwned[event]; ok {
+			expectedEvents[event] = "run_state"
+		}
+	}
+	h.RunState = "not_configured"
+	h.MobileApproval = "default_off"
+	if len(expectedEvents) > 2 {
+		h.RunState = "configured_unverified"
+		h.RestartRequired = true
+	}
 	counts := map[string]int{}
 	for event, entries := range hooks {
 		for _, entry := range entries {
@@ -181,7 +215,13 @@ func inspectHook(s Store, agent string) agentHealth {
 			for _, cmd := range commands {
 				var text string
 				_ = json.Unmarshal(cmd["command"], &text)
-				if text != r.Managed {
+				wantCommand := r.Managed
+				if event == "PermissionRequest" {
+					wantCommand = shellQuote(executable) + " approval wait --source claude"
+				} else if event != "UserPromptSubmit" && event != "Notification" {
+					wantCommand = shellQuote(executable) + " observe --source claude"
+				}
+				if text != wantCommand {
 					if looksManagedClaude(text, r.Managed) {
 						h.issue("modified", "command_modified", event, expectedEvents[event])
 					}
@@ -199,8 +239,12 @@ func inspectHook(s Store, agent string) agentHealth {
 				_ = json.Unmarshal(cmd["type"], &typ)
 				_ = json.Unmarshal(cmd["timeout"], &timeout)
 				_ = json.Unmarshal(entry["matcher"], &matcher)
-				validMatcher := event == "UserPromptSubmit" && matcher == "" || event == "Notification" && matcher == "^(permission_prompt|elicitation_dialog|idle_prompt)$"
-				if typ != "command" || timeout != 10 || !validMatcher {
+				validMatcher := event != "Notification" && matcher == "" || event == "Notification" && matcher == "^(permission_prompt|elicitation_dialog|idle_prompt)$"
+				wantTimeout := 10
+				if event == "PermissionRequest" {
+					wantTimeout = 130
+				}
+				if typ != "command" || timeout != wantTimeout || !validMatcher {
 					h.issue("modified", "event_conditions_modified", event, capability)
 				}
 				candidate := map[string]json.RawMessage{}

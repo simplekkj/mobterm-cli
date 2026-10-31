@@ -1,0 +1,18 @@
+{
+  "fixture_version": 2,
+  "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "plaintext": "{\"active_tool_count\":1,\"tools_truncated\":false,\"v\":2,\"locator\":{\"v\":1,\"installation_id\":\"install_fixture_0000000000000001\",\"backend\":\"tmux\",\"namespace\":\"/tmp/tmux-1000/default\",\"server_identity\":\"1234:1700000000:1700000001\",\"workspace_id\":\"$1\",\"view_id\":\"@2\",\"pane_id\":\"%3\",\"occupant_id\":\"tmux-proc-v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"},\"agent\":\"codex\",\"session_id\":\"session_fixture\",\"run_id\":\"run_fixture\",\"stream_id\":\"stream_fixture_000000000000001\",\"revision\":7,\"state\":\"waiting_approval\",\"occurred_at\":1999999900,\"tools\":[{\"invocation_id\":\"invocation_fixture\",\"category\":\"shell\",\"status\":\"pending\"}],\"approval\":{\"request_id\":\"request_fixture_00000000000001\",\"digest\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"expires_at\":2000000000}}",
+  "aad": "mobterm/2\nreminder\npair_fixture_000000000000000001\nevent_fixture_00000000000000001\nneeds_input\nstream_fixture_000000000000001\n7\n1\n2000000000",
+  "envelope": {
+    "v": 2,
+    "pair_id": "pair_fixture_000000000000000001",
+    "event_id": "event_fixture_00000000000000001",
+    "kind": "needs_input",
+    "expires_at": 2000000000,
+    "nonce": "ICEiIyQlJicoKSor",
+    "ciphertext": "qRjHExjxbGtFCC2hrUeXlqUnmL69sU/MGJkDfjrVKnsA4IZl+kBR+C6bD/4rbDPqlAjWvLYeQQ6tAwtyPpAwpvpQ7zGnu8f/5RmdRtcxWBW8+F1b3p+kJO0mrFluffKwXTJHLrwx7JaWrJQ3k8b9I0Chv3Kh7p89YdArLZfm4UNZihm8Acx33BD3gEYsUX3LsrlbVLD9+LASJ8lC+vyloKyNER7sw0ejhdKv3dNGb4mHkc/hO7WqTzSpisGITrremoFMNEW092tvLIKO3+Ob/P0VxST36COvMY85bHdlaSEeYwH59hwPnTABhPiN1Koz7k6QpRF8bFbJYGgRKU5atuioZwP6ZwNxqStxW4TQv/LY7eB2QzfygUtFR3cnzWSPoF+WTOfWpDYRs5NbgxjhQLyVLa0ovvnqgj/6frtzfILxiDNYuAjq6dPUcfufarUaGI1pSCKfZef8oT5RKSJIcA6ArhrNdEaG6HQXQY48kVZOlQxKX0My3XBZbU00wc5FoYMoWHAb465Q8W2EEc9ZIo8WSNqkGRMe4Vzbc9LwnIBOikAtSpfKhRf/THqBTJOMpE6CX9ofO4aOs86vliNH6LIxdx0dswCZp2p/rx5SUNwcoef1OqfbcUUgg8lMzn1+z1CafIqqpxFimTcalWon+cUTFvySdHpe7WybgBSSPwyru15jpo6ZaZoDsdjvzuz0WSfzBv/5eNBNdb+HaL2iBdwSrxNfbtOHjZNd8wl9EgRDR4wrLqhVsHWcioYKxmxinHW2gR+WUytenkN8ocoUSUZGiuug3ZcnW2+RR/SQxyyGhpglFMf1JH75DWg+IFNjGULrwKFd+my8U6LhJzjPAB6sW7zJSM/KF0blYUWE3GHFxZRtZfJ6pUJADvQM7iX8OCBH5wVDlsw7OmLhEtnMk6jw7OAok8xeR/FR+EKPSq+opUp9ojzaD+pwJPTVSwOdyj/aswRLa3XjxOq1VIY9aSHp3OcX6ZTpXorKDou2TZLCmgKoV6ycwbG/ucB1qbFZ/Jl/LkhfGDheEoRTU6SHq/bw19+9omZOVhw2XqmfkZWKChjvdcGxqZzNTQ==",
+    "stream_id": "stream_fixture_000000000000001",
+    "revision": 7,
+    "capability_generation": 1
+  }
+}

@@ -1,5 +1,95 @@
 # Validation records
 
+## 2026-10-31 — Agent activity and native approval, round 1 v1.0
+
+[Implementation and acceptance](https://app.notion.com/p/40acede2082381daa4a8f505dff3b649).
+CLI analysis/start: `81f506c9505ec11e55f2590906c1bddf26b1488d`, clean `main`.
+App start: `88362dc3bc712e98a58302cf4ad4c42f1b3e410d`; API start:
+`0b0c582bb64956753efc3a401b77d6cdf6e13852`. No baseline drift.
+
+This delivery adds negotiated v2 encrypted run snapshots and reminder intents,
+independent per-Agent native approval, four native state adapters, bounded
+local state and approval storage, and exact shared encryption/approval vectors.
+Legacy v1 kinds and AAD remain unchanged. Completion, a tool return, a decision
+recorded locally, and native execution success are distinct states.
+
+Environment: macOS 15.8.1 x86_64, Go 1.27.1 darwin/amd64, Node 22.22.2.
+Go tests use isolated temporary stores/config, synthetic native input and loopback
+HTTP; the official host smoke tests below also use isolated HOME/XDG/agent roots
+and omit model credentials. No real user hook or trust setting was changed.
+
+Focused implementation checks cover AEAD metadata mutation, exact canonical
+operation digest/HMAC, unsupported/malformed capability receipts, crash-safe
+activity retry and single handoff, active parallel tools, 40 sequential tools,
+duplicate starts and old terminal updates, Claude late idle after a new cycle,
+unsupported/oversize native requests, cross-Pair competing decisions, proof
+forgery, last local opt-out release, full operation scrubbing, and actual local
+waiter consumption followed by refusal to replay the same native request.
+The approval fixture intentionally has generic needs_input=false and Codex
+approval=true; local opt-in survives unrelated global policy generation changes.
+
+- Focused race suite: PASS 17.829s (`TestActivity|TestMalformedCapabilities|TestToolAggregation|TestApproval|TestNativeWait|TestClaudeLateIdle|TestCodexNative|TestStructuredCodex`).
+- Final compatibility/discovery/Claude ownership regressions: PASS 20.295s.
+  Moved/edited/duplicated commands retain the original error and byte-unchanged
+  assertions. Repeating install from a different binary retains proven owned
+  command paths. Each compatibility sample has a separate config/journal and
+  seeds its version's current capability set before testing idempotence.
+- `node scripts/test-native-adapters.mjs`: PASS, including OpenCode exact native
+  pending re-query, one reply, changed-request refusal, root/family ownership,
+  separate approval child control, Pi UI waits and aborted/non-aborted settlement.
+- `scripts/test-native-adapters-host.py`: PASS with official OpenCode 2.1.0 TUI
+  setup and restart (13 listeners) and official Pi 1.3.0 discovery/import plus
+  actual TUI session_start (8 listeners). Generated adapters were loaded by the
+  official hosts; no paid/authenticated model request was sent.
+- `test -z "$(gofmt -l .)"`: PASS.
+- `go test -json ./...`: PASS 463.189s, 132 top-level tests / 555 including subtests; zero failures or skips.
+- `go vet ./...`: PASS.
+- `go test -race -json ./...`: completed 493.576s, 547 test/subtest outcomes; no race reports. The command failed only on eight pre-existing asdf launcher preflights (eleven failures including their parents), each killed by the unchanged five-second bound while Simulator UI tests ran concurrently. Exact affected contexts rerun on the same frozen code after the Simulator workload stopped: `go test -race -json -run '^TestAsdfCompatibilityEntrypoints$/^(agent-project-explicit|node-home-explicit)$' ./...`: PASS 78.186s, 67 test/subtest outcomes, zero failures/skips or race reports. This covers every failure and all nested cases prevented by its preflight; the original full-race command is not reported as passing.
+- `git diff --check`: PASS, including this record.
+
+The first full run failed at 465.877s: Claude's new owned command validation
+incorrectly compared the current caller path with the original owned path;
+version refusal diagnostics drifted; compatibility tests assumed a future-version
+native upgrade could not change config and reused config across failed cases;
+and the discovery vector needed its new declared fields. A moved Claude notify
+could also be mistaken for a legitimate new Stop command. Production checks now
+retain the exact owned executable and validate command/event pairs; existing
+moved-user-edit byte preservation assertions were not weakened. The discovery
+vector is synchronized across repositories. An intermediate focused run had a
+five-second discovery probe timeout under concurrent old full-race load; that
+obsolete race run was stopped. The final ordinary and race commands ran serially within the CLI on frozen
+code; Simulator tests in the App overlapped the initial race run. The affected
+race contexts were then retried after the Simulator workload stopped, preserving
+all budgets and assertions. Only this evidence record was added afterward. Historical failed runs are
+not counted as passing evidence.
+
+Native capability and evidence matrix:
+
+| Agent | State source and capability | Native mobile approval | Evidence this round |
+| --- | --- | --- | --- |
+| Codex | 0.166.0 native Hook reference; notify remains sole completion; PreToolUse is pending, post-hook is returned, Interrupt is interrupted | Default off; verified PermissionRequest allow/deny/no-decision; host trust must be reviewed, never auto-granted | Fixed official schema, isolated native fixtures and installer ownership/disabled-setting tests; no real model turn |
+| Claude Code | 2.1.301 fixed native Hook schema; prompt/tool events and current stopped-cycle idle | Default off; supported complete PermissionRequest tool structures only | Native schema fixtures, cycle ordering and atomic install/repair tests; no real model turn |
+| OpenCode | Revision 2 TUI root execution/tool lifecycle and permission/form waits | Default off; complete native pending request re-queried before once/reject | Official 2.1.0 TUI loading/restart plus deterministic client reply fixtures; no real native permission from a model |
+| Pi | Revision 2 start/tool/UI prompt/settled events; aborted is interrupted, settled is turn end only | Unsupported; terminal required | Official 1.3.0 TUI loading plus native event fixtures; no real model turn |
+
+Not executed: real servers, remote CLI installation/upgrade, real user hooks,
+real native approval against an authenticated model, device/production API or
+APNs requests, iPhone display/badge/tap/terminal navigation, deployment, release
+or tag. Official-host loading proves integration loading, not an end-to-end
+model turn or phone approval. Codex trust/load, remote policy and receiving App
+capability remain separately reported prerequisites. API revocation cannot
+atomically recall a decision already handed to the native host. This is a first
+implementation awaiting the one separately initiated static Review, not a Review
+pass or field acceptance.
+
+Local logs: `/tmp/mobterm-round1-cli-final-test.jsonl`,
+`/tmp/mobterm-round1-cli-final-race.jsonl`,
+`/tmp/mobterm-round1-cli-race-asdf-final.jsonl`,
+`/tmp/mobterm-round1-cli-regressions-final.log`,
+`/tmp/mobterm-round1-cli-focused-race.log`,
+`/tmp/mobterm-round1-native-adapter-tests.log`,
+`/tmp/mobterm-round1-opencode-host.log`, `/tmp/mobterm-round1-pi-host.log`.
+
 ## 2026-10-28 — Pairing TLS budget and safe timeout classification, round 1 v1.0
 
 [Implementation and acceptance](https://app.notion.com/p/407cede208238185a7a5fa6455f8c297).

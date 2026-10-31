@@ -14,7 +14,10 @@
       "turn_completed": "native idle_prompt after user prompt; delayed by Claude",
       "validation_reference": "2.1.301",
       "version": "2.1.301",
-      "version_role": "validation_reference"
+      "version_role": "validation_reference",
+      "run_state": "requires_v2_and_loaded_adapter",
+      "mobile_approval": "default_off",
+      "state_validation_reference": "2.1.301"
     },
     "codex": {
       "actual_version": "codex-cli 0.163.0",
@@ -28,11 +31,15 @@
       "turn_completed": "agent-turn-complete",
       "validation_reference": "0.163.0",
       "version": "0.163.0",
-      "version_role": "validation_reference"
+      "version_role": "validation_reference",
+      "run_state": "requires_v2_and_loaded_adapter",
+      "mobile_approval": "default_off",
+      "state_validation_reference": "0.166.0",
+      "native_trust": "review_required"
     },
     "opencode": {
       "actual_version": "opencode v2.1.0",
-      "adapter_revision": 1,
+      "adapter_revision": 2,
       "installed": true,
       "managed_hooks": true,
       "minimum_version": "2.0.0",
@@ -46,23 +53,31 @@
       "turn_completed": "session.execution.succeeded: visible root only",
       "validation_reference": "2.1.0",
       "version": "2.1.0",
-      "version_role": "validation_reference"
+      "version_role": "validation_reference",
+      "run_state": "requires_v2_and_loaded_adapter",
+      "mobile_approval": "default_off",
+      "state_validation_reference": "2.1.0"
     },
     "pi": {
       "actual_version": "1.3.0",
-      "adapter_revision": 1,
+      "adapter_revision": 2,
       "installed": true,
       "managed_hooks": true,
       "minimum_version": "1.1.0",
-      "needs_input": false,
+      "needs_input": [
+        "ui_prompt_start"
+      ],
       "probe_status": "ok",
-      "reason": "No authoritative pending human-request API",
+      "reason": "UI prompt observation only; no generic approval reply",
       "supported": true,
       "supported_range": ">=1.1.0 stable",
       "turn_completed": "agent_settled: aborted=false in TUI",
       "validation_reference": "1.3.0",
       "version": "1.3.0",
-      "version_role": "validation_reference"
+      "version_role": "validation_reference",
+      "run_state": "requires_v2_and_loaded_adapter",
+      "mobile_approval": "unsupported",
+      "state_validation_reference": "1.3.0"
     }
   },
   "commit": "unknown",
@@ -92,7 +107,9 @@
       ],
       "loaded": "unknown",
       "restart_required": false,
-      "state": "not_configured"
+      "state": "not_configured",
+      "run_state": "unsupported_version",
+      "mobile_approval": "unsupported_version"
     },
     "opencode": {
       "configuration_state": "not_configured",

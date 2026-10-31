@@ -410,6 +410,10 @@ func TestCompatibilityEntrypoints(t *testing.T) {
 	for _, agent := range []string{"codex", "claude"} {
 		for _, sample := range cases {
 			t.Run(agent+"/"+sample, func(t *testing.T) {
+				// Each case owns its config and journal, including when a failure
+				// prevents cleanup of newly supported native hooks.
+				t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "codex"))
+				t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(t.TempDir(), "claude"))
 				version := samples[sample][agent]
 				supported := true
 				switch sample {
@@ -446,7 +450,11 @@ func TestCompatibilityEntrypoints(t *testing.T) {
 				}
 				config, _ := configPath(agent)
 				// Seed a genuinely owned config first; refusal must preserve both it and its record.
-				if err := changeHooks(context.Background(), s, agent, "install", "", "/fixture/mobterm-cli", false); err != nil {
+				// Supported versions seed their current capability set, so repeating
+				// install must remain byte-identical. Rejected versions seed owned
+				// fixtures without probing, then prove refusal preserves them.
+				executable, _ := os.Executable()
+				if err := changeHooks(context.Background(), s, agent, "install", "", executable, supported); err != nil {
 					t.Fatal(err)
 				}
 				paths := []string{config, filepath.Join(s.Dir, "hooks-"+agent+".json"), filepath.Join(s.Dir, "pairs.json")}

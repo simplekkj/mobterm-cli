@@ -11,7 +11,9 @@ const recorder = join(temp, 'notify');
 await writeFile(recorder, `#!${process.execPath}\nconst fs=require('node:fs');let b='';process.stdin.on('data',x=>b+=x);process.stdin.on('end',()=>fs.appendFileSync(${JSON.stringify(output)},b+'\\n'));`);
 await chmod(recorder, 0o700);
 const pause = () => new Promise(resolve => setTimeout(resolve, 2000));
-const events = async () => { await pause(); try { return (await readFile(output, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); } catch { return []; } };
+const allEvents = async () => { await pause(); try { return (await readFile(output, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); } catch { return []; } };
+// Preserve the earlier reminder ownership assertions while states use their own channel.
+const events = async () => (await allEvents()).filter(v => ["session.execution.succeeded","permission.asked","form.created"].includes(v.event) || v.event === "agent_settled" && v.aborted === false);
 const waitFor = async (condition, message, budget = 5000) => {
   const deadline=Date.now()+budget;
   while(!await condition()) {
@@ -191,7 +193,45 @@ try {
   assert.equal((await events()).length,5,'session switch/shutdown invalidate');
   for(const mode of ['rpc','print','json']) {ctx.mode=mode;emit('session_start');emit('agent_start');emit('agent_settled',{aborted:false});}
   assert.equal((await events()).length,5,'non TUI excluded');
-  assert.equal(handlers.has('ui_prompt_start'),false,'no Pi needs_input approximation');
-  for(const value of await events()) assert.deepEqual(Object.keys(value).sort(),(value.event==='agent_settled'?['aborted']:[]).concat(['adapter_revision','runtime_version','event','session_id','event_id','instance_id']).sort());
+  assert.equal(handlers.has('ui_prompt_start'),true,'Pi exposes the native observation interval');
+  for(const value of await events()) {
+    assert.equal(value.adapter_revision,2);
+    assert.equal(typeof value.run_id,'string');
+    for(const key of Object.keys(value)) assert.ok(['aborted','adapter_revision','runtime_version','event','session_id','run_id','event_id','instance_id','hook_event_name','tool_name','tool_use_id','tool_input'].includes(key));
+  }
+  ctx.mode='tui';session='state-session';emit('session_start');emit('agent_start');
+  emit('tool_execution_start',{toolCallId:'tool-one',toolName:'bash',args:{secret:'not uploaded'}});
+  emit('tool_execution_start',{toolCallId:'tool-two',toolName:'read',args:{secret:'not uploaded'}});
+  emit('tool_execution_end',{toolCallId:'tool-one',toolName:'bash',isError:true,result:{secret:'not uploaded'}});
+  emit('ui_prompt_start',{reason:'ui_prompt',kind:'confirm',title:'not uploaded'});
+  emit('ui_prompt_end',{reason:'ui_prompt',kind:'confirm'});
+  emit('agent_settled',{aborted:true});
+  const states=(await allEvents()).filter(e=>e.session_id==='state-session');
+  assert.ok(states.some(e=>e.event==='agent_start'));
+  assert.equal(states.filter(e=>e.event==='tool_execution_start').length,2);
+  assert.ok(states.some(e=>e.tool_status==='failed'));
+  assert.ok(states.some(e=>e.event==='ui_prompt_start'));
+  assert.ok(states.some(e=>e.event==='agent_settled'&&e.aborted===true));
+  assert.equal(JSON.stringify(states).includes('not uploaded'),false);
+  emit('session_shutdown');
+  // Exact OpenCode native approval handoff, distinct from the observation queue.
+  const decider=join(temp,'decider');
+  await writeFile(decider, `#!${process.execPath}\nlet b='';process.stdin.on('data',x=>b+=x);process.stdin.on('end',()=>{const p=JSON.parse(b);if(p.tool_input?.action==='bash')process.stdout.write(JSON.stringify({expires_at:Math.floor(Date.now()/1000)+30,hookSpecificOutput:{decision:{behavior:'allow'}}}));});`);
+  await chmod(decider,0o700);
+  const approvalPlugin=await load('opencode','1.3.0',decider);
+  const approving=host();let nativeReplies=[];
+  const request={id:'request-approval',sessionID:'root',action:'bash',resources:['echo hello'],metadata:{command:'echo hello'}};
+  approving.pending.set('root',[request]);
+  approving.context.client={permission:{get:async()=>({...request}),reply:async value=>nativeReplies.push(value)}};
+  const disposeApproval=approvalPlugin.setup(approving.context);
+  approving.emit('permission.asked','approval-event',request);
+  await waitFor(()=>nativeReplies.length===1,'native permission reply not delivered');
+  assert.deepEqual(nativeReplies[0],{sessionID:'root',requestID:request.id,reply:'once'});
+  approving.emit('permission.asked','approval-event',request);
+  await pause();assert.equal(nativeReplies.length,1,'same occurrence not replayed');
+  approving.context.client.permission.get=async()=>({...request,resources:['changed command']});
+  approving.emit('permission.asked','changed-approval-event',request);
+  await pause();assert.equal(nativeReplies.length,1,'changed native request must not be approved');
+  disposeApproval();
   console.log('PASS native adapter contracts: ownership, pending, lifecycle, reload, identity, Pi settled/mode, bridge metadata');
 } finally { delete globalThis.__mobtermFixture; await rm(temp,{recursive:true,force:true}); }

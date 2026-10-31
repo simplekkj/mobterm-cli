@@ -1,0 +1,16 @@
+{
+  "frame": {
+    "v": 2,
+    "pair_id": "pair_fixture_000000000000000001",
+    "request_id": "request_fixture_00000000000001",
+    "digest": "5fe6a6ac84ceae749277b200c5d56af8c9410add8fe00b1542a68c3eb8f64124",
+    "decision_id": "decision_fixture_0000000000001",
+    "action": "allow_once",
+    "policy_generation": 3,
+    "expires_at": 2000000000,
+    "proof": "gSzkAK99g7j55fSCDqvOxB1WEu4VWBVilqCLmSL5rLQ="
+  },
+  "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "operation_json": "{\"agent\":\"codex\",\"allowed_decisions\":[\"allow_once\",\"deny\"],\"created_at\":1999999880,\"expires_at\":2000000000,\"locator\":{\"v\":1,\"installation_id\":\"install_fixture_0000000000000001\",\"backend\":\"tmux\",\"namespace\":\"/tmp/tmux-1000/default\",\"server_identity\":\"1234:1700000000:1700000001\",\"workspace_id\":\"$1\",\"view_id\":\"@2\",\"pane_id\":\"%3\"},\"native_request_id\":\"tool_fixture\",\"request_id\":\"request_fixture_00000000000001\",\"run_id\":\"run_fixture\",\"session_id\":\"session_fixture\",\"tool_input\":{\"command\":\"printf 'hello \\u003cworld\\u003e'\",\"description\":\"Fixture operation\"},\"tool_name\":\"Bash\"}",
+  "operation_sha256": "5fe6a6ac84ceae749277b200c5d56af8c9410add8fe00b1542a68c3eb8f64124"
+}

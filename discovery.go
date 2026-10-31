@@ -16,8 +16,21 @@ func agentDiagnostics(ctx context.Context, s Store) map[string]any {
 	}
 	capabilities := result["capabilities"].(map[string]any)
 	capabilities["target"] = map[string]any{"resolve": true, "tmux_occupant": "tmux-proc-v1"}
-	capabilities["opencode"] = map[string]any{"turn_completed": "session.execution.succeeded: visible root only", "needs_input": []string{"permission.asked", "form.created"}, "managed_hooks": true, "adapter_revision": 1}
-	capabilities["pi"] = map[string]any{"turn_completed": "agent_settled: aborted=false in TUI", "needs_input": false, "reason": "No authoritative pending human-request API", "managed_hooks": true, "adapter_revision": 1}
+	capabilities["opencode"] = map[string]any{"turn_completed": "session.execution.succeeded: visible root only", "needs_input": []string{"permission.asked", "form.created"}, "managed_hooks": true, "adapter_revision": 2}
+	capabilities["pi"] = map[string]any{"turn_completed": "agent_settled: aborted=false in TUI", "needs_input": []string{"ui_prompt_start"}, "reason": "UI prompt observation only; no generic approval reply", "managed_hooks": true, "adapter_revision": 2}
+	for _, agent := range []string{"codex", "claude", "opencode", "pi"} {
+		c := capabilities[agent].(map[string]any)
+		c["run_state"] = "requires_v2_and_loaded_adapter"
+		c["mobile_approval"] = "default_off"
+		if agent == "pi" {
+			c["mobile_approval"] = "unsupported"
+		}
+		c["state_validation_reference"] = agentCompatibilities[agent].reference
+		if agent == "codex" {
+			c["state_validation_reference"] = "0.166.0"
+			c["native_trust"] = "review_required"
+		}
+	}
 	probes := make(chan probeResult, 4)
 	for _, agent := range []string{"codex", "claude", "opencode", "pi"} {
 		go func(agent string) { probes <- probeResult{agent, probeAgent(ctx, agent)} }(agent)

@@ -493,7 +493,11 @@ func deliverOne(ctx context.Context, s Store, a API, d delivery) (map[string]any
 	if !ok || p.Status != "active" {
 		err = errors.New("pair_not_active")
 	} else {
-		response, err = a.request(ctx, p, "POST", "/v1/pairs/"+p.PairID+"/events", claimed.Envelope)
+		path := "/v1/pairs/" + p.PairID + "/events"
+		if claimed.Envelope.V == 2 {
+			path = "/v2/pairs/" + p.PairID + "/events"
+		}
+		response, err = a.request(ctx, p, "POST", path, claimed.Envelope)
 	}
 	// Authentication failures suspend only this pair; network errors never retire it.
 	var authError *APIError

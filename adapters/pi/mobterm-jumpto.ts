@@ -50,8 +50,15 @@ function bridge(source, warn) {
   return {
     enqueue(payload, valid) {
       if (stopped) return;
-      if (queue.length >= 8) { diagnostic(); return; }
-      queue.push({ payload, valid }); queueMicrotask(drain);
+      const critical = ["session.execution.succeeded","session.execution.failed","session.execution.interrupted","permission.asked","form.created","agent_settled","ui_prompt_start"].includes(payload.event);
+      if (queue.length >= 8) {
+        const replace=queue.findIndex(job=>!job.critical);
+        if(critical&&replace>=0)queue.splice(replace,1);else{diagnostic();return;}
+      }
+      const job={payload,valid,critical};
+      // Keep chronological events in a run; reserve capacity by dropping only
+      // intermediate observations, never preempt a pending business reminder.
+      queue.push(job); queueMicrotask(drain);
     },
     cancel() { queue.length = 0; if (active) { active.cancelled = true; clearTimeout(active.timer); active.child.kill("SIGKILL"); } },
     stop() { stopped = true; this.cancel(); },
@@ -75,16 +82,35 @@ export default function mobtermJumpTo(pi) {
     const id = session(ctx);
     if (!alive || ctx.mode !== "tui" || !stableVersion(VERSION, [1, 1, 0]) || !validID(id)) return;
     round = { session: id, id: randomUUID(), epoch, sent: false };
+    send("agent_start", ctx);
+  });
+  const send = (name, ctx, extra = {}) => {
+    const current = round;
+    if (!alive || ctx.mode !== "tui" || !current || current.epoch !== epoch || session(ctx) !== current.session) return;
+    transport.enqueue({ adapter_revision: 2, runtime_version: VERSION, event: name,
+      session_id: current.session, run_id: current.id, event_id: randomUUID(), instance_id: instance, ...extra },
+      () => alive && ctx.mode === "tui" && epoch === current.epoch && session(ctx) === current.session);
+  };
+  pi.on("tool_execution_start", (event, ctx) => {
+    if (validID(event.toolCallId) && typeof event.toolName === "string")
+      send("tool_execution_start", ctx, {tool_id:event.toolCallId,tool_name:event.toolName});
+  });
+  pi.on("tool_execution_end", (event, ctx) => {
+    if (validID(event.toolCallId) && typeof event.toolName === "string" && typeof event.isError === "boolean")
+      send("tool_execution_end", ctx, {tool_id:event.toolCallId,tool_name:event.toolName,tool_status:event.isError?"failed":"succeeded"});
+  });
+  for (const name of ["ui_prompt_start", "ui_prompt_end"]) pi.on(name, (event,ctx) => {
+    if (event.reason === "ui_prompt" && ["select","confirm","input","editor","custom"].includes(event.kind)) send(name,ctx);
   });
   pi.on("agent_settled", (event, ctx) => {
     context = ctx;
     const current = round;
-    if (event.aborted !== false) { round = undefined; return; }
+    if (typeof event.aborted !== "boolean") return;
     if (!alive || ctx.mode !== "tui" || !current || current.sent ||
         current.epoch !== epoch || session(ctx) !== current.session) return;
     current.sent = true;
-    transport.enqueue({ adapter_revision: 1, runtime_version: VERSION, event: "agent_settled",
-      session_id: current.session, event_id: current.id, instance_id: instance, aborted: false },
-      () => alive && ctx.mode === "tui" && epoch === current.epoch && round === current && session(ctx) === current.session);
+    transport.enqueue({ adapter_revision: 2, runtime_version: VERSION, event: "agent_settled",
+      session_id: current.session, run_id: current.id, event_id: current.id, instance_id: instance, aborted: event.aborted },
+      () => alive && ctx.mode === "tui" && epoch === current.epoch && session(ctx) === current.session);
   });
 }

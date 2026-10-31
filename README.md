@@ -130,20 +130,33 @@ mobterm-cli status --json
 mobterm-cli test --pair PAIR_ID --json
 ```
 
-Restart Agent sessions after hook installation. Codex uses its native final-turn
-`notify`. Claude uses `UserPromptSubmit` and a narrow `Notification` matcher;
-completion is the native delayed `idle_prompt`, never `Stop`. Hook installation
-does not change a user's Stop hooks or tool approval decisions. Herdr uses these
+Restart Agent sessions after hook installation. Codex retains native final-turn
+`notify` as its single completion source; verified 0.166.0+ installations also add
+owned native observation and PermissionRequest hooks, requiring native `/hooks`
+review before activation. Claude adds tool and PermissionRequest observation;
+completion is delayed `idle_prompt` associated with the current prompt cycle and
+its Stop, never Stop alone. Existing user hooks and decisions are preserved. Herdr uses these
 same native Agent hooks, with an explicit structured terminal query. No second
 Herdr event forwarder is installed.
 
 OpenCode uses a TUI-only plugin: only successful completion of the currently
 visible root session and verified pending permission/form requests in its family
-are forwarded. Background tabs, child completion, failed/interrupted execution,
-and non-TUI frontends are excluded. Pi uses a TUI extension and forwards only
-final `agent_settled` with explicit `aborted:false` after an observed start.
-Pi does not support `needs_input`: its public API cannot reliably confirm an
-outstanding human request. Neither source reads prompt, responses or transcripts.
+form completion/wait reminders. Revision 2 also records native start, tool,
+failure and interruption observations; background roots, child completion and
+non-TUI frontends remain excluded. Pi records native start/tool/UI-prompt
+intervals and final `agent_settled`; only explicit aborted=true is interruption.
+Pi prompt observation does not provide a native approval handle. Neither source
+reads prompts, responses or transcripts. Ordinary state updates do not push or
+increase unread; abnormal-end reminders are opt-in.
+
+The [v2 protocol](docs/protocol-v2.md) negotiates state/inbox support before
+sending. New App notification taps open details; terminal navigation is explicit.
+API stores finite ciphertext history and supplies an absolute badge. Mobile
+approval is separately opt-in per Pair/Agent, default off, and uses trusted SSH
+inspect plus an authenticated one-time decision. It never injects terminal keys,
+changes tool input, or grants permanent/session permissions. Read, approve and
+terminal navigation are separate actions. Native trust/loading, server admission,
+APNs acceptance and actual device display are separate evidence.
 
 Successful new-source installation returns `activation: restart_required`: files
 are configured, but the Agent must restart/reload. `hooks` booleans describe

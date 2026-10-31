@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -22,6 +23,7 @@ type HookRecord struct {
 	Managed     string            `json:"managed"`
 	Chain       []string          `json:"chain,omitempty"`
 	ClaudeOwned map[string]string `json:"claude_owned,omitempty"`
+	CodexNative string            `json:"codex_native,omitempty"`
 }
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
@@ -56,9 +58,23 @@ func changeHooks(ctx context.Context, s Store, agent, action, path, executable s
 	if action != "install" && action != "uninstall" {
 		return errors.New("use hooks install or uninstall")
 	}
+	installCodexNative := false
+	installClaudeNative := !checkVersion
 	if checkVersion && action == "install" {
-		if err := hookVersions(ctx, agent); err != nil {
-			return err
+		if agent == "codex" {
+			probe := probeAgent(ctx, agent)
+			if probe.reason != "" || probe.status != probeOK {
+				return fmt.Errorf("%s requires stable >=%s: %s; hook configuration unchanged", agent, agentCompatibilities[agent].minimum, probe.reason)
+			}
+			installCodexNative = codexNativeVersion(probe.actual)
+		} else {
+			probe := probeAgent(ctx, agent)
+			if probe.reason != "" || probe.status != probeOK {
+				return fmt.Errorf("%s requires stable >=%s: %s; hook configuration unchanged", agent, agentCompatibilities[agent].minimum, probe.reason)
+			}
+			policy := agentCompatibilities["claude"]
+			policy.minimum = stableVersion{2, 1, 301}
+			installClaudeNative = policy.evaluate(probe.actual) == ""
 		}
 	}
 	if path == "" {
@@ -132,7 +148,7 @@ func changeHooks(ctx context.Context, s Store, agent, action, path, executable s
 	// an unfinished operation only when the exact original fragment and argv
 	// agree; unrelated content is retained. Claude's old records lack this proof.
 	legacyRestored := false
-	if agent == "codex" && record.Managed != "" && record.Original != "" {
+	if agent == "codex" && record.Managed != "" && record.Original != "" && record.CodexNative == "" {
 		start, end, argv, e := rootNotify(data)
 		legacyRestored = e == nil && start >= 0 && string(data[start:end]) == record.Original && reflect.DeepEqual(argv, record.Chain)
 		if legacyRestored {
@@ -141,9 +157,9 @@ func changeHooks(ctx context.Context, s Store, agent, action, path, executable s
 	}
 	var result []byte
 	if agent == "codex" {
-		result, record, err = editCodex(data, action, path, executable, record)
+		result, record, err = editCodexWithNative(data, action, path, executable, record, installCodexNative)
 	} else {
-		result, record, err = editClaude(data, action, path, executable, record)
+		result, record, err = editClaudeWithNative(data, action, path, executable, record, installClaudeNative)
 	}
 	if err != nil {
 		return err
@@ -274,6 +290,9 @@ func editCodex(data []byte, action, path, executable string, r HookRecord) ([]by
 	return append([]byte(managed), data...), r, nil
 }
 func editClaude(data []byte, action, path, executable string, r HookRecord) ([]byte, HookRecord, error) {
+	return editClaudeWithNative(data, action, path, executable, r, true)
+}
+func editClaudeWithNative(data []byte, action, path, executable string, r HookRecord, native bool) ([]byte, HookRecord, error) {
 	if r.Managed != "" && r.ClaudeOwned == nil {
 		return nil, r, errors.New("legacy Claude hook ownership is unknown; manually review hooks before reinstalling or removing; config left unchanged")
 	}
@@ -307,9 +326,15 @@ func editClaude(data []byte, action, path, executable string, r HookRecord) ([]b
 	if r.Managed != "" {
 		command = r.Managed
 	}
+	// Preserve the owned executable on repeat installs, just as the original
+	// notify entry does. A different caller binary must not look like user edits.
+	managedExecutable := strings.TrimSuffix(command, " notify --source claude")
 	events := []struct{ name, matcher string }{
 		{"UserPromptSubmit", ""},
 		{"Notification", "^(permission_prompt|elicitation_dialog|idle_prompt)$"},
+	}
+	if native || r.ClaudeOwned["PermissionRequest"] != "" {
+		events = append(events, []struct{ name, matcher string }{{"PreToolUse", ""}, {"PostToolUse", ""}, {"PostToolUseFailure", ""}, {"PermissionRequest", ""}, {"Stop", ""}}...)
 	}
 	if r.Managed != "" {
 		for event, entries := range hooks {
@@ -319,7 +344,8 @@ func editClaude(data []byte, action, path, executable string, r HookRecord) ([]b
 				for _, cmd := range cmds {
 					var text string
 					_ = json.Unmarshal(cmd["command"], &text)
-					if text == command && (event != "UserPromptSubmit" && event != "Notification") || text != command && looksManagedClaude(text, command) {
+					validManaged := text == command && (event == "UserPromptSubmit" || event == "Notification") || text == managedExecutable+" observe --source claude" && (event == "PreToolUse" || event == "PostToolUse" || event == "PostToolUseFailure" || event == "Stop") || text == managedExecutable+" approval wait --source claude" && event == "PermissionRequest"
+					if !validManaged && looksManagedClaude(text, command) {
 						return nil, r, errors.New("managed Claude command was moved or modified; config unchanged")
 					}
 				}
@@ -330,9 +356,17 @@ func editClaude(data []byte, action, path, executable string, r HookRecord) ([]b
 	for event, entry := range r.ClaudeOwned {
 		owned[event] = entry
 	}
-	managedCommand, _ := json.Marshal(map[string]any{"type": "command", "command": command, "timeout": 10})
 	changed := false
 	for _, event := range events {
+		eventCommand := command
+		timeout := 10
+		if event.name == "PermissionRequest" {
+			eventCommand = managedExecutable + " approval wait --source claude"
+			timeout = 130
+		} else if event.name != "UserPromptSubmit" && event.name != "Notification" {
+			eventCommand = managedExecutable + " observe --source claude"
+		}
+		managedCommand, _ := json.Marshal(map[string]any{"type": "command", "command": eventCommand, "timeout": timeout})
 		managedEntry := map[string]json.RawMessage{"hooks": json.RawMessage("[" + string(managedCommand) + "]")}
 		if event.matcher != "" {
 			managedEntry["matcher"], _ = json.Marshal(event.matcher)
@@ -360,7 +394,7 @@ func editClaude(data []byte, action, path, executable string, r HookRecord) ([]b
 				}
 				var text string
 				_ = json.Unmarshal(cmd["command"], &text)
-				if text == command {
+				if text == eventCommand {
 					found = true
 					if expected != nil {
 						ownedMatches++

@@ -47,13 +47,16 @@ type Locator struct {
 	OccupantID     string `json:"occupant_id,omitempty"`
 }
 type Envelope struct {
-	V          int    `json:"v"`
-	PairID     string `json:"pair_id"`
-	EventID    string `json:"event_id"`
-	Kind       string `json:"kind"`
-	ExpiresAt  int64  `json:"expires_at"`
-	Nonce      string `json:"nonce"`
-	Ciphertext string `json:"ciphertext"`
+	V                    int    `json:"v"`
+	PairID               string `json:"pair_id"`
+	EventID              string `json:"event_id"`
+	Kind                 string `json:"kind"`
+	ExpiresAt            int64  `json:"expires_at"`
+	Nonce                string `json:"nonce"`
+	Ciphertext           string `json:"ciphertext"`
+	StreamID             string `json:"stream_id,omitempty"`
+	Revision             int64  `json:"revision,omitempty"`
+	CapabilityGeneration int64  `json:"capability_generation,omitempty"`
 }
 
 func randomID() string {
@@ -65,6 +68,9 @@ func randomID() string {
 }
 func digest(s string) string { b := sha256.Sum256([]byte(s)); return hex.EncodeToString(b[:]) }
 func (e Envelope) aad() []byte {
+	if e.V == 2 {
+		return e.aadV2()
+	}
 	return []byte(fmt.Sprintf("mobterm/1\n%s\n%s\n%s\n%d", e.PairID, e.EventID, e.Kind, e.ExpiresAt))
 }
 func decode64(s string, n int) ([]byte, error) {

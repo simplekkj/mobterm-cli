@@ -144,6 +144,12 @@ func commandTimeout(args []string) time.Duration {
 		return 10 * time.Second
 	}
 	switch args[0] {
+	case "activity":
+		return 5 * time.Second
+	case "observe":
+		return 2 * time.Second
+	case "approval":
+		return 125 * time.Second
 	case "upgrade":
 		return 2 * time.Minute
 	case "setup", "notify", "test":
@@ -196,6 +202,46 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	a := newAPI()
 	var value any
 	switch args[0] {
+	case "activity":
+		if len(args) != 2 || args[1] != "flush" {
+			return 1
+		}
+		if flushRunSnapshots(ctx, s, a) != nil {
+			return 1
+		}
+		return 0
+	case "observe":
+		var source string
+		f, e := flags("observe", args[1:], func(f *flag.FlagSet) { f.StringVar(&source, "source", "", "") })
+		if e != nil || f.NArg() != 0 {
+			return 0
+		}
+		raw, e := readHook(in)
+		if e != nil {
+			return 0
+		}
+		value, err = observe(ctx, s, a, source, raw)
+		if value != nil {
+			printJSON(out, value)
+		}
+		return 0
+	case "approval":
+		if len(args) == 4 && args[1] == "wait" && args[2] == "--source" {
+			raw, e := readHook(in)
+			if e != nil {
+				return 0
+			}
+			value, err = observe(ctx, s, a, args[3], raw)
+			if value != nil {
+				printJSON(out, value)
+			}
+			return 0
+		}
+		if len(args) != 3 || args[2] != "--stdin-frame" {
+			err = errors.New("approval_requires_frame")
+		} else {
+			value, err = approvalCommand(ctx, s, a, args[1], in)
+		}
 	case "setup":
 		var framed bool
 		f, e := flags("setup", args[1:], func(f *flag.FlagSet) { f.BoolVar(&framed, "stdin-frame", false, "") })
@@ -256,6 +302,11 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 			value, err = outboxSummary(ctx, s, pair)
 		} else {
 			value, err = flushOutbox(ctx, s, a, pair, args[1] == "refresh")
+			if pair == "" {
+				if activityErr := flushRunSnapshots(ctx, s, a); err == nil {
+					err = activityErr
+				}
+			}
 		}
 	case "pairs":
 		if len(args) >= 2 && args[1] == "retire" {
@@ -319,6 +370,12 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		receipt := map[string]any{"v": 1, "agent": agent, "action": args[1], "ok": err == nil}
 		if err == nil && args[1] == "install" && (agent == "opencode" || agent == "pi") {
 			receipt["activation"] = "restart_required"
+		}
+		if err == nil && args[1] == "install" && agent == "codex" {
+			var record HookRecord
+			if s.readJSON("hooks-codex.json", &record) == nil && record.CodexNative != "" {
+				receipt["activation"] = "native_review_required"
+			}
 		}
 		value = receipt
 	case "notify":

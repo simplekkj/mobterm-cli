@@ -38,7 +38,7 @@ assert.deepEqual(result.errors,[]);
 assert.equal(result.extensions.length,1);
 for(const event of ['session_start','session_shutdown','agent_start','agent_settled'])
   assert.equal(result.extensions[0].handlers.get(event).length,1);
-assert.equal(result.extensions[0].handlers.has('ui_prompt_start'),false);
+assert.equal(result.extensions[0].handlers.has('ui_prompt_start'),true);
 console.log('PASS Pi official discovery/import/registration '+api.VERSION);
 ''')
         subprocess.run(['node',str(check),str(package),version],env=env,cwd=root/'cwd',check=True,timeout=60)
@@ -65,7 +65,7 @@ export default function(pi) {
                     except OSError:break
             if not marker.exists():raise RuntimeError('Pi TUI did not load extension: '+repr(tail))
             result=json.loads(marker.read_text())
-            assert result=={'version':version,'mode':'tui','listeners':4},result
+            assert result=={'version':version,'mode':'tui','listeners':8},result
             print('PASS Pi actual TUI session_start',result)
         finally:
             if proc.poll() is None:os.killpg(proc.pid,signal.SIGTERM)
@@ -101,7 +101,7 @@ export default {...plugin,setup(context){
                         except OSError:break
                 if not marker.exists(): raise RuntimeError('official TUI did not load plugin; isolated output: '+repr(tail))
                 result=json.loads(marker.read_text())
-                assert result['version']==version and result['listeners']==9,result
+                assert result['version']==version and result['listeners']==13,result
                 print('PASS OpenCode official TUI setup/restart',result)
             finally:
                 if proc.poll() is None:os.killpg(proc.pid,signal.SIGTERM)

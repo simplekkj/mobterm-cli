@@ -9,8 +9,12 @@ Only routing metadata (opaque IDs, event kind, expiry, ciphertext length) reache
 the API/APNs. Encryption does not hide timing, kind, or traffic volume. Server,
 username and terminal coordinates remain in the encrypted/local parts. Native
 Agent payloads may include responses, prompts, tool arguments and transcript
-paths; only explicit lifecycle fields are decoded, and transcript files are never
-opened. No such content is persisted or sent.
+paths; ordinary observations decode only explicit lifecycle fields and never open
+transcript files. The opt-in [v2 approval bridge](protocol-v2.md) additionally keeps
+a bounded full native operation snapshot locally for the short-lived waiter;
+only explicit SSH inspect reads it. It is never included in API/APNs, and terminal
+request transitions scrub it. If a process is killed, the next local approval
+cleanup scrubs expired snapshots; no background cleanup daemon is promised.
 
 The native Codex notify interface itself puts its JSON input in argv. The CLI
 cannot change that upstream contract and preserves it when composing a user's
@@ -35,7 +39,10 @@ budget on an independent transport. Default proxy rules, certificate verificatio
 and redirect refusal remain unchanged. Shorter parent deadlines and cancellation
 still win, with the final parent-context second reserved for persistence.
 Local-only commands retain their ten-second budget; upgrade retains two
-minutes. Existing Agent-managed hook timeouts can cancel the CLI earlier; upgrading
+minutes. v2 observation uses a two-second budget; permission wait has an absolute
+120-second request budget within a configured 130-second host deadline. A disabled
+permission hook returns after durable observation and may launch one five-second
+short-lived drain child; it does not wait for HTTP. Existing Agent-managed hook timeouts can cancel the CLI earlier; upgrading
 the binary does not change installed Agent configuration or adapter deadlines. Each new delivery makes one immediate POST; later events or explicit
 flush can recover up to 32 due deliveries, with at most four requests at once.
 A delivery reserves at most 12 POST attempts across calls. Durable owner leases
@@ -66,3 +73,13 @@ Optional Agent metadata stays inside authenticated ciphertext and outside target
 identity comparisons. Existing public envelope/AAD and credential separation
 remain unchanged. Local retired-pair summaries contain only digests, status and
 time, and never sending tokens or encryption keys.
+
+V2 state indexes additionally expose an opaque random Pair-scoped stream ID and
+monotonic revision. Finite encrypted state/reminder retention and per-device
+read/badge bookkeeping are described in protocol-v2. SSH approval actions require
+a purpose-separated HKDF/HMAC proof, the exact full-operation digest, live waiter,
+strong target and current Pair eligibility at submission and consumption. This
+does not isolate an attacker already controlling the same SSH account or make
+cloud revocation and native consumption atomic. A submitted decision is not proof
+of successful native execution; forms, Pi prompts and unverifiable inputs retain
+terminal handling. Neither approval nor release writes keys into a terminal.

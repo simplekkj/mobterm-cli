@@ -18,7 +18,7 @@ import (
 //go:embed adapters/opencode/package.json adapters/opencode/tui.js adapters/pi/mobterm-jumpto.ts
 var nativeAssets embed.FS
 
-const nativeAdapterRevision = 1
+const nativeAdapterRevision = 2
 
 type nativeOwnedFile struct {
 	SHA         string `json:"sha256"`

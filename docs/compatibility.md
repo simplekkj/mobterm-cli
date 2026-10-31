@@ -272,8 +272,8 @@ trailing commas, plugin ordering and unrelated settings remain intact.
 
 Only `session.execution.succeeded` from the current visible root is completion.
 A readable parent chain and the host root/family must agree. Child completion,
-failed/interrupted execution, unknown/global owners and background roots are
-ignored. `permission.asked` / `form.created` require the exact request to remain
+unknown/global owners and background roots are ignored. Revision 2 separately
+records explicit failed/interrupted lifecycle events; they never become success. `permission.asked` / `form.created` require the exact request to remain
 in the official pending list in the same root family and location. Unavailable
 pending data is skipped, not inferred from text or a timer. Reply/cancel events,
 route changes and lifecycle generations invalidate queued work. No internal tab
@@ -293,8 +293,9 @@ The extension uses host-resolved `VERSION`, `ctx.mode === "tui"`,
 Only explicit `aborted:false` completes. Retry/compaction/continuation intermediate
 end events are not subscribed. Session switch/reload/shutdown invalidates pending
 associations; a half-turn after reload produces no historical notification.
-`needs_input:false` is intentional: public prompt start/end events have no stable
-request ID or reliable active-request query. `hasUI` alone is insufficient because
+Revision 2 observes native `ui_prompt_start/end` intervals as waiting input;
+these events have no general native reply handle, so mobile approval remains
+unavailable for Pi. `hasUI` alone is insufficient because
 RPC can have UI. Fork/resume parent history is not treated as a background agent.
 A non-aborted settled can follow a final error: the message means a turn ended,
 not that the user's task succeeded.
@@ -368,3 +369,39 @@ remain intact for diagnosis. If the configuration already matches the committed
 after-state, recovery finishes ownership/journal cleanup without rewriting the
 file or changing its current permissions. Read-only health never resumes writes;
 OpenCode/Pi recovery and the journal format remain unchanged.
+
+
+## Negotiated state and approval (2026-10-31)
+
+[Protocol v2](protocol-v2.md) retains the legacy completion gates above while
+adding separately validated native behavior. Codex 0.166.0 is the validation
+baseline for UserPromptSubmit, PreToolUse, PostToolUse, PermissionRequest,
+Interrupt and SessionStart/End; it is not asserted to be the first supporting
+release. `notify` remains the sole completion source. PreToolUse is pending,
+not proof of execution; tool returns are not proof of task success. The owned
+inline TOML block preserves unrelated config and notify argv. Native trust and
+disabled hooks settings are never changed; health reports review/restart needs.
+
+Claude 2.1.301 is the current fixed schema reference for tool observations and
+PermissionRequest. Stop records a cycle boundary without completing the run;
+only idle for that still-current stopped cycle completes it. A late prior-cycle
+idle after the next prompt is ignored. Generic permission/elicitation callbacks
+without request identities are not heuristically merged with different requests.
+OpenCode 2.0.0/2.1.0 fixed public client types provide execution lifecycle,
+`session.tool.input.started/called/success/failed`, exact pending PermissionRequest
+and `context.client.permission.get/reply` (`once`/`reject`). Pi 1.3.0 fixed types
+provide toolCallId/isError and UI prompt observation. Neither tool failures nor
+Pi non-aborted settlement proves the user's task succeeded.
+
+Adapter revision 1 input remains accepted by the original v1 path. Revision 2
+requires explicit run/instance/occurrence metadata and keeps active tool identity.
+Host-loaded version, installed assets, restart, native trust, App/API capability
+and per-Agent approval opt-in are distinct facts. No test below installs hooks in
+real user config or authorizes a model request. See current validation for actual
+local fixture and host execution evidence, rather than assuming version probing
+proves an event or approval was consumed.
+
+Official sources read this round: [Codex Hooks](https://learn.chatgpt.com/docs/hooks),
+[Claude Hooks](https://code.claude.com/docs/en/hooks),
+[OpenCode fixed client types](https://github.com/anomalyco/opencode/blob/63f7ceecbed2d7d9a627518d935dd963b9d4ac9f/packages/client/src/promise/generated/types.ts),
+[Pi fixed extension types](https://github.com/earendil-works/pi/blob/35dfa757378bd7a8570670e99c2687bdd1039a06/packages/coding-agent/src/core/extensions/types.ts).

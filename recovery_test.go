@@ -390,7 +390,7 @@ func TestNativePendingRecoveryActionsRemainReachable(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			record := nativeHookRecord{V: 1, Agent: agent, Path: path, Reference: reference, Executable: cli, Store: s.Dir, Revision: 1, Pending: "install", Files: map[string]nativeOwnedFile{}}
+			record := nativeHookRecord{V: 1, Agent: agent, Path: path, Reference: reference, Executable: cli, Store: s.Dir, Revision: nativeAdapterRevision, Pending: "install", Files: map[string]nativeOwnedFile{}}
 			for asset, data := range files {
 				record.Files[asset] = nativeOwnedFile{SHA: nativeDigest(data)}
 			}

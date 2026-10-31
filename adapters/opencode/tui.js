@@ -49,8 +49,15 @@ function bridge(source, warn) {
   return {
     enqueue(payload, valid) {
       if (stopped) return;
-      if (queue.length >= 8) { diagnostic(); return; }
-      queue.push({ payload, valid }); queueMicrotask(drain);
+      const critical = ["session.execution.succeeded","session.execution.failed","session.execution.interrupted","permission.asked","form.created","agent_settled","ui_prompt_start"].includes(payload.event);
+      if (queue.length >= 8) {
+        const replace=queue.findIndex(job=>!job.critical);
+        if(critical&&replace>=0)queue.splice(replace,1);else{diagnostic();return;}
+      }
+      const job={payload,valid,critical};
+      // Keep chronological events in a run; reserve capacity by dropping only
+      // intermediate observations, never preempt a pending business reminder.
+      queue.push(job); queueMicrotask(drain);
     },
     cancel() { queue.length = 0; if (active) { active.cancelled = true; clearTimeout(active.timer); active.child.kill("SIGKILL"); } },
     stop() { stopped = true; this.cancel(); },
@@ -69,6 +76,8 @@ export default Plugin.define({
     });
     let alive = true, routeEpoch = 0, previousRoute;
     const lifecycles = new Map();
+    const tools = new Map();
+    const approvalChildren = new Map();
     const resolved = new Set();
     const transport = bridge("opencode", () => context.ui.toast.show({
       title: "MobTerm", message: "Notification unavailable. Check MobTerm integration.", variant: "warning",
@@ -98,13 +107,64 @@ export default Plugin.define({
       if (!validID(sessionID)) return;
       const previous = lifecycles.get(sessionID);
       lifecycles.delete(sessionID);
-      lifecycles.set(sessionID, { generation: (previous?.generation ?? 0) + 1, terminal });
+      lifecycles.set(sessionID, { generation: (previous?.generation ?? 0) + 1, terminal, run: terminal ? previous?.run ?? randomUUID() : randomUUID() });
       if (lifecycles.size > 512) lifecycles.delete(lifecycles.keys().next().value);
     };
     const clearRequest = (event, id) => {
       if (!validID(id) || !validID(event.data.sessionID)) return;
       resolved.add(event.data.sessionID + ":" + id);
+      approvalChildren.get(event.data.sessionID + ":" + id)?.kill("SIGTERM");
+      approvalChildren.delete(event.data.sessionID + ":" + id);
       if (resolved.size > 512) resolved.delete(resolved.values().next().value);
+    };
+    const state = (event, name, extra = {}) => {
+      const sessionID = event.data?.sessionID;
+      if (!alive || !validID(event.id) || !validID(sessionID) || root(route()) !== sessionID || root(sessionID) !== sessionID) return;
+      const current = lifecycles.get(sessionID);
+      if (!current?.run) return;
+      const epoch = routeEpoch, location = locationKey(context.data.session.get(sessionID)?.location);
+      if (event.location && locationKey(event.location) !== location) return;
+      transport.enqueue({adapter_revision:2,runtime_version:version,event:name,session_id:sessionID,
+        run_id:current.run,event_id:event.id,instance_id:memory.instance,...extra},
+        () => alive && epoch === routeEpoch && root(route()) === sessionID && locationKey(context.data.session.get(sessionID)?.location) === location);
+    };
+    const stableJSON = value => {
+      if (Array.isArray(value)) return "["+value.map(stableJSON).join(",")+"]";
+      if (value && typeof value === "object") return "{"+Object.keys(value).sort().map(k=>JSON.stringify(k)+":"+stableJSON(value[k])).join(",")+"}";
+      return JSON.stringify(value);
+    };
+    const startApproval = (payload, requestID, location, valid) => {
+      const sessionID=payload.session_id, key=sessionID+":"+requestID;
+      const pending=context.data.session.permission.list(sessionID)?.find(r=>r.id===requestID&&r.sessionID===sessionID);
+      if (!pending || typeof pending.action!=="string" || !Array.isArray(pending.resources) || !pending.resources.every(x=>typeof x==="string")) {
+        transport.enqueue(payload,valid); return;
+      }
+      const snapshot=stableJSON(pending);
+      if (Buffer.byteLength(snapshot)>6144 || approvalChildren.has(key) || approvalChildren.size>=8) {transport.enqueue(payload,valid);return;}
+      const body=JSON.stringify({...payload,hook_event_name:"PermissionRequest",tool_name:"permission",tool_use_id:requestID,tool_input:pending});
+      try {
+        const child=spawn(executable,["approval","wait","--source","opencode"],{env:{...process.env,MOBTERM_CONFIG_DIR:store},stdio:["pipe","pipe","ignore"],shell:false});
+        approvalChildren.set(key,child);
+        let output="",overflow=false;
+        const timer=setTimeout(()=>child.kill("SIGTERM"),125000);
+        child.stdout.on("data",bytes=>{output+=bytes;if(Buffer.byteLength(output)>4096){overflow=true;child.kill("SIGTERM");}});
+        child.on("error",()=>{});
+        child.stdin.on("error",()=>child.kill("SIGTERM"));
+        child.once("close",async code=>{
+          clearTimeout(timer);if(approvalChildren.get(key)===child)approvalChildren.delete(key);
+          if(code!==0||overflow||!valid())return;
+          try {
+            const result=JSON.parse(output);
+            if(!Number.isSafeInteger(result.expires_at)||Date.now()>=result.expires_at*1000)return;
+            const behavior=result.hookSpecificOutput?.decision?.behavior;
+            if(behavior!=="allow"&&behavior!=="deny")return;
+            const current=await context.client.permission.get({sessionID,requestID});
+            if(!valid()||Date.now()>=result.expires_at*1000||stableJSON(current)!==snapshot)return;
+            await context.client.permission.reply({sessionID,requestID,reply:behavior==="allow"?"once":"reject"});
+          }catch{/* An ambiguous native result is never replayed. */}
+        });
+        child.stdin.end(body);
+      }catch{transport.enqueue(payload,valid);}
     };
     const handle = (event) => {
       try {
@@ -138,8 +198,11 @@ export default Plugin.define({
         // The official lists are pending-only. Unknown/not-yet-synced requests are skipped.
         if (!valid()) return;
         remember(event.id);
-        transport.enqueue({ adapter_revision: 1, runtime_version: version, event: nativeType,
-          session_id: sessionID, event_id: event.id, instance_id: memory.instance }, valid);
+        const runID = lifecycles.get(eventRoot)?.run ?? generation?.run ?? randomUUID();
+        const payload = { adapter_revision: 2, runtime_version: version, event: nativeType,
+          session_id: sessionID, run_id: runID, event_id: event.id, instance_id: memory.instance };
+        if (nativeType === "permission.asked") startApproval(payload, requestID, eventLocation, valid);
+        else transport.enqueue(payload, valid);
       } catch { /* A changed upstream schema must never interrupt the TUI. */ }
     };
     const dispose = [];
@@ -147,6 +210,7 @@ export default Plugin.define({
     const cleanup = () => {
       if (!alive) return;
       alive = false; routeEpoch++; transport.stop();
+      for(const child of approvalChildren.values())child.kill("SIGTERM"); approvalChildren.clear();
       disposeRoute?.();
       for (const unsubscribe of dispose.splice(0).reverse()) {
         try { unsubscribe(); } catch { /* Continue releasing the other listeners. */ }
@@ -158,14 +222,18 @@ export default Plugin.define({
         disposeRoute = release;
         createEffect(() => {
           const current = route();
-          if (current !== previousRoute) { previousRoute = current; routeEpoch++; transport.cancel(); }
+          if (current !== previousRoute) { previousRoute = current; routeEpoch++; transport.cancel(); for(const child of approvalChildren.values())child.kill("SIGTERM"); approvalChildren.clear(); }
         });
       });
       for (const [type, handler] of [
-        ["session.execution.started", (event) => { if (validID(event.id)) lifecycle(event.data.sessionID, false); }],
-        ["session.execution.failed", (event) => lifecycle(event.data.sessionID, true)],
-        ["session.execution.interrupted", (event) => lifecycle(event.data.sessionID, true)],
+        ["session.execution.started", (event) => { if (validID(event.id)) {lifecycle(event.data.sessionID, false);state(event,event.type);} }],
+        ["session.execution.failed", (event) => {state(event,event.type);lifecycle(event.data.sessionID,true);}],
+        ["session.execution.interrupted", (event) => {state(event,event.type);lifecycle(event.data.sessionID,true);}],
         ["session.execution.succeeded", handle],
+        ["session.tool.input.started", event => {if(validID(event.data.id)&&typeof event.data.name==="string"){tools.set(event.data.id,event.data.name);if(tools.size>128)tools.delete(tools.keys().next().value);state(event,"tool_pending",{tool_id:event.data.id,tool_name:event.data.name});}}],
+        ["session.tool.called", event => {if(validID(event.data.id))state(event,event.data.executed===true?"tool_execution_start":"tool_pending",{tool_id:event.data.id,tool_name:tools.get(event.data.id)??"other"});}],
+        ["session.tool.success", event => {if(validID(event.data.id))state(event,"tool_execution_end",{tool_id:event.data.id,tool_name:tools.get(event.data.id)??"other",tool_status:"succeeded"});}],
+        ["session.tool.failed", event => {if(validID(event.data.id))state(event,"tool_execution_end",{tool_id:event.data.id,tool_name:tools.get(event.data.id)??"other",tool_status:"failed"});}],
         ["permission.asked", handle],
         ["form.created", handle],
         ["permission.replied", (event) => clearRequest(event, event.data.requestID)],

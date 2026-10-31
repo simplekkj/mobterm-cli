@@ -1,0 +1,303 @@
+[
+  {
+    "source": "codex",
+    "version": "0.166.0",
+    "payload": {
+      "session_id": "fixture-session",
+      "turn_id": "fixture-turn",
+      "hook_event_name": "UserPromptSubmit",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "printf fixture"
+      }
+    },
+    "state": "starting"
+  },
+  {
+    "source": "codex",
+    "version": "0.166.0",
+    "payload": {
+      "session_id": "fixture-session",
+      "turn_id": "fixture-turn",
+      "hook_event_name": "PreToolUse",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "printf fixture"
+      }
+    },
+    "state": "tool_pending"
+  },
+  {
+    "source": "codex",
+    "version": "0.166.0",
+    "payload": {
+      "session_id": "fixture-session",
+      "turn_id": "fixture-turn",
+      "hook_event_name": "PostToolUse",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "printf fixture"
+      }
+    },
+    "state": "running"
+  },
+  {
+    "source": "codex",
+    "version": "0.166.0",
+    "payload": {
+      "session_id": "fixture-session",
+      "turn_id": "fixture-turn",
+      "hook_event_name": "Interrupt",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "printf fixture"
+      }
+    },
+    "state": "interrupted"
+  },
+  {
+    "source": "codex",
+    "version": "0.166.0",
+    "payload": {
+      "session_id": "fixture-session",
+      "turn_id": "fixture-turn",
+      "hook_event_name": "PermissionRequest",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "printf fixture"
+      }
+    },
+    "state": "waiting_approval"
+  },
+  {
+    "source": "claude",
+    "version": "2.1.301",
+    "payload": {
+      "session_id": "fixture-session",
+      "hook_event_name": "PreToolUse",
+      "tool_use_id": "tool-fixture",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "printf fixture"
+      }
+    },
+    "state": "tool_pending"
+  },
+  {
+    "source": "claude",
+    "version": "2.1.301",
+    "payload": {
+      "session_id": "fixture-session",
+      "hook_event_name": "PostToolUse",
+      "tool_use_id": "tool-fixture",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "printf fixture"
+      }
+    },
+    "state": "running"
+  },
+  {
+    "source": "claude",
+    "version": "2.1.301",
+    "payload": {
+      "session_id": "fixture-session",
+      "hook_event_name": "PostToolUseFailure",
+      "tool_use_id": "tool-fixture",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "printf fixture"
+      }
+    },
+    "state": "running"
+  },
+  {
+    "source": "claude",
+    "version": "2.1.301",
+    "payload": {
+      "session_id": "fixture-session",
+      "hook_event_name": "PermissionRequest",
+      "tool_use_id": "tool-fixture",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "printf fixture"
+      }
+    },
+    "state": "waiting_approval"
+  },
+  {
+    "source": "opencode",
+    "version": "2.1.0",
+    "payload": {
+      "adapter_revision": 2,
+      "runtime_version": "2.1.0",
+      "session_id": "fixture-session",
+      "run_id": "fixture-run",
+      "instance_id": "fixture-instance",
+      "event_id": "fixture-occurrence",
+      "event": "session.execution.started"
+    },
+    "state": "running"
+  },
+  {
+    "source": "opencode",
+    "version": "2.1.0",
+    "payload": {
+      "adapter_revision": 2,
+      "runtime_version": "2.1.0",
+      "session_id": "fixture-session",
+      "run_id": "fixture-run",
+      "instance_id": "fixture-instance",
+      "event_id": "fixture-occurrence",
+      "event": "session.execution.succeeded"
+    },
+    "state": "turn_completed"
+  },
+  {
+    "source": "opencode",
+    "version": "2.1.0",
+    "payload": {
+      "adapter_revision": 2,
+      "runtime_version": "2.1.0",
+      "session_id": "fixture-session",
+      "run_id": "fixture-run",
+      "instance_id": "fixture-instance",
+      "event_id": "fixture-occurrence",
+      "event": "session.execution.failed"
+    },
+    "state": "failed"
+  },
+  {
+    "source": "opencode",
+    "version": "2.1.0",
+    "payload": {
+      "adapter_revision": 2,
+      "runtime_version": "2.1.0",
+      "session_id": "fixture-session",
+      "run_id": "fixture-run",
+      "instance_id": "fixture-instance",
+      "event_id": "fixture-occurrence",
+      "event": "session.execution.interrupted"
+    },
+    "state": "interrupted"
+  },
+  {
+    "source": "opencode",
+    "version": "2.1.0",
+    "payload": {
+      "adapter_revision": 2,
+      "runtime_version": "2.1.0",
+      "session_id": "fixture-session",
+      "run_id": "fixture-run",
+      "instance_id": "fixture-instance",
+      "event_id": "fixture-occurrence",
+      "event": "permission.asked"
+    },
+    "state": "waiting_approval"
+  },
+  {
+    "source": "opencode",
+    "version": "2.1.0",
+    "payload": {
+      "adapter_revision": 2,
+      "runtime_version": "2.1.0",
+      "session_id": "fixture-session",
+      "run_id": "fixture-run",
+      "instance_id": "fixture-instance",
+      "event_id": "fixture-occurrence",
+      "event": "form.created"
+    },
+    "state": "waiting_input"
+  },
+  {
+    "source": "pi",
+    "version": "1.3.0",
+    "payload": {
+      "adapter_revision": 2,
+      "runtime_version": "1.3.0",
+      "session_id": "fixture-session",
+      "run_id": "fixture-run",
+      "instance_id": "fixture-instance",
+      "event_id": "fixture-occurrence",
+      "event": "agent_start"
+    },
+    "state": "running"
+  },
+  {
+    "source": "pi",
+    "version": "1.3.0",
+    "payload": {
+      "adapter_revision": 2,
+      "runtime_version": "1.3.0",
+      "session_id": "fixture-session",
+      "run_id": "fixture-run",
+      "instance_id": "fixture-instance",
+      "event_id": "fixture-occurrence",
+      "event": "tool_execution_start",
+      "tool_id": "fixture-tool",
+      "tool_name": "bash",
+      "tool_status": "failed"
+    },
+    "state": "tool_running"
+  },
+  {
+    "source": "pi",
+    "version": "1.3.0",
+    "payload": {
+      "adapter_revision": 2,
+      "runtime_version": "1.3.0",
+      "session_id": "fixture-session",
+      "run_id": "fixture-run",
+      "instance_id": "fixture-instance",
+      "event_id": "fixture-occurrence",
+      "event": "tool_execution_end",
+      "tool_id": "fixture-tool",
+      "tool_name": "bash",
+      "tool_status": "failed"
+    },
+    "state": "running"
+  },
+  {
+    "source": "pi",
+    "version": "1.3.0",
+    "payload": {
+      "adapter_revision": 2,
+      "runtime_version": "1.3.0",
+      "session_id": "fixture-session",
+      "run_id": "fixture-run",
+      "instance_id": "fixture-instance",
+      "event_id": "fixture-occurrence",
+      "event": "ui_prompt_start"
+    },
+    "state": "waiting_input"
+  },
+  {
+    "source": "pi",
+    "version": "1.3.0",
+    "payload": {
+      "adapter_revision": 2,
+      "runtime_version": "1.3.0",
+      "session_id": "fixture-session",
+      "run_id": "fixture-run",
+      "instance_id": "fixture-instance",
+      "event_id": "fixture-occurrence",
+      "event": "ui_prompt_end"
+    },
+    "state": "running"
+  },
+  {
+    "source": "pi",
+    "version": "1.3.0",
+    "payload": {
+      "adapter_revision": 2,
+      "runtime_version": "1.3.0",
+      "session_id": "fixture-session",
+      "run_id": "fixture-run",
+      "instance_id": "fixture-instance",
+      "event_id": "fixture-occurrence",
+      "event": "agent_settled",
+      "aborted": false
+    },
+    "state": "turn_completed"
+  }
+]
