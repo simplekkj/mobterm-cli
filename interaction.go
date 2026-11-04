@@ -617,8 +617,13 @@ func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a A
 		spec.Fields = []InteractionField{}
 	}
 	raw, e := json.Marshal(spec)
-	if e != nil || len(raw) > interactionRequestLimit {
-		return nil, errors.New("interaction_request_too_large")
+	if e != nil {
+		return nil, e
+	}
+	if len(raw) > interactionRequestLimit {
+		// No record or dispatch exists yet. This helper owns the sole reminder;
+		// the adapter must not retry arbitrary child failures after native I/O.
+		return nil, interactionUnavailable(ctx, s, api, l, a, spec, "interaction_request_too_large")
 	}
 	r := InteractionRecord{V: 1, RequestID: spec.RequestID, Digest: digest(string(raw)), Kind: spec.Kind, Agent: a.Agent, RequestJSON: string(raw), Locator: l, PID: os.Getpid(), Birth: birth, ParentPID: parentPID, ParentBirth: parent, CreatedAt: now, ExpiresAt: expires, Revision: 1, State: "pending", Pairs: map[string]int64{}, OwnerToken: randomID()}
 	// Native IDs belong to the live runtime, not to a phone. An absent native ID
@@ -652,7 +657,7 @@ func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a A
 	for id := range r.Pairs {
 		wire, _ := json.Marshal(interactionResult(r, id, true))
 		if len(wire)+1 > interactionFrameLimit {
-			return nil, errors.New("interaction_request_too_large")
+			return nil, interactionUnavailable(ctx, s, api, l, a, spec, "interaction_request_too_large")
 		}
 	}
 	unlock, e := s.lock(ctx)
@@ -910,7 +915,24 @@ func interactionUnavailable(ctx context.Context, s Store, api API, l Locator, a 
 		if p.Status != "active" || p.InstallationID != l.InstallationID {
 			continue
 		}
-		r.Pairs[id] = 0 // Read-only observation, never an authorization grant.
+		r.Pairs[id] = 0 // Read-only observation, never dispatch authority.
+		if reason == "interaction_request_too_large" || reason == "complete_context_exceeds_limit" {
+			// Preserve the enabled interaction's reminder even when the separate
+			// general needs_input policy is off. The unavailable state and empty
+			// actions still prohibit responding; generation only gates notification.
+			configured, err := localInteractions(s)
+			if err != nil {
+				return err
+			}
+			if configured[id][a.Agent][spec.Kind] > 0 {
+				check, cancel := context.WithTimeout(ctx, 2*time.Second)
+				grant, err := interactionCapabilities(check, api, p)
+				cancel()
+				if err == nil && grant.Enabled && grant.Interactions[a.Agent][spec.Kind] {
+					r.Pairs[id] = grant.PolicyGeneration
+				}
+			}
+		}
 	}
 	if len(r.Pairs) == 0 {
 		return publishActivity(ctx, s, api, l, a)

@@ -338,6 +338,25 @@ try {
   await settleChildren();
   receipts=(await readFile(receiptsPath,'utf8')).trim().split('\n').map(JSON.parse);
   assert.ok(receipts.some(r=>r.state==='native_confirmed'&&r.evidence==='question_answer_match'),'actual same-tool consumer confirms values');stopForm();
+  // Budget fallback ownership: raw overflow belongs to the adapter; normalized
+  // overflow belongs to the helper. An arbitrary failed child is never resent.
+  const fallbackOutput=join(temp,'fallback-events.jsonl'), fallbackHelper=join(temp,'fallback-helper');
+  await writeFile(fallbackHelper, `#!${process.execPath}\nconst fs=require('node:fs');let b='';process.stdin.on('data',x=>b+=x);process.stdin.on('end',()=>{if(process.argv.includes('receipt'))return;if(process.argv.includes('authorize')){process.stdout.write('{"allowed":true}');return;}const p=JSON.parse(b);if(process.argv.includes('notify')){fs.appendFileSync(${JSON.stringify(fallbackOutput)},JSON.stringify(p)+'\\n');return;}if(p.request_id==='frm_failure'){process.exitCode=1;return;}if(p.request_id==='frm_dispatch'){process.stdout.write(JSON.stringify({request_id:'local-dispatch',owner_token:'owner',expires_at:Math.floor(Date.now()/1000)+60,action:'answer',response_json:'{"answers":{}}'}));return;}fs.appendFileSync(${JSON.stringify(fallbackOutput)},JSON.stringify({...p,unavailable_reason:'complete_context_exceeds_limit',helper:true})+'\\n');process.stdout.write('null');});`);
+  await chmod(fallbackHelper,0o700);
+  const fallbackPlugin=await load('opencode','1.4.0',fallbackHelper);
+  for(const mode of ['normalized','raw','failure','dispatch']) {
+    const h=host();h.context.app.version='2.2.5';
+    const f={id:'frm_'+mode,sessionID:'root',state:{status:'pending'},fields:[{key:'q',type:'string',title:'x'.repeat(mode==='raw'?25000:mode==='normalized'?13000:10)}]};
+    h.pending.set('root',[f]);let replies=0,cancels=0;
+    h.context.client={session:{form:{get:async()=>f,reply:async()=>{replies++;throw Error('lost native ACK');},cancel:async()=>{cancels++;}}}};
+    const stop=fallbackPlugin.setup(h.context);h.emit('form.created','fallback-'+mode,{form:f});
+    // Let the async native read launch the helper, then await real child closes.
+    await new Promise(resolve=>setImmediate(resolve));await settleChildren();
+    let notices=[];try{notices=(await readFile(fallbackOutput,'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse).filter(e=>e.request_id===f.id);}catch(e){if(e.code!=='ENOENT')throw e;}
+    assert.equal(notices.length,['raw','normalized'].includes(mode)?1:0,mode+' duplicate/lost fallback');
+    if(notices.length)assert.ok(notices[0].unavailable_reason);
+    assert.equal(replies,mode==='dispatch'?1:0);assert.equal(cancels,0);assert.equal(f.state.status,'pending');stop();
+  }
   // Reject uses two authoritative native list reads, never the TUI cache.
   const batchHost=host();batchHost.context.app.version='2.2.5';batchHost.pending.set('root',[request]);
   let listReads=0,batchChanged=false,batchReplies=[];

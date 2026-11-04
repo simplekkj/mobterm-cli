@@ -1,0 +1,54 @@
+WF-1.0 round 2 CLI delivery, 2026-11-04
+Start: c46bb626f21e04996f68283ffdd5509f7942fd4e / main
+Environment: Go 1.27.1 darwin/amd64; Node v22.22.2.
+Final tested source is included in the commit containing this evidence.
+
+Focused normalization/cycles: go test -v -timeout 2m -run TestInteraction\(OpenCode\|ClaudeElicitation\) ./...
+=== RUN   TestInteractionOpenCodeNormalizedOverflowPublishesOnlyReadonlyReminder
+--- PASS: TestInteractionOpenCodeNormalizedOverflowPublishesOnlyReadonlyReminder (1.31s)
+=== RUN   TestInteractionClaudeElicitationPreservesPromptCyclesAndErrors
+--- PASS: TestInteractionClaudeElicitationPreservesPromptCyclesAndErrors (6.31s)
+=== RUN   TestInteractionOpenCodeAdjacentNormalizedBudgetAndSmallForm
+--- PASS: TestInteractionOpenCodeAdjacentNormalizedBudgetAndSmallForm (2.89s)
+PASS
+ok  	github.com/simplekkj/mobterm-cli	10.923s
+
+Native adapter subprocess harness: node scripts/test-native-adapters.mjs
+PASS native adapter contracts: ownership, pending, lifecycle, reload, identity, Pi settled/mode, bridge metadata
+
+First full ordinary run: go test -timeout 20m ./...
+FAIL, 452.983s; Xcode compilation overlapped. Unchanged original launcher preflight reached its 5-second budget.
+--- FAIL: TestAsdfCompatibilityEntrypoints (123.27s)
+    --- FAIL: TestAsdfCompatibilityEntrypoints/node-home-explicit (26.58s)
+        --- FAIL: TestAsdfCompatibilityEntrypoints/node-home-explicit/installation-only (5.02s)
+            compatibility_test.go:513: original launcher context is not usable signal: killed
+        --- FAIL: TestAsdfCompatibilityEntrypoints/node-home-explicit/one-probe (5.02s)
+            compatibility_test.go:572: original launcher context is not usable signal: killed
+    --- FAIL: TestAsdfCompatibilityEntrypoints/node-project (24.71s)
+        --- FAIL: TestAsdfCompatibilityEntrypoints/node-project/entrypoints (5.02s)
+            compatibility_test.go:403: original launcher context is not usable signal: killed
+        --- FAIL: TestAsdfCompatibilityEntrypoints/node-project/notify (5.02s)
+            compatibility_test.go:593: original launcher context is not usable signal: killed
+        --- FAIL: TestAsdfCompatibilityEntrypoints/node-project/chain (5.02s)
+            compatibility_test.go:544: original launcher context is not usable signal: killed
+        --- FAIL: TestAsdfCompatibilityEntrypoints/node-project/installation-only (5.02s)
+            compatibility_test.go:513: original launcher context is not usable signal: killed
+FAIL
+FAIL	github.com/simplekkj/mobterm-cli	452.983s
+FAIL
+
+Full ordinary rerun, no Xcode work: go test -timeout 20m ./...
+ok  	github.com/simplekkj/mobterm-cli	405.337s
+Exit 0.
+
+go vet ./...: PASS (exit 0, no diagnostics).
+test -z "$(gofmt -l .)": PASS.
+git diff --check: PASS.
+
+First-round full-race failures remain recorded in validation.md; no retrospective PASS is claimed.
+E1 only: no real model/provider, user Agent session, phone/APNs, remote SSH/PIV/Mosh, release or deployment.
+
+Final complete race run, no Xcode work: go test -race -timeout 20m ./...
+ok  	github.com/simplekkj/mobterm-cli	498.806s
+Exit 0. Full suite PASS, no data race report.
+No production/test source changed after these complete ordinary/race passes.

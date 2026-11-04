@@ -116,6 +116,30 @@ owner token and the original parent PID/birth. It cannot be submitted by App.
 Only exact question answer consumption evidence can assert native_confirmed;
 OpenCode form cache/events and HTTP 204 do not establish the winning answer.
 
+App retains the original decision ID, action, response digest, request binding and
+exact frame in memory. Authentication, connection and stream-open failures leave
+it provably unsent: an explicit Continue sends that same frame. Immediately before
+stdin send it becomes possibly sent; cancellation, loss of ACK, a pending query
+or reopening details never permits a new decision. The App does not retry a
+possibly sent frame. Direct and queried receipts use the same full tuple check.
+A missing or different tuple shows global handling only. Even a matching
+`question_answer_match` proves answer equality, not which device won or execution.
+
+Optional form fields have an explicit Clear Answer action, distinct from entering
+empty text/arrays, false or zero. Clearing removes the answer and transient input;
+conditions are recomputed and inactive answers remain excluded.
+
+If raw OpenCode input fits but the normalized request or nested response envelope
+exceeds its budget, the helper alone publishes a reason-bearing unavailable
+observation before creating any actionable record. It has no actions, waiter or
+owner token and cannot authorize dispatch. With the current opt-in interaction
+grant it retains a needs_input reminder even when general needs_input is off.
+Raw-body overflow remains adapter-owned. Arbitrary child failures, including
+failures after dispatch, do not trigger a second reminder or native reply.
+Claude Elicitation retains parseActivity's prompt-cycle run and occurrence;
+parser failures do not fall back to a reconstructed, unbound Activity.
+
+
 ## Cloud policy and compatibility
 
 GET `/v2/pairs/{id}/interaction-capabilities` accepts existing authorized

@@ -399,10 +399,6 @@ func interactionObserve(ctx context.Context, s Store, api API, source string, ra
 		return observe(ctx, s, api, source, raw)
 	}
 	a, _, err := parseActivity(ctx, s, source, raw)
-	if source == "claude" && p.HookEventName == "Elicitation" {
-		a = Activity{Agent: source, Session: p.SessionID, Instance: p.SessionID, State: "waiting_input", Reminder: "needs_input"}
-		err = nil
-	}
 	if err != nil || !nativeInteractionID(p.SessionID) {
 		return nil, errors.New("invalid_native_interaction")
 	}

@@ -1610,3 +1610,85 @@ Reviewable sanitized output and the exact focused selector are recorded in
 [delivery evidence](evidence/interaction-v1.txt). No full race PASS is claimed;
 the original full-suite timing failures and the isolated successful rerun remain
 part of the evidence above.
+
+## 2026-11-04 — Remote interactions, Review repairs R4/R5 (WF-1.0)
+
+The effective instructions are round 2 v1.0 on the [existing handoff](https://app.notion.com/p/40ccede20823814abf99d3d55f24759e).
+Analysis and actual start: `c46bb626f21e04996f68283ffdd5509f7942fd4e`, clean main.
+API was read-only at `adaa3db7b4f70d09de89fd34bbc585e9be136ebb`; no API
+contract, dependency, allowlist, production budget or deployment changed.
+
+R4: normalized request/envelope overflow before record creation produces one
+helper-owned read-only unavailable observation. It has no actions, native waiter,
+owner token or dispatch privilege. Fresh enabled interaction policy can authorize
+the reminder even with general needs_input off. Tests exposed and repaired this
+policy interaction; no broad retry on helper/adapter errors was added. Existing
+adapter close behavior already consumes null without reply or duplicate notify;
+new subprocess tests cover raw overflow, helper-owned normalized overflow,
+arbitrary child failure and lost native ACK after attempted dispatch.
+
+R5: Elicitation keeps parseActivity's run/occurrence and errors. Production
+observe -> normalization -> store -> encrypted needs_input -> authenticated
+response -> Hook output tests cover two prompt cycles, two requests per cycle,
+unchanged terminal history, no-cycle nonempty occurrence and malformed cycle
+storage. No history clearing or terminal-state reopening is used.
+
+R1/R2 compatibility: existing same-frame CAS/replay, immutable request binding,
+status and native-evidence tests remain. A new confirmed receipt test verifies
+global native_confirmed is visible to both original pairs while decision/action/
+response_digest/evidence are visible only to the submitting pair, never answer
+body. App matches that tuple; no wire migration is necessary.
+
+Environment: Go 1.27.1 darwin/amd64, Node v22.22.2. Final checks use the task
+working tree included in this round's commit. Logs are retained in /tmp with the
+mobterm-cli-r2 prefix; sanitized, committed evidence below is the portable record.
+Early focused test failures are retained: the first test harness decoded variable
+ciphertext with an exact-size helper and incorrectly expected a URL-only fallback
+under disabled general needs_input. Corrected those fixtures; a real R4 suppressed
+reminder was repaired as above. Overlapping Xcode work also exceeded fixture
+notification waits; final focused production tests passed with original operation
+budgets. No production timeout or effective assertion was relaxed. A failing
+fixture now cancels and drains its owned waiter before temporary-store cleanup.
+
+`node scripts/test-native-adapters.mjs`: PASS (existing pinned Solid dependency
+and controlled actual subprocesses); no official host/model loading is claimed
+for this round. The final focused R4/R5 suite before the extra receipt-redaction
+assertions passed: `go test -v -timeout 2m -run 'TestInteraction(OpenCode|ClaudeElicitation)' ./...`, 10.923s.
+Full-suite and final-check results follow below. First-round full-race failures
+remain historical facts; they are not reclassified as passes by this repair.
+
+No E3/E4 real model, user Agent session, paid provider, physical phone, remote
+SSH/PIV/Mosh or APNs flow was executed. API full tests, packaging/release and
+unrelated official host harnesses were not rerun because their paths did not
+change. No cloud or remote persistent state was modified.
+
+First complete ordinary check in this round: `go test -timeout 20m ./...`
+**FAIL**, 452.983s. Only `TestAsdfCompatibilityEntrypoints` failed: six original
+launcher five-second preflight timeouts (`node-home-explicit/installation-only`,
+`node-home-explicit/one-probe`, and `node-project/{entrypoints,notify,chain,installation-only}`).
+The failure is in the unchanged `versionEnvironment` launcher usability check,
+before the task's interaction path; all R4/R5 and receipt tests completed without
+assertion failures. This run overlapped Xcode compilation and is retained as a
+failed command, not reclassified. Complete reruns below run without Xcode work;
+production/test command budgets remain unchanged and the explicit suite timeout
+is 20 minutes, as authorized in the handoff.
+
+Complete ordinary rerun without Xcode: `go test -timeout 20m ./...`
+**PASS**, 405.337s, exit 0, on final production/test source. This includes the
+new four review-regression groups and unchanged CAS/replay/evidence contracts.
+`go vet ./...` PASS, `test -z "$(gofmt -l .)"` PASS, and `git diff --check` PASS.
+No individual production or fixture timeout was altered to obtain this result.
+
+Final complete race check, no Xcode work: `go test -race -timeout 20m ./...`
+**PASS**, 498.806s, exit 0, with no data race report. This is a full-suite PASS
+for this round, unlike the preserved first-round full-race failures. No code,
+assertion or per-operation budget changed between the serial ordinary and race
+runs. Final production and tests are frozen; only these validation facts and
+[portable sanitized output](evidence/interaction-r2.txt) were appended afterward.
+
+R1–R5 task changes now have no unresolved related actual failure. API remained
+read-only/clean; App's unrelated Binding/Pairing baseline failures are documented
+in its own report. Under the agreed single static Review workflow, Codex will
+save/read back the same-page repair report and close the original task directly;
+no second ChatGPT Review is required. Exact commit/push/status receipts are in
+that Notion report.
