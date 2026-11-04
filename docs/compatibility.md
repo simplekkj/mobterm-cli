@@ -429,3 +429,12 @@ remain checked; route switches and cleanup invalidate pending callbacks. Older
 revision-2 producers without request IDs remain accepted with their previous
 limited observation semantics. Install the matching CLI with the updated adapter;
 a downgrade requires restoring its owned adapter as well.
+
+### Interaction wire v1 adapters
+
+New request/answer actions use separate default-off per-Agent/type permissions,
+not the legacy mobile approval switch. Exact checked runtime versions, native
+reply contracts, conditional limitations, schema subsets, lifecycle boundaries
+and primary source links are recorded in [native interactions](native-interactions.md).
+Notifications keep their existing minimum versions. An installed integration is
+not proof that a running TUI has loaded it or that a real model consumed an answer.

@@ -342,7 +342,7 @@ func editClaudeWithNative(data []byte, action, path, executable string, r HookRe
 		{"Notification", "^(permission_prompt|elicitation_dialog|idle_prompt)$"},
 	}
 	if native || r.ClaudeOwned["PermissionRequest"] != "" {
-		events = append(events, []struct{ name, matcher string }{{"PreToolUse", ""}, {"PostToolUse", ""}, {"PostToolUseFailure", ""}, {"PermissionRequest", ""}, {"Stop", ""}}...)
+		events = append(events, []struct{ name, matcher string }{{"PreToolUse", ""}, {"PostToolUse", ""}, {"PostToolUseFailure", ""}, {"PermissionRequest", ""}, {"Stop", ""}, {"Elicitation", ""}}...)
 	}
 	if r.Managed != "" {
 		for event, entries := range hooks {
@@ -352,7 +352,7 @@ func editClaudeWithNative(data []byte, action, path, executable string, r HookRe
 				for _, cmd := range cmds {
 					var text string
 					_ = json.Unmarshal(cmd["command"], &text)
-					validManaged := text == command && (event == "UserPromptSubmit" || event == "Notification") || text == managedExecutable+" observe --source claude" && (event == "PreToolUse" || event == "PostToolUse" || event == "PostToolUseFailure" || event == "Stop") || text == managedExecutable+" approval wait --source claude" && event == "PermissionRequest"
+					validManaged := text == managedExecutable+" interaction wait --source claude" && (event == "PreToolUse" || event == "Elicitation") || text == command && (event == "UserPromptSubmit" || event == "Notification") || text == managedExecutable+" observe --source claude" && (event == "PreToolUse" || event == "PostToolUse" || event == "PostToolUseFailure" || event == "Stop" || event == "Elicitation") || text == managedExecutable+" approval wait --source claude" && event == "PermissionRequest"
 					if !validManaged && looksManagedClaude(text, command) {
 						return nil, r, errors.New("managed Claude command was moved or modified; config unchanged")
 					}
@@ -374,6 +374,10 @@ func editClaudeWithNative(data []byte, action, path, executable string, r HookRe
 		} else if event.name != "UserPromptSubmit" && event.name != "Notification" {
 			eventCommand = managedExecutable + " observe --source claude"
 		}
+		if event.name == "PreToolUse" || event.name == "Elicitation" {
+			timeout = 330
+			eventCommand = managedExecutable + " interaction wait --source claude"
+		}
 		managedCommand, _ := json.Marshal(map[string]any{"type": "command", "command": eventCommand, "timeout": timeout})
 		managedEntry := map[string]json.RawMessage{"hooks": json.RawMessage("[" + string(managedCommand) + "]")}
 		if event.matcher != "" {
@@ -385,6 +389,16 @@ func editClaudeWithNative(data []byte, action, path, executable string, r HookRe
 			if json.Unmarshal([]byte(encoded), &expected) != nil || expected == nil {
 				return nil, r, errors.New("invalid Claude hook ownership record")
 			}
+		}
+		expectedCommand := ""
+		if expected != nil {
+			var commands []struct {
+				Command string `json:"command"`
+			}
+			if json.Unmarshal(expected["hooks"], &commands) != nil || len(commands) != 1 {
+				return nil, r, errors.New("invalid owned command")
+			}
+			expectedCommand = commands[0].Command
 		}
 		entries := hooks[event.name]
 		found := false
@@ -402,7 +416,7 @@ func editClaudeWithNative(data []byte, action, path, executable string, r HookRe
 				}
 				var text string
 				_ = json.Unmarshal(cmd["command"], &text)
-				if text == eventCommand {
+				if text == eventCommand || expectedCommand != "" && text == expectedCommand {
 					found = true
 					if expected != nil {
 						ownedMatches++
@@ -421,6 +435,14 @@ func editClaudeWithNative(data []byte, action, path, executable string, r HookRe
 							changed = true
 							continue
 						}
+						if !bytes.Equal(encodedCommand, managedCommand) {
+							if json.Unmarshal(managedCommand, &cmd) != nil {
+								return nil, r, errors.New("invalid managed hook migration")
+							}
+							owned[event.name] = string(encodedEntry)
+							changed = true
+							entry["hooks"] = nil
+						}
 					}
 				}
 				kept = append(kept, cmd)
@@ -428,7 +450,7 @@ func editClaudeWithNative(data []byte, action, path, executable string, r HookRe
 			if len(kept) == 0 && len(commands) > 0 {
 				continue
 			}
-			if len(kept) != len(commands) {
+			if len(kept) != len(commands) || entry["hooks"] == nil {
 				entry["hooks"], _ = json.Marshal(kept)
 			}
 			out = append(out, entry)

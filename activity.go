@@ -77,11 +77,13 @@ func runCapabilities(ctx context.Context, a API, p Pair) (RunCapabilities, error
 }
 
 type PendingRequest struct {
-	State    string        `json:"state"`
-	Approval *ApprovalHint `json:"approval,omitempty"`
+	Interaction *InteractionHint `json:"interaction,omitempty"`
+	State       string           `json:"state"`
+	Approval    *ApprovalHint    `json:"approval,omitempty"`
 }
 
 type Activity struct {
+	Interaction    *InteractionHint
 	RequestID      string
 	ResolveRequest bool
 	Agent          string
@@ -97,6 +99,7 @@ type Activity struct {
 	Approval       *ApprovalHint
 }
 type StoredRun struct {
+	Interaction     *InteractionHint          `json:"interaction,omitempty"`
 	FirstOccurrence string                    `json:"first_occurrence,omitempty"`
 	Requests        map[string]PendingRequest `json:"requests,omitempty"`
 	Agent           string                    `json:"agent"`
@@ -306,10 +309,11 @@ func applyActivity(ctx context.Context, s Store, l Locator, a Activity) (string,
 			if _, exists := r.Requests[a.RequestID]; !exists && len(r.Requests) >= 64 {
 				return key, r, false, errors.New("request_capacity")
 			}
-			r.Requests[a.RequestID] = PendingRequest{State: a.State, Approval: a.Approval}
+			r.Requests[a.RequestID] = PendingRequest{State: a.State, Approval: a.Approval, Interaction: a.Interaction}
 		}
 	}
 	r.Approval = a.Approval
+	r.Interaction = a.Interaction
 	r.Seen = append(r.Seen, a.Occurrence)
 	if len(r.Seen) > 256 {
 		r.Seen = r.Seen[len(r.Seen)-256:]
@@ -355,11 +359,13 @@ func applyActivity(ctx context.Context, s Store, l Locator, a Activity) (string,
 			if r.State != "waiting_approval" || request.State == "waiting_approval" {
 				r.State = request.State
 				r.Approval = request.Approval
+				r.Interaction = request.Interaction
 			}
 		}
 	} else {
 		r.Requests = nil
 		r.Approval = nil
+		r.Interaction = nil
 	}
 	pairs, err := s.pairs()
 	if err != nil {
@@ -401,7 +407,14 @@ func applyActivity(ctx context.Context, s Store, l Locator, a Activity) (string,
 				return key, r, false, errors.New("activity_pending_capacity")
 			}
 		}
-		db.Intents[ik] = RunIntent{PairID: pid, Key: key, Occurrence: a.Occurrence, Kind: kind, Payload: payloadForRun(r, stream), ExpiresAt: now + 3600}
+		payload := payloadForRun(r, stream)
+		if kind != "state" {
+			// A reminder belongs to the event that produced it, never the
+			// run's currently selected pending request.
+			payload.Approval = a.Approval
+			payload.Interaction = a.Interaction
+		}
+		db.Intents[ik] = RunIntent{PairID: pid, Key: key, Occurrence: a.Occurrence, Kind: kind, Payload: payload, ExpiresAt: now + 3600}
 		if kind != "state" {
 			delete(db.Intents, digest(pid+"\x00state\x00"+key))
 		}
@@ -428,7 +441,7 @@ func payloadForRun(r StoredRun, stream string) RunPayload {
 			active++
 		}
 	}
-	p := RunPayload{V: 2, Locator: r.Locator, Agent: r.Agent, SessionID: r.Session, RunID: r.Run, StreamID: stream, Revision: r.Revision, State: r.State, OccurredAt: r.Updated, Tools: tools, Approval: r.Approval, ActiveToolCount: active}
+	p := RunPayload{V: 2, Locator: r.Locator, Agent: r.Agent, SessionID: r.Session, RunID: r.Run, StreamID: stream, Revision: r.Revision, State: r.State, OccurredAt: r.Updated, Tools: tools, Approval: r.Approval, Interaction: r.Interaction, ActiveToolCount: active}
 	// Safe summaries may omit rows; the active invocation count never becomes the
 	// subset size. Keep room for AEAD and every possible APNs slash escape.
 	for {
@@ -595,7 +608,15 @@ func flushRunIntents(ctx context.Context, s Store, api API, states bool) error {
 		}
 		count++
 		if intent.Envelope == nil {
-			c, e := cachedRunCapabilities(ctx, s, api, p)
+			var c RunCapabilities
+			var e error
+			if intent.Payload.Interaction != nil {
+				// A new grant may postdate the observation cache. Never strip a
+				// freshly registered request using a stale authorization clock.
+				c, e = runCapabilities(ctx, api, p)
+			} else {
+				c, e = cachedRunCapabilities(ctx, s, api, p)
+			}
 			if e != nil {
 				last = e
 				continue
@@ -625,7 +646,18 @@ func flushRunIntents(ctx context.Context, s Store, api API, states bool) error {
 					intent.Payload.Approval = nil
 				}
 			}
-			allowed := intent.Kind == "state" || intent.Kind == "test" || intent.Kind == "turn_completed" && c.Policy.TurnCompleted || intent.Kind == "needs_input" && (c.Policy.NeedsInput || intent.Payload.Approval != nil && c.Approvals[intent.Payload.Agent]) || (intent.Kind == "failed" || intent.Kind == "interrupted") && c.Policy.AbnormalEnd
+			interactionAllowed := false
+			if hint := intent.Payload.Interaction; hint != nil {
+				request, readErr := interactionRead(s, hint.RequestID)
+				if readErr == nil && request.Digest == hint.Digest && request.Kind == hint.Kind && request.Pairs[p.PairID] == c.PolicyGeneration {
+					grant, grantErr := interactionCapabilities(ctx, api, p)
+					interactionAllowed = grantErr == nil && grant.Enabled && grant.PolicyGeneration == c.PolicyGeneration && grant.Interactions[request.Agent][request.Kind]
+				}
+				if !interactionAllowed && !(readErr == nil && request.State == "unavailable" && request.Locator.InstallationID == p.InstallationID) {
+					intent.Payload.Interaction = nil
+				}
+			}
+			allowed := intent.Kind == "state" || intent.Kind == "test" || intent.Kind == "turn_completed" && c.Policy.TurnCompleted || intent.Kind == "needs_input" && (c.Policy.NeedsInput || interactionAllowed || intent.Payload.Approval != nil && c.Approvals[intent.Payload.Agent]) || (intent.Kind == "failed" || intent.Kind == "interrupted") && c.Policy.AbnormalEnd
 			if !allowed {
 				intent.Kind = "state"
 			}

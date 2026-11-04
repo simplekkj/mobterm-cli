@@ -24,19 +24,20 @@ type ApprovalHint struct {
 	ExpiresAt int64  `json:"expires_at"`
 }
 type RunPayload struct {
-	ActiveToolCount int           `json:"active_tool_count"`
-	ToolsTruncated  bool          `json:"tools_truncated"`
-	V               int           `json:"v"`
-	Locator         Locator       `json:"locator"`
-	Agent           string        `json:"agent"`
-	SessionID       string        `json:"session_id"`
-	RunID           string        `json:"run_id"`
-	StreamID        string        `json:"stream_id"`
-	Revision        int64         `json:"revision"`
-	State           string        `json:"state"`
-	OccurredAt      int64         `json:"occurred_at"`
-	Tools           []RunTool     `json:"tools"`
-	Approval        *ApprovalHint `json:"approval,omitempty"`
+	Interaction     *InteractionHint `json:"interaction,omitempty"`
+	ActiveToolCount int              `json:"active_tool_count"`
+	ToolsTruncated  bool             `json:"tools_truncated"`
+	V               int              `json:"v"`
+	Locator         Locator          `json:"locator"`
+	Agent           string           `json:"agent"`
+	SessionID       string           `json:"session_id"`
+	RunID           string           `json:"run_id"`
+	StreamID        string           `json:"stream_id"`
+	Revision        int64            `json:"revision"`
+	State           string           `json:"state"`
+	OccurredAt      int64            `json:"occurred_at"`
+	Tools           []RunTool        `json:"tools"`
+	Approval        *ApprovalHint    `json:"approval,omitempty"`
 }
 
 func (e Envelope) aadV2() []byte {

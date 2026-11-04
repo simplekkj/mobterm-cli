@@ -32,7 +32,7 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 	if err != nil {
 		return nil, pairingFailure("installation", "local_config_failed", err)
 	}
-	result = map[string]any{"v": 1, "installation_id": id, "version": version, "commit": commit}
+	result = map[string]any{"v": 1, "installation_id": id, "version": version, "commit": commit, "interaction_protocols": []int{1}}
 	if installationOnly {
 		return result, nil
 	}
@@ -150,6 +150,8 @@ func commandTimeout(args []string) time.Duration {
 		return 2 * time.Second
 	case "approval":
 		return 125 * time.Second
+	case "interaction":
+		return 335 * time.Second
 	case "upgrade":
 		return 2 * time.Minute
 	case "setup", "notify", "test":
@@ -222,7 +224,7 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		}
 		value, err = observe(ctx, s, a, source, raw)
 		if value != nil {
-			printJSON(out, value)
+			_ = writeInteractionOutput(out, s, value)
 		}
 		return 0
 	case "approval":
@@ -241,6 +243,30 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 			err = errors.New("approval_requires_frame")
 		} else {
 			value, err = approvalCommand(ctx, s, a, args[1], in)
+		}
+	case "interaction":
+		if len(args) == 2 && args[1] == "codex-followup" {
+			raw, e := readHook(in)
+			if e != nil {
+				return 1
+			}
+			value, err = interactionCodexFollowup(ctx, s, a, raw)
+		} else if len(args) == 4 && args[1] == "wait" && args[2] == "--source" {
+			raw, e := readHook(in)
+			if e != nil {
+				return 1
+			}
+			value, err = interactionObserve(ctx, s, a, args[3], raw)
+		} else if len(args) == 3 && args[2] == "--stdin-frame" {
+			value, err = interactionCommand(ctx, s, a, args[1], in)
+		} else {
+			err = errors.New("interaction_requires_frame")
+		}
+		if value != nil {
+			if e := writeInteractionOutput(out, s, value); e != nil {
+				return 1
+			}
+			value = nil
 		}
 	case "setup":
 		var framed bool
@@ -449,6 +475,9 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 			code := "operation_failed"
 			if args[0] == "target" {
 				code = targetErrorCode(err)
+			}
+			if args[0] == "interaction" {
+				code = safeCode(err.Error())
 			}
 			printJSON(out, map[string]any{"v": 1, "ok": false, "error": code})
 		}

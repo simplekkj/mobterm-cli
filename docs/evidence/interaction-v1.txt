@@ -1,0 +1,37 @@
+WF-1.0 round 1 v1.0 — local CLI delivery evidence
+Date: 2026-11-04, Asia/Shanghai
+Start: 5ece1082187fca431ec4998fa8ea433275837346 + task diff
+Go 1.27.1 / darwin amd64; Node 22.22.2. Final SHA is in the delivery report.
+
+go test -timeout 20m ./...
+ok  github.com/simplekkj/mobterm-cli 416.279s
+
+go test -race -timeout 3m -run '^TestAsdfCompatibilityEntrypoints$' ./...
+ok  github.com/simplekkj/mobterm-cli 156.766s
+
+go test -race -timeout 5m -run 'TestInteraction|TestActivityReminderKeepsItsOwnRequest|TestClaudeQuestionNativeMapping|TestElicitationNativeSchema|TestOpenCodeNative|TestNativeInteraction|TestClaudeInteractionHookMigration|TestCodexMCPApproval|TestCodexAsyncFinalContract|TestCodexExistingThreadMapping|TestCodexQueueSingleMutationAndReceipt|TestCodexGuardedRendezvous' ./...
+ok  github.com/simplekkj/mobterm-cli 11.245s
+
+go vet ./...: exit 0, no output
+gofmt -l .: empty
+git diff --check: exit 0, no output
+GOOS=linux GOARCH=amd64 go build -o <temporary-output> .: exit 0
+
+node scripts/test-native-adapters.mjs
+PASS native adapter contracts: ownership, pending, lifecycle, reload, identity, Pi settled/mode, bridge metadata
+
+python3 scripts/test-native-adapters-host.py opencode <isolated-official-binary> <rebuilt-cli> 2.2.5
+PASS OpenCode official TUI setup/restart {'version': '2.2.5', 'channel': 'latest', 'listeners': 13}
+PASS OpenCode official TUI setup/restart {'version': '2.2.5', 'channel': 'latest', 'listeners': 13}
+
+python3 scripts/test-native-adapters-host.py pi <isolated-official-binary> <rebuilt-cli> 1.5.0 <isolated-package-root>
+PASS Pi official discovery/import/registration 1.5.0
+PASS Pi actual TUI session_start {'version': '1.5.0', 'mode': 'tui', 'listeners': 9}
+
+Paths were replaced with placeholders; fixtures contain no user credentials or sessions.
+The ordinary full run predates addition of the four Codex queue test groups;
+the final focused race run includes them and the final production changes.
+Two earlier full race attempts FAILED on timing limits; see validation.md for
+exact scope and successful isolated reruns. This is not a full race PASS.
+E1: Go/Node/mock Unix protocol tests. E2: official OpenCode/Pi host loading only.
+E3 real-model consumption and E4 phone/SSH/APNs/network flows: NOT RUN.

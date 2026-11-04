@@ -1,11 +1,22 @@
 // Controlled native-event contract tests. These are not real-host loading evidence.
 import assert from 'node:assert/strict';
+import { createHash, createHmac, hkdfSync } from 'node:crypto';
 import { readFile, mkdtemp, writeFile, chmod, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn as spawnChild } from 'node:child_process';
 // Explicit client runtime: Node's default solid-js export is SSR (no-op effects).
 import { createEffect, createRoot, createSignal } from './native-adapter-tests/node_modules/solid-js/dist/solid.js';
+// Same immutable UTF-8 request, length framing and domain-separated MAC as Go/Swift.
+const golden=JSON.parse(await readFile(new URL('../testdata/interaction-v1.json',import.meta.url),'utf8'));
+const frame=golden.frame;
+const sha256=text=>createHash('sha256').update(text,'utf8').digest('hex');
+assert.equal(sha256(golden.request_json),frame.digest);
+assert.equal(sha256(frame.response_json),frame.response_digest);
+const signatureInput=Buffer.concat(['mobterm/interaction/1',frame.pair_id,frame.request_id,frame.digest,frame.kind,frame.action,frame.response_digest,frame.decision_id,String(frame.policy_generation),String(frame.request_revision),String(frame.expires_at)].map(value=>{const body=Buffer.from(value,'utf8'),header=Buffer.alloc(4);header.writeUInt32BE(body.length);return Buffer.concat([header,body]);}));
+assert.equal(signatureInput.toString('base64'),golden.signature_input_base64);
+const derived=hkdfSync('sha256',Buffer.from(golden.key_base64,'base64'),Buffer.from(frame.pair_id),Buffer.from('mobterm/interaction/1'),32);
+assert.equal(createHmac('sha256',derived).update(signatureInput).digest('base64'),frame.proof);
 const temp = await mkdtemp(join(tmpdir(), 'mobterm-native-contract-'));
 const output = join(temp, 'events.jsonl');
 const recorder = join(temp, 'notify');
@@ -222,7 +233,7 @@ try {
   for(const value of await events()) {
     assert.equal(value.adapter_revision,2);
     assert.equal(typeof value.run_id,'string');
-    for(const key of Object.keys(value)) assert.ok(['aborted','adapter_revision','runtime_version','event','session_id','run_id','event_id','instance_id','hook_event_name','tool_name','tool_use_id','tool_input','request_id'].includes(key));
+    for(const key of Object.keys(value)) assert.ok(['aborted','adapter_revision','runtime_version','event','session_id','run_id','event_id','instance_id','hook_event_name','tool_name','tool_use_id','tool_input','request_id','unavailable_reason'].includes(key));
   }
   ctx.mode='tui';session='state-session';emit('session_start');emit('agent_start');
   emit('tool_execution_start',{toolCallId:'tool-one',toolName:'bash',args:{secret:'not uploaded'}});
@@ -282,23 +293,77 @@ try {
   assert.ok(!(await allEvents()).some(e=>e.event_id==='resolve-after-cleanup'));
   // Exact OpenCode native approval handoff, distinct from the observation queue.
   const decider=join(temp,'decider');
-  await writeFile(decider, `#!${process.execPath}\nlet b='';process.stdin.on('data',x=>b+=x);process.stdin.on('end',()=>{const p=JSON.parse(b);if(p.tool_input?.action==='bash')process.stdout.write(JSON.stringify({expires_at:Math.floor(Date.now()/1000)+30,hookSpecificOutput:{decision:{behavior:'allow'}}}));});`);
+  await writeFile(decider, `#!${process.execPath}\nlet b='';process.stdin.on('data',x=>b+=x);process.stdin.on('end',()=>{if(process.argv.includes('authorize-approval')){process.stdout.write(JSON.stringify({allowed:!require('node:fs').existsSync(${JSON.stringify(join(temp,'legacy-revoked'))})}));return;}const p=JSON.parse(b);if(p.tool_input?.action==='bash')process.stdout.write(JSON.stringify({legacy_approval:{request_id:'legacy-request',digest:'legacy-digest',expires_at:Math.floor(Date.now()/1000)+30,hookSpecificOutput:{decision:{behavior:'allow'}}}}));});`);
   await chmod(decider,0o700);
   const approvalPlugin=await load('opencode','1.3.0',decider);
-  const approving=host();let nativeReplies=[];
+  const approving=host();approving.context.app.version="2.2.5";let nativeReplies=[];
   const request={id:'request-approval',sessionID:'root',action:'bash',resources:['echo hello'],metadata:{command:'echo hello'}};
   approving.pending.set('root',[request]);
-  approving.context.client={permission:{get:async()=>({...request}),reply:async value=>nativeReplies.push(value)}};
+  approving.context.client={permission:{list:async()=>[{...request}],get:async()=>({...request}),reply:async value=>nativeReplies.push(value)}};
   const disposeApproval=approvalPlugin.setup(approving.context);
   approving.emit('permission.asked','approval-event',request);
   await waitFor(()=>nativeReplies.length===1,'native permission reply not delivered');
-  assert.deepEqual(nativeReplies[0],{sessionID:'root',requestID:request.id,reply:'once'});
+  assert.deepEqual(nativeReplies[0],{sessionID:'root',requestID:request.id,decision:'once'});
   approving.emit('permission.asked','approval-event',request);
   await settleChildren();assert.equal(nativeReplies.length,1,'same occurrence not replayed');
-  approving.context.client.permission.get=async()=>({...request,resources:['changed command']});
+  let pendingReads=0;approving.context.client.permission.get=async()=>++pendingReads===1?({...request}):({...request,resources:['changed command']});
   approving.emit('permission.asked','changed-approval-event',request);
   await settleChildren();assert.equal(nativeReplies.length,1,'changed native request must not be approved');
+  pendingReads=0;approving.context.client.permission.get=async()=>({...request});
+  await writeFile(join(temp,'legacy-revoked'),'1');
+  approving.emit('permission.asked','revoked-approval-event',request);
+  await settleChildren();assert.equal(nativeReplies.length,1,'fresh legacy revocation prevents native reply');
+  await rm(join(temp,'legacy-revoked'));
   disposeApproval();
+  // Full form dispatch through an actual bounded helper subprocess. A native
+  // HTTP success only records delivery; the originating tool result proves values.
+  const interactionDecider=join(temp,'interaction-decider');
+  const receiptsPath=join(temp,'receipts.jsonl');
+  await writeFile(interactionDecider, `#!${process.execPath}\nconst fs=require('node:fs');const chunks=[];process.stdin.on('data',x=>chunks.push(x));process.stdin.on('end',()=>{const b=Buffer.concat(chunks);if(process.argv.includes('receipt')){fs.appendFileSync(${JSON.stringify(receiptsPath)},b.subarray(4).toString()+'\\n');return;}if(process.argv.includes('authorize')){process.stdout.write(JSON.stringify({allowed:true}));return;}const p=JSON.parse(b);process.stdout.write(JSON.stringify({request_id:'request-local',digest:'digest',owner_token:'owner',expires_at:Math.floor(Date.now()/1000)+60,action:p.event==='tool_gate'?(p.tool_input.command==='release'?'release':'allow_once'):p.event==='permission.asked'?'deny':'answer',response_json:JSON.stringify({answers:{q0:'custom text',q1:['x','y'],zero:0,flag:false}})}));});`);
+  await chmod(interactionDecider,0o700);
+  const formPlugin=await load('opencode','1.4.0',interactionDecider),formHost=host();formHost.context.app.version='2.2.5';
+  const form={id:'frm_test',sessionID:'root',title:'Question',metadata:{kind:'question',tool:{messageID:'msg',id:'tool'}},fields:[{key:'q0',type:'string',custom:true},{key:'q1',type:'multiselect',options:[{value:'x',label:'X'},{value:'y',label:'Y'}]},{key:'zero',type:'integer'},{key:'flag',type:'boolean'}]};
+  formHost.pending.set('root',[form]);const formReplies=[];
+  formHost.context.client={session:{form:{get:async()=>({...form,state:{status:'pending'}}),reply:async input=>formReplies.push(input),cancel:async()=>assert.fail('expiry must not cancel native form')}}};
+  const stopForm=formPlugin.setup(formHost.context);formHost.emit('form.created','form-event',{form});
+  await waitFor(()=>formReplies.length===1,'native Form reply missing');
+  assert.deepEqual(formReplies[0],{sessionID:'root',formID:'frm_test',answer:{q0:'custom text',q1:['x','y'],zero:0,flag:false}});
+  formHost.emit('form.created','form-event',{form});await settleChildren();assert.equal(formReplies.length,1,'Form request must not replay');
+  formHost.emit('form.replied','form-replied',{id:form.id,sessionID:'root'});
+  await settleChildren();
+  let receipts=(await readFile(receiptsPath,'utf8')).trim().split('\n').map(JSON.parse);
+  assert.ok(receipts.some(r=>r.state==='response_written'));
+  assert.ok(!receipts.some(r=>r.state==='native_confirmed'),'form event cannot confirm consumption');
+  formHost.emit('session.tool.success','tool-success',{sessionID:'root',assistantMessageID:'msg',id:'tool',metadata:{answers:[['custom text'],['x','y'],['0'],['false']]}});
+  await settleChildren();
+  receipts=(await readFile(receiptsPath,'utf8')).trim().split('\n').map(JSON.parse);
+  assert.ok(receipts.some(r=>r.state==='native_confirmed'&&r.evidence==='question_answer_match'),'actual same-tool consumer confirms values');stopForm();
+  // Reject uses two authoritative native list reads, never the TUI cache.
+  const batchHost=host();batchHost.context.app.version='2.2.5';batchHost.pending.set('root',[request]);
+  let listReads=0,batchChanged=false,batchReplies=[];
+  batchHost.context.client={permission:{get:async()=>({...request}),list:async()=>{listReads++;return batchChanged&&listReads%2===0?[request,{id:'arrived',sessionID:'root'}]:[request];},reply:async value=>batchReplies.push(value)}};
+  const stopBatch=formPlugin.setup(batchHost.context);
+  batchHost.emit('permission.asked','batch-same',request);
+  await waitFor(()=>batchReplies.length===1,'same-scope batch rejection missing');
+  assert.equal(batchReplies[0].decision,'reject');assert.equal(listReads,2);
+  batchChanged=true;batchHost.emit('permission.asked','batch-changed',request);
+  await settleChildren();assert.equal(listReads,4);assert.equal(batchReplies.length,1,'new native pending request invalidates known batch');stopBatch();
+  // Pi's default is genuinely off. Once explicitly enabled, the captured
+  // tool callback returns undefined to continue all later extension gates.
+  const gateCallbacks=new Map(),gateAdapter=await load('pi','1.4.0',interactionDecider);
+  gateAdapter({on:(name,fn)=>gateCallbacks.set(name,fn)});
+  let localConfirmations=0;let sid='pi-gate';const signal=new AbortController();
+  const gateCtx={mode:'tui',cwd:'/fixture',signal:signal.signal,sessionManager:{getSessionId:()=>sid},ui:{notify(){},confirm:async()=>{localConfirmations++;return true;}}};
+  gateCallbacks.get('session_start')({},gateCtx);gateCallbacks.get('agent_start')({},gateCtx);
+  assert.equal(await gateCallbacks.get('tool_call')({toolCallId:'parent/child',toolName:'bash',input:{command:'echo fixture'}},gateCtx),undefined);
+  await writeFile(join(temp,'interaction-policy-v1.json'),JSON.stringify({pair:{pi:{approval:1}}}),{mode:0o600});
+  assert.equal(await gateCallbacks.get('tool_call')({toolCallId:'parent/child',toolName:'bash',input:{command:'echo fixture'}},gateCtx),undefined);
+  assert.equal(await gateCallbacks.get('tool_call')({toolCallId:'parent/release',toolName:'bash',input:{command:'release'}},gateCtx),undefined);
+  assert.equal(localConfirmations,1,'explicit release uses only this extension confirmation');
+  const blocked=gateCallbacks.get('tool_call')({toolCallId:'parent/next',toolName:'bash',input:{command:'echo fixture'}},gateCtx);
+  gateCallbacks.get('session_shutdown')({},gateCtx);
+  assert.equal((await blocked).block,true,'shutdown settles gate immediately without awaiting child close');
+  await rm(join(temp,'interaction-policy-v1.json'));
   console.log('PASS native adapter contracts: ownership, pending, lifecycle, reload, identity, Pi settled/mode, bridge metadata');
 } finally {
   for (const child of children) child.kill('SIGKILL');

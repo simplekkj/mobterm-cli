@@ -201,6 +201,9 @@ func approvalCommand(ctx context.Context, s Store, api API, command string, in i
 		return nil, errors.New("request_pair_mismatch")
 	}
 	if command != "inspect" {
+		if r.Agent == "opencode" && f.Action == "deny" {
+			return nil, errors.New("approval_batch_scope_requires_interaction")
+		}
 		if !opaqueID.MatchString(f.DecisionID) || f.Digest != r.Digest || f.ExpiresAt != r.ExpiresAt || f.PolicyGeneration != generation || ((command == "release") != (f.Action == "release")) || (f.Action != "release" && f.Action != "allow_once" && f.Action != "deny") {
 			return nil, errors.New("approval_proof_mismatch")
 		}
@@ -251,11 +254,17 @@ func approvalCommand(ctx context.Context, s Store, api API, command string, in i
 	err = s.writeJSON("approval-"+r.RequestID+".json", r)
 	return approvalResult(r, f.PairID, generation, false), err
 }
+func approvalDecisions(agent string) []string {
+	if agent == "opencode" {
+		return []string{"allow_once"}
+	}
+	return []string{"allow_once", "deny"}
+}
 func approvalResult(r ApprovalRequest, pair string, generation int64, inspect bool) map[string]any {
 	v := map[string]any{"v": 3, "pair_id": pair, "request_id": r.RequestID, "digest": r.Digest, "expires_at": r.ExpiresAt, "policy_generation": generation, "state": r.State, "agent": r.Agent}
 	if inspect {
 		v["operation_json"] = r.OperationJSON
-		v["allowed_decisions"] = []string{"allow_once", "deny"}
+		v["allowed_decisions"] = approvalDecisions(r.Agent)
 	}
 	return v
 }
@@ -273,7 +282,7 @@ func approvalInputSupported(agent string, p activityInput) bool {
 		return false
 	}
 	var input map[string]any
-	if json.Unmarshal(p.ToolInput, &input) != nil {
+	if interactionJSON(p.ToolInput, &input) != nil {
 		return false
 	}
 	required := []string{}
@@ -307,6 +316,10 @@ func approvalInputSupported(agent string, p activityInput) bool {
 	case "Edit":
 		required = []string{"file_path", "old_string", "new_string"}
 	default:
+		if agent == "codex" && strings.HasPrefix(p.ToolName, "mcp__") {
+			parts := strings.SplitN(strings.TrimPrefix(p.ToolName, "mcp__"), "__", 2)
+			return len(parts) == 2 && nativeInteractionID(parts[0]) && nativeInteractionID(parts[1])
+		}
 		return false
 	}
 	for _, key := range required {
@@ -326,7 +339,7 @@ func approvalOperation(l Locator, a Activity, input activityInput, id string, cr
 	if decoder.Decode(&semanticInput) != nil {
 		return nil, errors.New("invalid_approval_context")
 	}
-	operation := map[string]any{"context_version": 3, "agent": a.Agent, "session_id": a.Session, "run_id": a.Run, "request_id": id, "native_request_id": input.ToolUseID, "locator": l, "tool_name": input.ToolName, "tool_input": semanticInput, "allowed_decisions": []string{"allow_once", "deny"}, "created_at": created, "expires_at": expires}
+	operation := map[string]any{"context_version": 3, "agent": a.Agent, "session_id": a.Session, "run_id": a.Run, "request_id": id, "native_request_id": input.ToolUseID, "locator": l, "tool_name": input.ToolName, "tool_input": semanticInput, "allowed_decisions": approvalDecisions(a.Agent), "created_at": created, "expires_at": expires}
 	if a.Agent == "codex" || a.Agent == "claude" {
 		operation["cwd"] = input.Cwd
 	}
@@ -375,7 +388,10 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 		return nil, err
 	}
 	if a.Run == "" { // Bind to the persisted current run before creating the request.
-		_, r, _, err := applyActivity(ctx, s, l, a)
+		binding := a
+		binding.Reminder = ""
+		binding.RequestID = ""
+		_, r, _, err := applyActivity(ctx, s, l, binding)
 		if err != nil {
 			return nil, err
 		}

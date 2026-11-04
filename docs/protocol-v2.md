@@ -309,3 +309,12 @@ API retains local history/details/badge correction without cloud recovery;
 old CLI stays v1; old adapter revisions remain accepted with limited capabilities.
 No deployment, remote migration, real APNs, server hook installation or real
 device testing is implied by local checks.
+
+### Optional remote interaction reference
+
+A run/reminder payload may carry `interaction` as defined in
+[interaction wire v1](interaction-v1.md). Each business reminder freezes the
+reference from its own event; aggregate run state cannot retarget an earlier
+request. The optional hint contains no question/answer body. Legacy clients may
+ignore it. Envelope/AAD/ciphertext/APNs limits do not change. Old approval and new
+interaction hints must not create two actionable authorities for one request.

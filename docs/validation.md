@@ -1539,3 +1539,74 @@ are accepted. The API does not consume these local hook files or discovery
 states; wire envelopes and pairing contracts are unchanged. No App build or
 physical push test is claimed. No remote installation, release or deployment
 was performed.
+
+## Remote interaction wire v1 — implementation validation
+
+Starting CLI `main` HEAD: `5ece1082187fca431ec4998fa8ea433275837346` (same as
+analysis). The delivery report records final task commits; these commands ran
+against that HEAD plus the task diff. The new protocol is described in
+[interaction-v1.md](interaction-v1.md), and official version/adapter evidence in
+[native-interactions.md](native-interactions.md). No production API, remote D1,
+paid model, user Agent session or physical iPhone was used.
+
+Focused Go interaction tests passed while integrating: 4.584s, 13.371s, 6.588s,
+15.231s and 10.907s runs covered exact-byte HMAC vectors, nested duplicate JSON
+keys/invalid Unicode/trailing frames, safe numeric values, absent/false/zero/empty
+answers, native UTF-16 conditions, concurrent pairing CAS, idempotent replay and
+body conflict, status privacy after process exit, release/disable, pre-native
+crash boundaries and event-owned immutable hints. Later focused results below
+supersede these intermediate runs. `go vet ./...` passed during integration.
+
+The first complete ordinary `go test ./...` finished in 541.092s with one actual
+regression: `TestStructuredClaudeHealthAndSafeRepair` still recognized only the
+old managed Hook command/timeout. The production health checker now recognizes
+both the existing owned record and the new 330-second dispatcher while retaining
+exact ownership and tamper checks. Its focused rerun passed (1.977s); no assertion
+was weakened. Native schema/Hook focused suites passed (3.167s and 16.618s).
+
+The first full `go test -race ./...` exceeded the default ten-minute harness
+limit at 602.199s and reported two existing tight command-budget/probe failures
+under concurrent Xcode work (`TestRetainedTerminalCapacityWithPairsKeepsCriticalDelivery`
+and `TestAsdfProbeIsolationAndFailure`); no data race was reported. Repeating the
+same suite with `-timeout 20m` completed in 620.580s: those paths passed, with one
+remaining five-second launcher fixture timeout in
+`TestAsdfCompatibilityEntrypoints/node-project/one-probe`. The per-operation
+production and test budgets were not increased. This full run is not reported as
+PASS; the isolated retry and final changed-path results are recorded below.
+
+Evidence levels: protocol/fault/concurrency tests and native adapter harnesses
+are E1. Official isolated OpenCode/Pi host loading is E2; loading does not prove a
+model produced a question or consumed a mobile answer. E3 real-model sessions and
+E4 real-device SSH/APNs/network/background flows remain unexecuted for lack of an
+authorized environment. Unknown delivery remains unknown rather than a success
+claim. No daemon, terminal-input injection, release, deployment or cloud migration
+was performed by these checks.
+
+Final delivery checks on 2026-11-04 (Asia/Shanghai): ordinary
+`go test -timeout 20m ./...` PASS, 416.279s. The isolated
+`go test -race -timeout 3m -run '^TestAsdfCompatibilityEntrypoints$' ./...`
+PASS, 156.766s, with the original probe/command budgets. `go vet ./...` and
+Linux amd64 cross-build PASS. The final native focused suite passed in 20.147s;
+the Node adapter harness (including the shared HKDF/HMAC vector) passed.
+Rebuilt adapters loaded successfully twice in official OpenCode 2.2.5 and in
+official Pi 1.5.0's real TUI (nine listeners). These remain E2 loading checks,
+not model-driven or phone-to-Agent validation.
+
+The late Codex existing-daemon queue implementation has four dedicated E1 test
+groups: accepted final Hook contract, unique loaded-thread mapping and owner
+changes, exactly one mutation with ACK/lost ACK/mismatched receipt, and guarded
+Unix rendezvous/peer ownership. They passed in 0.856s; the first rendezvous fixture
+exceeded macOS's Unix socket path limit and was corrected to use a short isolated
+temporary directory. No production socket or user session was created or used.
+The ordinary full suite started before these four new test groups were added;
+the final changed-path race run below covers them and the final implementation.
+
+Final changed-path `go test -race -timeout 5m -run '<interaction/native/Codex
+groups>' ./...`: PASS, 11.245s, including all 15 `TestInteraction*` groups, event
+hint ownership, Claude/OpenCode native schema and Hook migration, MCP/legacy
+approval scope, and the four Codex queue groups. No data races were reported.
+Final `go vet ./...`, `gofmt -l .` (empty) and `git diff --check`: PASS.
+Reviewable sanitized output and the exact focused selector are recorded in
+[delivery evidence](evidence/interaction-v1.txt). No full race PASS is claimed;
+the original full-suite timing failures and the isolated successful rerun remain
+part of the evidence above.

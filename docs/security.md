@@ -83,3 +83,27 @@ does not isolate an attacker already controlling the same SSH account or make
 cloud revocation and native consumption atomic. A submitted decision is not proof
 of successful native execution; forms, Pi prompts and unverifiable inputs retain
 terminal handling. Neither approval nor release writes keys into a terminal.
+
+## Remote interaction decisions
+
+Interaction wire v1 uses a separate HKDF/HMAC purpose domain and length-prefixed
+fields, binding the exact request and answer bytes, pairing, kind/action,
+revision, generation, expiry and decision ID. It never accepts an App-selected
+native endpoint or command. Requests are globally unique per native continuation
+on the host; separate phones compete on the same durable CAS.
+
+`dispatching` is persisted before native I/O. An uncertain delivery cannot be
+retried, released or reopened as pending. The policy is rechecked immediately
+before dispatch, but cannot be an atomic transaction with the remote Agent;
+revocation cannot recall an already delivered decision. Native completion and
+actual tool execution remain separate evidence. The private store strips full
+request/answer content after settlement and retains minimal anti-replay records
+until the native runtime has exited and the replay window has elapsed.
+
+Questions, schemas and labels are untrusted display data. Unsupported constraints,
+ambiguous Claude question text/labels and unsafe numeric precision fail closed.
+No URL is fetched automatically. Pi's opt-in gate is an additional extension gate;
+allow returns control to the host's remaining trusted extensions rather than
+bypassing them. OpenCode native deny affects the session's pending permission
+batch and requires the new explicit scope; legacy approval offers only once.
+See [the protocol and bounded lifecycle](interaction-v1.md).

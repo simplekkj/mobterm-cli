@@ -65,7 +65,7 @@ export default function(pi) {
                     except OSError:break
             if not marker.exists():raise RuntimeError('Pi TUI did not load extension: '+repr(tail))
             result=json.loads(marker.read_text())
-            assert result=={'version':version,'mode':'tui','listeners':8},result
+            assert result=={'version':version,'mode':'tui','listeners':9},result
             print('PASS Pi actual TUI session_start',result)
         finally:
             if proc.poll() is None:os.killpg(proc.pid,signal.SIGTERM)

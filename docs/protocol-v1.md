@@ -785,3 +785,10 @@ Target commands on failure return nonzero with
 `installation_replaced`, `target_invalid` (definite missing/replaced/ambiguous
 identity), and `target_query_unavailable` (query, permission or unavailable birth
 proof). Temporary inability to query does not prove the terminal was replaced.
+
+## Remote interactions
+
+[Interaction wire v1](interaction-v1.md) defines the independent 64 KiB SSH
+command family, per-kind explicit opt-in, signed request/answer bytes and durable
+at-most-once native dispatch. Existing approval v3, v1/v2 encrypted envelopes,
+pairing, revocation and target resolution retain their existing contracts.

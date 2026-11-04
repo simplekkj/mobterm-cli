@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 const executable = __MOBTERM_CLI_JSON__;
 const store = __MOBTERM_STORE_JSON__;
-const validID = (value) => typeof value === "string" && /^[A-Za-z0-9_.:-]{1,256}$/.test(value);
+const validID = (value) => typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= 1024 && !/[\u0000-\u001f\u007f]/.test(value);
 const stableVersion = (value, minimum) => {
   if (typeof value !== "string") return false;
   const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)?$/.exec(value);
@@ -82,6 +82,7 @@ export default Plugin.define({
     const tools = new Map();
     const approvalChildren = new Map();
     const resolved = new Set();
+    const questionReceipts = new Map();
     const pendingObservations = new Map();
     const transport = bridge("opencode", () => context.ui.toast.show({
       title: "MobTerm", message: "Notification unavailable. Check MobTerm integration.", variant: "warning",
@@ -125,7 +126,7 @@ export default Plugin.define({
     };
     const clearRequest = (event, id) => {
       if (!validID(id) || !validID(event.data.sessionID)) return;
-      const key = event.data.sessionID + ":" + id;
+      const key = JSON.stringify([event.data.sessionID,id]);
       if (resolved.has(key)) return;
       resolved.add(key);
       approvalChildren.get(key)?.kill("SIGTERM");
@@ -154,38 +155,104 @@ export default Plugin.define({
       if (value && typeof value === "object") return "{"+Object.keys(value).sort().map(k=>JSON.stringify(k)+":"+stableJSON(value[k])).join(",")+"}";
       return JSON.stringify(value);
     };
-    const startApproval = (payload, requestID, location, valid) => {
-      const sessionID=payload.session_id, key=sessionID+":"+requestID;
-      const pending=context.data.session.permission.list(sessionID)?.find(r=>r.id===requestID&&r.sessionID===sessionID);
-      if (!pending || typeof pending.action!=="string" || !Array.isArray(pending.resources) || !pending.resources.every(x=>typeof x==="string")) {
-        transport.enqueue(payload,valid); return;
-      }
-      const snapshot=stableJSON(pending);
-      if (Buffer.byteLength(snapshot)>6144 || approvalChildren.has(key) || approvalChildren.size>=8) {transport.enqueue(payload,valid);return;}
-      const body=JSON.stringify({...payload,hook_event_name:"PermissionRequest",tool_name:"permission",tool_use_id:requestID,tool_input:pending});
+    const receipt = (result, state, evidence) => new Promise(resolve => {
+      if (!result?.owner_token || !result?.request_id) {resolve();return;}
       try {
-        const child=spawn(executable,["approval","wait","--source","opencode"],{env:{...process.env,MOBTERM_CONFIG_DIR:store},stdio:["pipe","pipe","ignore"],shell:false});
-        approvalChildren.set(key,child);
-        let output="",overflow=false;
-        const timer=setTimeout(()=>child.kill("SIGTERM"),125000);
-        child.stdout.on("data",bytes=>{output+=bytes;if(Buffer.byteLength(output)>4096){overflow=true;child.kill("SIGTERM");}});
-        child.on("error",()=>{});
-        child.stdin.on("error",()=>child.kill("SIGTERM"));
+        const body=Buffer.from(JSON.stringify({v:1,request_id:result.request_id,owner_token:result.owner_token,state,...(evidence?{evidence}:{})}));
+        const header=Buffer.alloc(4);header.writeUInt32BE(body.length);
+        const child=spawn(executable,["interaction","receipt","--stdin-frame"],{env:{...process.env,MOBTERM_CONFIG_DIR:store},stdio:["pipe","ignore","ignore"],shell:false});
+        const timer=setTimeout(()=>{child.kill("SIGKILL");resolve();},5000);
+        child.once("error",()=>{clearTimeout(timer);resolve();});child.once("close",()=>{clearTimeout(timer);resolve();});child.stdin.on("error",()=>child.kill("SIGKILL"));child.stdin.end(Buffer.concat([header,body]));
+      } catch {resolve();}
+    });
+    const authorize = (result, legacy = false) => new Promise(resolve=>{
+      if(!result?.request_id||!(legacy?result.digest:result.owner_token)){resolve(false);return;}
+      let child,done=false,timer;const finish=value=>{if(done)return;done=true;clearTimeout(timer);child?.kill("SIGKILL");resolve(value);};
+      try {const body=Buffer.from(JSON.stringify({v:1,request_id:result.request_id,...(legacy?{digest:result.digest}:{owner_token:result.owner_token})})),header=Buffer.alloc(4);header.writeUInt32BE(body.length);
+        child=spawn(executable,["interaction",legacy?"authorize-approval":"authorize","--stdin-frame"],{env:{...process.env,MOBTERM_CONFIG_DIR:store},stdio:["pipe","pipe","ignore"],shell:false});let output="";
+        timer=setTimeout(()=>finish(false),5000);child.stdout.on("data",bytes=>{output+=bytes;if(Buffer.byteLength(output)>4096)finish(false);});
+        child.once("error",()=>finish(false));child.stdin.on("error",()=>finish(false));child.once("close",code=>{try{finish(code===0&&JSON.parse(output).allowed===true);}catch{finish(false);}});child.stdin.end(Buffer.concat([header,body]));
+      }catch{finish(false);}
+    });
+    const startInteraction = async (payload, requestID, location, valid, isForm) => {
+      const sessionID=payload.session_id, key=JSON.stringify([sessionID,requestID]);
+      if(version!=="2.2.5"){transport.enqueue({...payload,unavailable_reason:"agent_version_unverified"},valid);return;}
+      if(approvalChildren.has(key))return;
+      if(approvalChildren.size>=8){transport.enqueue(payload,valid);return;}
+      // Reserve before awaiting the official client, so duplicate events cannot
+      // create two waiters for the same native continuation.
+      const reserved={kill:()=>{reserved.cancelled=true;},cancelled:false};approvalChildren.set(key,reserved);
+      let pending,snapshot,batch;
+      try {
+        pending=isForm?await context.client.session.form.get({sessionID,formID:requestID}):await context.client.permission.get({sessionID,requestID});
+        if(reserved.cancelled||!valid()||pending.sessionID!==sessionID||pending.id!==requestID||isForm&&pending.state?.status!=="pending")return;
+        const {state,...immutable}=pending;snapshot=stableJSON(immutable);
+        batch=isForm?undefined:(await context.client.permission.list({sessionID})).filter(p=>p.sessionID===sessionID).map(p=>p.id).sort();
+        if(reserved.cancelled||!valid())return;
+        if(!isForm&&(!Array.isArray(batch)||!batch.includes(requestID))){transport.enqueue(payload,valid);return;}
+        const body=JSON.stringify({...payload,cwd:location?.directory??context.data.session.get(sessionID)?.location?.directory,
+          tool_name:isForm?"form":"permission",tool_use_id:requestID,
+          ...(isForm?{native_form:pending}:{tool_input:pending,pending_permissions:batch})});
+        if(Buffer.byteLength(body)>24576){transport.enqueue({...payload,unavailable_reason:"interaction_request_too_large"},valid);return;}
+        const child=spawn(executable,["interaction","wait","--source","opencode"],{env:{...process.env,MOBTERM_CONFIG_DIR:store},stdio:["pipe","pipe","ignore"],shell:false});
+        approvalChildren.set(key,child);let output="",overflow=false;
+        const timer=setTimeout(()=>child.kill("SIGKILL"),isForm?305000:125000);
+        child.stdout.on("data",bytes=>{output+=bytes;if(Buffer.byteLength(output)>65536){overflow=true;child.kill("SIGKILL");}});
+        child.on("error",()=>{});child.stdin.on("error",()=>child.kill("SIGKILL"));
         child.once("close",async code=>{
           clearTimeout(timer);if(approvalChildren.get(key)===child)approvalChildren.delete(key);
-          if(code!==0||overflow||!valid())return;
+          if(code!==0||overflow)return;
+          let result;try {result=JSON.parse(output);}catch{return;}
+          if(result?.legacy_approval) {
+            const legacy=result.legacy_approval;
+            if(legacy.hookSpecificOutput?.decision?.behavior!=="allow"||!valid()||!Number.isSafeInteger(legacy.expires_at)||Date.now()>=legacy.expires_at*1000)return;
+            try {const current=await context.client.permission.get({sessionID,requestID});const {state,...immutable}=current;
+              if(valid()&&Date.now()<legacy.expires_at*1000&&stableJSON(immutable)===snapshot&&await authorize(legacy,true)&&valid()&&Date.now()<legacy.expires_at*1000)await context.client.permission.reply({sessionID,requestID,decision:"once"});
+            }catch{}return;
+          }
+          if(!result?.request_id)return;
+          if(result.action==="release")return;
+          if(!valid()||!Number.isSafeInteger(result.expires_at)||Date.now()>=result.expires_at*1000){await receipt(result,"native_cancelled");return;}
+          let attempted=false;
           try {
-            const result=JSON.parse(output);
-            if(!Number.isSafeInteger(result.expires_at)||Date.now()>=result.expires_at*1000)return;
-            const behavior=result.hookSpecificOutput?.decision?.behavior;
-            if(behavior!=="allow"&&behavior!=="deny")return;
-            const current=await context.client.permission.get({sessionID,requestID});
-            if(!valid()||Date.now()>=result.expires_at*1000||stableJSON(current)!==snapshot)return;
-            await context.client.permission.reply({sessionID,requestID,reply:behavior==="allow"?"once":"reject"});
-          }catch{/* An ambiguous native result is never replayed. */}
-        });
-        child.stdin.end(body);
-      }catch{transport.enqueue(payload,valid);}
+            const current=isForm?await context.client.session.form.get({sessionID,formID:requestID}):await context.client.permission.get({sessionID,requestID});
+            const {state,...immutable}=current;
+            if(!valid()||Date.now()>=result.expires_at*1000||stableJSON(immutable)!==snapshot||isForm&&state?.status!=="pending"){await receipt(result,"native_cancelled");return;}
+            if(!isForm&&result.action==="deny") {
+              const now=(await context.client.permission.list({sessionID})).filter(p=>p.sessionID===sessionID).map(p=>p.id).sort();
+              if(stableJSON(now)!==stableJSON(batch)){await receipt(result,"native_cancelled");return;}
+            }
+            if(!await authorize(result)||!valid()||Date.now()>=result.expires_at*1000){await receipt(result,"native_cancelled");return;}
+            if(isForm){
+              if(result.action!=="answer"&&result.action!=="cancel")return;
+              const answer=JSON.parse(result.response_json).answers??{};
+              const tool=pending.metadata?.tool;
+              if(questionReceipts.size<128&&result.action==="answer"&&pending.metadata?.kind==="question"&&typeof tool?.messageID==="string"&&typeof tool?.id==="string")questionReceipts.set(key,{result,sessionID,messageID:tool.messageID,toolID:tool.id,answer,fields:pending.fields,expires:Date.now()+3600000});
+              attempted=true;
+              if(result.action==="cancel")await context.client.session.form.cancel({sessionID,formID:requestID});
+              else await context.client.session.form.reply({sessionID,formID:requestID,answer});
+            }else{
+              if(result.action!=="allow_once"&&result.action!=="deny")return;
+              attempted=true;await context.client.permission.reply({sessionID,requestID,decision:result.action==="allow_once"?"once":"reject"});
+            }
+            await receipt(result,"response_written");
+          } catch {await receipt(result,attempted?"delivery_unknown":"native_cancelled");}
+        });child.stdin.end(body);
+      }catch {if(valid())transport.enqueue(payload,valid);}
+      finally {if(approvalChildren.get(key)===reserved)approvalChildren.delete(key);}
+    };
+    const confirmQuestion = async event => {
+      // Form events and terminal cache are not a consumer ACK. Only a result of
+      // the precise originating question tool may confirm the answer value.
+      for(const [key,item] of questionReceipts){
+        if(Date.now()>item.expires){questionReceipts.delete(key);continue;}
+        if(event.data?.sessionID!==item.sessionID||event.data?.id!==item.toolID||event.data?.assistantMessageID!==item.messageID)continue;
+        const actual=event.data.metadata?.answers;
+        if(!actual||typeof actual!=="object")continue;
+        const expected=item.fields.map(f=>item.answer[f.key]===undefined?[]:Array.isArray(item.answer[f.key])?item.answer[f.key]:[String(item.answer[f.key])]);
+        if(Array.isArray(actual)){if(stableJSON(actual)===stableJSON(expected))await receipt(item.result,"native_confirmed","question_answer_match");else await receipt(item.result,"superseded","question_answer_differs");}
+        questionReceipts.delete(key);
+      }
     };
     const handle = (event) => {
       try {
@@ -195,7 +262,8 @@ export default Plugin.define({
         const completion = nativeType === "session.execution.succeeded";
         const sessionID = nativeType === "form.created" ? event.data.form?.sessionID : event.data.sessionID;
         const requestID = nativeType === "form.created" ? event.data.form?.id : event.data.id;
-        if (!validID(sessionID) || sessionID === "global" || (!completion && !validID(requestID))) return;
+        if(sessionID === "global") {if(nativeType==="form.created")context.ui.toast.show({title:"MobTerm",message:"This MCP form has no session owner. Respond in the original native interface.",variant:"warning"});return;}
+        if (!validID(sessionID) || (!completion && !validID(requestID))) return;
         const selected = route(), selectedRoot = root(selected), eventRoot = root(sessionID);
         if (!selectedRoot || selectedRoot !== eventRoot || (completion && sessionID !== eventRoot)) return;
         const session = context.data.session.get(sessionID);
@@ -203,7 +271,7 @@ export default Plugin.define({
         if (eventLocation && locationKey(eventLocation) !== location) return;
         const epoch = routeEpoch, generation = lifecycles.get(sessionID);
         if (completion && generation?.terminal) return;
-        const requestKey = sessionID + ":" + requestID;
+        const requestKey = JSON.stringify([sessionID,requestID]);
         const valid = () => {
           if (!alive || epoch !== routeEpoch || route() !== selected || root(sessionID) !== selectedRoot || root(selected) !== selectedRoot) return false;
           if (locationKey(context.data.session.get(sessionID)?.location) !== location) return false;
@@ -233,7 +301,7 @@ export default Plugin.define({
           if (pendingObservations.size>=128 && !pendingObservations.has(requestKey)) return;
           pendingObservations.set(requestKey,{payload,valid:validResolved,location});
         }
-        if (nativeType === "permission.asked") startApproval(payload, requestID, eventLocation, valid);
+        if (nativeType === "permission.asked" || nativeType === "form.created") void startInteraction(payload,requestID,eventLocation,valid,nativeType === "form.created");
         else transport.enqueue(payload, valid);
         if (completion) { if (generation) generation.terminal=true; forgetRequests(sessionID); }
       } catch { /* A changed upstream schema must never interrupt the TUI. */ }
@@ -242,7 +310,7 @@ export default Plugin.define({
     let disposeRoute;
     const cleanup = () => {
       if (!alive) return;
-      alive = false; routeEpoch++; transport.stop(); pendingObservations.clear();
+      alive = false; routeEpoch++; transport.stop(); pendingObservations.clear(); questionReceipts.clear();
       for(const child of approvalChildren.values())child.kill("SIGTERM"); approvalChildren.clear();
       disposeRoute?.();
       for (const unsubscribe of dispose.splice(0).reverse()) {
@@ -265,7 +333,7 @@ export default Plugin.define({
         ["session.execution.succeeded", handle],
         ["session.tool.input.started", event => {if(validID(event.data.id)&&typeof event.data.name==="string"){tools.set(event.data.id,event.data.name);if(tools.size>128)tools.delete(tools.keys().next().value);state(event,"tool_pending",{tool_id:event.data.id,tool_name:event.data.name});}}],
         ["session.tool.called", event => {if(validID(event.data.id))state(event,event.data.executed===true?"tool_execution_start":"tool_pending",{tool_id:event.data.id,tool_name:tools.get(event.data.id)??"other"});}],
-        ["session.tool.success", event => {if(validID(event.data.id))state(event,"tool_execution_end",{tool_id:event.data.id,tool_name:tools.get(event.data.id)??"other",tool_status:"succeeded"});}],
+        ["session.tool.success", event => {void confirmQuestion(event);if(validID(event.data.id))state(event,"tool_execution_end",{tool_id:event.data.id,tool_name:tools.get(event.data.id)??"other",tool_status:"succeeded"});}],
         ["session.tool.failed", event => {if(validID(event.data.id))state(event,"tool_execution_end",{tool_id:event.data.id,tool_name:tools.get(event.data.id)??"other",tool_status:"failed"});}],
         ["permission.asked", handle],
         ["form.created", handle],

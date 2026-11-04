@@ -1,0 +1,20 @@
+{
+  "key_base64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "request_json": "{\"v\":1,\"request_id\":\"request_fixture_00000000000001\",\"agent\":\"claude\",\"agent_version\":\"2.1.317\",\"adapter_version\":1,\"kind\":\"question\",\"session_id\":\"fixture-session\",\"run_id\":\"fixture-turn\",\"native_id\":\"tool/fixture\",\"locator\":{\"v\":1,\"installation_id\":\"install_fixture_0000000000000001\",\"backend\":\"tmux\",\"namespace\":\"/tmp/tmux-1000/default\",\"server_identity\":\"1234:1700000000:1700000001\",\"workspace_id\":\"$1\",\"view_id\":\"@2\",\"pane_id\":\"%3\",\"occupant_id\":\"occupant_fixture_000000000001\"},\"created_at\":1999999700,\"expires_at\":2000000000,\"runtime_identity\":\"fixture-runtime\",\"pid\":1234,\"birth\":\"fixture-birth\",\"parent_pid\":1233,\"parent_birth\":\"fixture-parent\",\"title\":\"请选择\",\"fields\":[{\"id\":\"q0\",\"type\":\"string\",\"label\":\"选择环境\",\"required\":true,\"options\":[{\"id\":\"a\",\"label\":\"甲,乙\"},{\"id\":\"b\",\"label\":\"😀\"}],\"custom\":true}],\"supported_actions\":[\"answer\",\"release\"]}",
+  "frame": {
+    "v": 1,
+    "pair_id": "pair_fixture_000000000000000001",
+    "request_id": "request_fixture_00000000000001",
+    "digest": "e56527021ea033a7da4e237bf4750930d3593aacf6aded04830f0d280effb325",
+    "kind": "question",
+    "action": "answer",
+    "response_json": "{\"answers\":{\"q0\":\"甲,乙\"}}",
+    "response_digest": "6af9986a5b1564cfb8245023633edb5394dd93c5adf612e8fffd401c6f9392ca",
+    "decision_id": "decision_fixture_0000000000001",
+    "policy_generation": 3,
+    "request_revision": 1,
+    "expires_at": 2000000000,
+    "proof": "GUQr0hzQ6hcdpoxNN6JopqMxMWK3lvDlEB4H7mnFgvM="
+  },
+  "signature_input_base64": "AAAAFW1vYnRlcm0vaW50ZXJhY3Rpb24vMQAAAB9wYWlyX2ZpeHR1cmVfMDAwMDAwMDAwMDAwMDAwMDAxAAAAHnJlcXVlc3RfZml4dHVyZV8wMDAwMDAwMDAwMDAwMQAAAEBlNTY1MjcwMjFlYTAzM2E3ZGE0ZTIzN2JmNDc1MDkzMGQzNTkzYWFjZjZhZGVkMDQ4MzBmMGQyODBlZmZiMzI1AAAACHF1ZXN0aW9uAAAABmFuc3dlcgAAAEA2YWY5OTg2YTViMTU2NGNmYjgyNDUwMjM2MzNlZGI1Mzk0ZGQ5M2M1YWRmNjEyZThmZmZkNDAxYzZmOTM5MmNhAAAAHmRlY2lzaW9uX2ZpeHR1cmVfMDAwMDAwMDAwMDAwMQAAAAEzAAAAATEAAAAKMjAwMDAwMDAwMA=="
+}

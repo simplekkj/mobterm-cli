@@ -202,7 +202,7 @@ func inspectHook(s Store, agent string) agentHealth {
 		return h
 	}
 	expectedEvents := map[string]string{"UserPromptSubmit": "turn_completed", "Notification": "turn_completed,needs_input"}
-	for _, event := range []string{"PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "Stop"} {
+	for _, event := range []string{"PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "Stop", "Elicitation"} {
 		if _, ok := r.ClaudeOwned[event]; ok {
 			expectedEvents[event] = "run_state"
 		}
@@ -230,6 +230,16 @@ func inspectHook(s Store, agent string) agentHealth {
 				} else if event != "UserPromptSubmit" && event != "Notification" {
 					wantCommand = shellQuote(executable) + " observe --source claude"
 				}
+				if event == "PreToolUse" || event == "Elicitation" {
+					var owned struct {
+						Hooks []struct {
+							Command string `json:"command"`
+						} `json:"hooks"`
+					}
+					if json.Unmarshal([]byte(r.ClaudeOwned[event]), &owned) == nil && len(owned.Hooks) == 1 && owned.Hooks[0].Command == shellQuote(executable)+" interaction wait --source claude" {
+						wantCommand = owned.Hooks[0].Command
+					}
+				}
 				if text != wantCommand {
 					if looksManagedClaude(text, r.Managed) {
 						h.issue("modified", "command_modified", event, expectedEvents[event])
@@ -252,6 +262,9 @@ func inspectHook(s Store, agent string) agentHealth {
 				wantTimeout := 10
 				if event == "PermissionRequest" {
 					wantTimeout = 130
+				}
+				if strings.Contains(wantCommand, " interaction wait --source claude") {
+					wantTimeout = 330
 				}
 				if typ != "command" || timeout != wantTimeout || !validMatcher {
 					h.issue("modified", "event_conditions_modified", event, capability)

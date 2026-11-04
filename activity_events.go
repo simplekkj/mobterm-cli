@@ -12,27 +12,30 @@ import (
 )
 
 type activityInput struct {
-	Cwd              string          `json:"cwd,omitempty"`
-	RequestID        string          `json:"request_id"`
-	AdapterRevision  int             `json:"adapter_revision"`
-	RuntimeVersion   string          `json:"runtime_version"`
-	Event            string          `json:"event"`
-	SessionID        string          `json:"session_id"`
-	EventID          string          `json:"event_id"`
-	InstanceID       string          `json:"instance_id"`
-	RunID            string          `json:"run_id"`
-	ToolID           string          `json:"tool_id"`
-	ToolName         string          `json:"tool_name"`
-	ToolStatus       string          `json:"tool_status"`
-	Aborted          *bool           `json:"aborted"`
-	HookEventName    string          `json:"hook_event_name"`
-	TurnID           string          `json:"turn_id"`
-	ToolUseID        string          `json:"tool_use_id"`
-	NotificationType string          `json:"notification_type"`
-	Type             string          `json:"type"`
-	Thread           string          `json:"thread-id"`
-	Turn             string          `json:"turn-id"`
-	ToolInput        json.RawMessage `json:"tool_input"`
+	UnavailableReason  string          `json:"unavailable_reason,omitempty"`
+	Cwd                string          `json:"cwd,omitempty"`
+	RequestID          string          `json:"request_id"`
+	AdapterRevision    int             `json:"adapter_revision"`
+	RuntimeVersion     string          `json:"runtime_version"`
+	Event              string          `json:"event"`
+	SessionID          string          `json:"session_id"`
+	EventID            string          `json:"event_id"`
+	InstanceID         string          `json:"instance_id"`
+	RunID              string          `json:"run_id"`
+	ToolID             string          `json:"tool_id"`
+	ToolName           string          `json:"tool_name"`
+	ToolStatus         string          `json:"tool_status"`
+	Aborted            *bool           `json:"aborted"`
+	HookEventName      string          `json:"hook_event_name"`
+	TurnID             string          `json:"turn_id"`
+	ToolUseID          string          `json:"tool_use_id"`
+	NotificationType   string          `json:"notification_type"`
+	Type               string          `json:"type"`
+	Thread             string          `json:"thread-id"`
+	Turn               string          `json:"turn-id"`
+	ToolInput          json.RawMessage `json:"tool_input"`
+	NativeForm         json.RawMessage `json:"native_form,omitempty"`
+	PendingPermissions json.RawMessage `json:"pending_permissions,omitempty"`
 }
 
 func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Activity, activityInput, error) {
@@ -87,7 +90,7 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 		case "session.execution.interrupted":
 			a.State = "interrupted"
 			a.Reminder = "interrupted"
-		case "permission.asked":
+		case "permission.asked", "tool_gate":
 			a.RequestID = p.RequestID
 			a.State = "waiting_approval"
 			a.Reminder = "needs_input"
@@ -117,7 +120,7 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 		if p.RequestID != "" && !valid(p.RequestID) {
 			return a, p, errors.New("invalid_request_identity")
 		}
-		if strings.HasPrefix(p.Event, "tool_") {
+		if strings.HasPrefix(p.Event, "tool_") && p.Event != "tool_gate" {
 			if !valid(p.ToolID) {
 				return a, p, errors.New("missing_tool_identity")
 			}
@@ -138,7 +141,19 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 	case "PreToolUse":
 		a.State = "tool_pending"
 		a.ToolStatus = "pending"
+		if source == "codex" && (p.ToolName == "request_user_input" || p.ToolName == "request_user_input_async") || source == "claude" && (p.ToolName == "AskUserQuestion" || p.ToolName == "ExitPlanMode") {
+			a.State = "waiting_input"
+			a.Reminder = "needs_input"
+			a.RequestID = p.ToolUseID
+		}
+	case "Elicitation":
+		a.State = "waiting_input"
+		a.Reminder = "needs_input"
 	case "PostToolUse":
+		if (source == "codex" && (p.ToolName == "request_user_input" || p.ToolName == "request_user_input_async")) || source == "claude" && p.ToolName == "AskUserQuestion" {
+			a.RequestID = p.ToolUseID
+			a.ResolveRequest = true
+		}
 		a.State = "running"
 		a.ToolStatus = "returned"
 	case "PostToolUseFailure":
@@ -258,6 +273,18 @@ func claudeActivityCycle(ctx context.Context, s Store, session string, stop bool
 	return cycle.Cycle, cycle.Cycle != "" && stops[digest(session)] == cycle.Cycle, err
 }
 func observe(ctx context.Context, s Store, api API, source string, raw []byte) (any, error) {
+	var dispatch activityInput
+	if source == "claude" && json.Unmarshal(raw, &dispatch) == nil && (dispatch.HookEventName == "Elicitation" || dispatch.HookEventName == "PreToolUse" && (dispatch.ToolName == "AskUserQuestion" || dispatch.ToolName == "ExitPlanMode")) {
+		return interactionObserve(ctx, s, api, source, raw)
+	}
+	if source == "claude" && dispatch.HookEventName == "PostToolUse" && dispatch.ToolName == "AskUserQuestion" {
+		var input struct {
+			Answers json.RawMessage `json:"answers"`
+		}
+		if json.Unmarshal(dispatch.ToolInput, &input) == nil && len(input.Answers) > 0 {
+			_ = interactionConfirmClaude(s, dispatch.SessionID, dispatch.ToolUseID, input.Answers)
+		}
+	}
 	a, input, err := parseActivity(ctx, s, source, raw)
 	if err != nil || a.State == "" {
 		return nil, err
@@ -272,6 +299,47 @@ func observe(ctx context.Context, s Store, api API, source string, raw []byte) (
 	}
 	if source == "opencode" || source == "pi" {
 		a.Occurrence = nativeTargetIdentity(a.Occurrence, l)
+	}
+	if source == "pi" && input.Event == "ui_prompt_start" {
+		return nil, interactionUnavailable(ctx, s, api, l, a, InteractionSpec{Kind: "question", Title: "Pi extension input", AgentVersion: input.RuntimeVersion, Scope: "This third-party UI event exposes no native request ID, complete fields or response resolver. Answer in the original Pi terminal."}, "pi_third_party_ui_has_no_resolver")
+	}
+	if input.UnavailableReason != "" {
+		switch input.UnavailableReason {
+		case "interaction_request_too_large", "agent_version_unverified":
+		default:
+			return nil, errors.New("invalid_unavailable_reason")
+		}
+		kind := "form"
+		if input.Event == "permission.asked" {
+			kind = "approval"
+		}
+		return nil, interactionUnavailable(ctx, s, api, l, a, InteractionSpec{Kind: kind, Title: "Agent interaction", NativeID: input.RequestID, AgentVersion: input.RuntimeVersion, Scope: "The complete native request cannot be safely handled remotely. Use the original terminal."}, input.UnavailableReason)
+	}
+	if source == "codex" && input.ToolName == "request_user_input_async" {
+		if input.HookEventName == "PreToolUse" {
+			// PreToolUse is only an observation: another Hook can rewrite/block
+			// this call. The successful PostToolUse owns the sole reminder.
+			a.Reminder = ""
+			a.RequestID = ""
+			a.State = "tool_pending"
+			return nil, publishActivity(ctx, s, api, l, a)
+		}
+		if input.HookEventName == "PostToolUse" {
+			_, spec, probeErr := codexFollowupSpec(raw)
+			if probeErr == nil {
+				probeErr = startCodexFollowup(ctx, s, l, raw)
+			}
+			if probeErr == nil {
+				return nil, nil
+			}
+			a.ResolveRequest = false
+			a.Reminder = "needs_input"
+			a.State = "waiting_input"
+			return nil, interactionUnavailable(ctx, s, api, l, a, spec, safeCode(probeErr.Error()))
+		}
+	}
+	if source == "codex" && input.HookEventName == "PreToolUse" && input.ToolName == "request_user_input" {
+		return nil, interactionUnavailable(ctx, s, api, l, a, InteractionSpec{Kind: "question", Title: "Codex question", ToolName: input.ToolName, ToolInput: input.ToolInput, NativeInput: input.ToolInput, NativeID: input.ToolUseID, TurnID: input.TurnID, Cwd: input.Cwd, Scope: "This is an observed native question, not proof that the question is still pending. Use the original terminal.", AgentVersion: "0.166.0", AdapterVersion: 1}, "codex_tui_attach_only_unavailable")
 	}
 	if input.HookEventName == "PermissionRequest" {
 		return approvalWait(ctx, s, api, l, a, input)
