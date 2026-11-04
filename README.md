@@ -398,8 +398,10 @@ response headers and body. The API client's independent transport allows up to
 30 seconds for TLS negotiation **within**, not in addition to, that request budget;
 certificate verification, proxy rules and redirect refusal remain in place.
 Commands that use the API have a
-65-second total budget, including retries/readback and local persistence; local-only
-commands keep ten seconds and `upgrade` keeps two minutes. A shorter caller deadline
+65-second total budget, including retries/readback and local persistence.
+Agent version probes allow 20 seconds; `hooks install` and `status --agents-json`
+allow 25 seconds including local cleanup. Other local-only commands keep their
+existing budgets and `upgrade` keeps two minutes. A shorter caller deadline
 or cancellation still wins. Existing Agent hook deadlines are unchanged and may
 stop notification commands earlier; no installed hooks are rewritten by this change.
 Older Apps can likewise end their SSH wait before the longer CLI budget expires.

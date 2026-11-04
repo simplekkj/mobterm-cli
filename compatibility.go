@@ -78,6 +78,8 @@ func (p agentCompatibility) evaluate(output string) string {
 
 type probeStatus string
 
+const agentProbeTimeout = 20 * time.Second
+
 const (
 	probeOK        probeStatus = "ok"
 	probeNotFound  probeStatus = "not_found"
@@ -104,7 +106,7 @@ func probeAgent(ctx context.Context, agent string) agentProbe {
 	// Older official JavaScript CLIs need more than one second to start. Keep
 	// the same bounded budget in install, notify and status. Status probes four
 	// Agents concurrently within the remaining command context.
-	query, cancel := context.WithTimeout(ctx, 5*time.Second)
+	query, cancel := context.WithTimeout(ctx, agentProbeTimeout)
 	defer cancel()
 	output, err := agentVersionOutput(query, agent)
 	if err != nil {

@@ -138,7 +138,7 @@ func addStatusDiagnostics(ctx context.Context, s Store, pairID string, result ma
 }
 
 // Network commands allow two full API requests plus local persistence. Local-only
-// discovery, hooks and target verification retain their existing short budget.
+// discovery and hook installation allow a full Agent probe plus local cleanup.
 func commandTimeout(args []string) time.Duration {
 	if len(args) == 0 {
 		return 10 * time.Second
@@ -156,6 +156,10 @@ func commandTimeout(args []string) time.Duration {
 		return 2 * time.Minute
 	case "setup", "notify", "test":
 		return networkCommandTimeout
+	case "hooks":
+		if len(args) > 1 && args[1] == "install" {
+			return agentProbeTimeout + 5*time.Second
+		}
 	case "status":
 		var installation, agents bool
 		f, err := flags("status", args[1:], func(f *flag.FlagSet) {
@@ -165,6 +169,9 @@ func commandTimeout(args []string) time.Duration {
 			f.String("pair", "", "")
 		})
 		if err == nil && f.NArg() == 0 && (installation || agents) {
+			if agents {
+				return agentProbeTimeout + 5*time.Second
+			}
 			return 10 * time.Second
 		}
 		return networkCommandTimeout

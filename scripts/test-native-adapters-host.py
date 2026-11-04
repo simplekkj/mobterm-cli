@@ -23,7 +23,7 @@ with tempfile.TemporaryDirectory(prefix='mobterm-native-host-') as tmp:
     if agent == 'opencode':
         config=root/'config'/'opencode';config.mkdir()
         (config/'cli.json').write_text('// existing user setting\n{"plugins":[],}\n')
-    receipt=subprocess.run([cli,'hooks','install','--agent',agent,'--json'],env=env,cwd=root/'cwd',capture_output=True,text=True,timeout=20)
+    receipt=subprocess.run([cli,'hooks','install','--agent',agent,'--json'],env=env,cwd=root/'cwd',capture_output=True,text=True,timeout=30)
     if receipt.returncode or not json.loads(receipt.stdout).get('ok'):
         raise RuntimeError('isolated installation failed: '+receipt.stdout+' '+receipt.stderr)
     if agent == 'pi':

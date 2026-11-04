@@ -85,7 +85,7 @@ class LifecycleTests(unittest.TestCase):
 
     def cli(self, *args, data=None, code=0):
         result = subprocess.run([str(self.binary), *args], input=data, env=self.env,
-                                capture_output=True, timeout=20, cwd=self.home)
+                                capture_output=True, timeout=30, cwd=self.home)
         # Do not include potentially secret stdout/frame values in assertion messages.
         self.assertEqual(result.returncode, code, f'{args[:3]}: {result.stderr.decode()[:250]}')
         return result

@@ -113,8 +113,8 @@ This mode branches before installation initialization. It creates no Mobterm
 state directory, installation ID, lock or pair; reads no pairs or outbox;
 performs no notification API requests, sends, migrations or hook repairs.
 Existing hook ownership/configuration is only read. Agent version commands use
-one isolated disposable directory per probe, cleaned afterward, with the existing
-five-second per-Agent / ten-second command budgets and bounded output. This
+one isolated disposable directory per probe, cleaned afterward, with
+20-second per-Agent / 25-second command budgets and bounded output. This
 isolates real configuration; it does not claim arbitrary third-party executables
 have no behavior of their own. Agent detection works before pairing.
 
@@ -628,8 +628,10 @@ context for persistence. Each API client clones the standard transport and sets
 its TLS handshake limit to 30 seconds, included in the same 30-second request
 budget covering connection through body read. Global transport settings, proxy
 rules, certificate verification, HTTP/2 and redirect refusal remain unchanged.
-Local-only commands retain ten seconds and `upgrade` two
-minutes. Existing Claude/OpenCode/Pi hook caller deadlines remain unchanged and
+Agent version probes allow 20 seconds; `hooks install` and `status --agents-json`
+allow 25 seconds including local cleanup. Other local-only commands retain their
+existing budgets and `upgrade` two minutes. Existing Claude/OpenCode/Pi hook caller
+deadlines remain unchanged and
 can stop a CLI process before its API timeout; this binary change does not rewrite
 Agent configuration or installed adapters. Cancellation remains authoritative.
 Old App SSH waits may stop a slow command earlier; an App with extended notification

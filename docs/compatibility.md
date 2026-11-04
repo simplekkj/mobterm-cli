@@ -28,7 +28,9 @@ hyphen dot-separated identifiers and does not affect comparison. Prereleases
 (alpha/beta/rc/nightly/dev or any `-suffix`), overflow, partial versions, banners,
 multiple versions and unknown forms fail safely. Probe output is bounded by the
 2 MiB command limit and by 100 bytes in status. Each Agent probe has the same
-five-second budget, bounded by the calling context, with bounded pipe cleanup.
+20-second budget, bounded by the calling context, with bounded pipe cleanup.
+`hooks install` and `status --agents-json` allow 25 seconds for the probe and
+local cleanup; hook removal and installation-identity lookup retain ten seconds.
 Status probes the four independent Agents concurrently to retain time for pair
 readback within the full status command's 65-second context; deadline failures are reported
 as `probe_timeout` without exposing command output.
@@ -62,7 +64,7 @@ Node is also resolved explicitly, using asdf's execution PATH when the Agent is 
 shim. A competing global installation is never a fallback for failed resolution.
 Relative PATH directories are fixed before cwd changes. Direct native binaries
 keep their ordinary PATH selection. The entire resolution plus single Agent
-version execution shares the five-second deadline and 2 MiB output budget;
+version execution shares the 20-second deadline and 2 MiB output budget;
 selection is local to each child, without changing the parent's environment/cwd,
 installing versions or retaining a persistent resolution cache.
 

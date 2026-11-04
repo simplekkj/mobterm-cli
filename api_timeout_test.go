@@ -83,7 +83,12 @@ func TestNetworkAndLocalCommandBudgets(t *testing.T) {
 			t.Fatalf("%v has budget %s", args, got)
 		}
 	}
-	for _, args := range [][]string{nil, {"target", "verify"}, {"hooks", "install"}, {"status", "--agents-json"}, {"status", "--installation-json=true"}, {"outbox", "status"}, {"pairs", "retire"}, {"pairs", "abandon"}} {
+	for _, args := range [][]string{{"hooks", "install"}, {"status", "--agents-json"}, {"status", "--agents-json=true"}} {
+		if got := commandTimeout(args); got != 25*time.Second {
+			t.Fatalf("%v has budget %s", args, got)
+		}
+	}
+	for _, args := range [][]string{nil, {"target", "verify"}, {"hooks", "uninstall"}, {"status", "--installation-json=true"}, {"outbox", "status"}, {"pairs", "retire"}, {"pairs", "abandon"}} {
 		if got := commandTimeout(args); got != 10*time.Second {
 			t.Fatalf("%v has budget %s", args, got)
 		}

@@ -286,7 +286,40 @@ func TestAgentDiscoveryLocalTimeoutRetainsOtherAgents(t *testing.T) {
 	if capabilities["pi"].(map[string]any)["probe_status"] != probeTimeout || capabilities["codex"].(map[string]any)["supported"] != true {
 		t.Fatal("one timeout swallowed successful probes")
 	}
-	if time.Since(started) > 9*time.Second {
-		t.Fatal("probe exceeded bounded cleanup budget")
+	if elapsed := time.Since(started); elapsed < 20*time.Second || elapsed > 24*time.Second {
+		t.Fatalf("probe duration %s outside the 20-second budget and bounded cleanup", elapsed)
+	}
+}
+
+func TestSlowAgentProbeCommandBudgets(t *testing.T) {
+	for _, command := range []string{"install", "discovery"} {
+		t.Run(command, func(t *testing.T) {
+			_, bin := discoveryEnvironment(t)
+			// Exceed both the former five-second probe and ten-second command
+			// deadlines while leaving headroom within the new probe budget.
+			script := "#!/bin/sh\n/bin/sleep 12\nprintf '2.0.36 (Claude Code)\\n'\n"
+			if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"hooks", "install", "--agent", "claude", "--json"}
+			if command == "discovery" {
+				args = []string{"status", "--agents-json"}
+			}
+			var out, diag bytes.Buffer
+			if code := run(args, strings.NewReader(""), &out, &diag); code != 0 {
+				t.Fatalf("slow Agent command failed: %d %s", code, diag.String())
+			}
+			var result map[string]any
+			if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if command == "install" {
+				if result["ok"] != true {
+					t.Fatal("slow Agent hook installation failed")
+				}
+			} else if result["capabilities"].(map[string]any)["claude"].(map[string]any)["supported"] != true {
+				t.Fatal("slow Agent was not discovered as supported")
+			}
+		})
 	}
 }
