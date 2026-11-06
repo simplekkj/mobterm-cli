@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const apiRequestTimeout = 30 * time.Second
+const apiRequestTimeout = 60 * time.Second
 const networkCommandTimeout = 2*apiRequestTimeout + 5*time.Second
 
 type API struct{ Client *http.Client }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -13,14 +14,14 @@ import (
 	"time"
 )
 
-func TestAPIRequestThirtySecondBudget(t *testing.T) {
+func TestAPIRequestSixtySecondBudget(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		delay, parent time.Duration
 		wantTimeout   bool
 	}{
-		{"slow_success", 29 * time.Second, networkCommandTimeout, false},
-		{"request_limit", 31 * time.Second, networkCommandTimeout, true},
+		{"slow_success", 59 * time.Second, networkCommandTimeout, false},
+		{"request_limit", 61 * time.Second, networkCommandTimeout, true},
 		{"parent_reserves_commit", 12 * time.Second, 12 * time.Second, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -43,7 +44,7 @@ func TestAPIRequestThirtySecondBudget(t *testing.T) {
 				}
 				expected := tc.delay
 				if tc.wantTimeout {
-					expected = 30 * time.Second
+					expected = 60 * time.Second
 					if tc.parent-time.Second < expected {
 						expected = tc.parent - time.Second
 					}
@@ -79,7 +80,7 @@ func TestAPISlowTLSResponse(t *testing.T) {
 
 func TestNetworkAndLocalCommandBudgets(t *testing.T) {
 	for _, args := range [][]string{{"setup"}, {"notify"}, {"test"}, {"status", "--json"}, {"status", "--installation-json=false"}, {"status", "--pair", "agents-json"}, {"status", "--pair", "installation-json"}, {"outbox", "flush"}, {"outbox", "refresh"}, {"pairs", "reconcile"}} {
-		if got := commandTimeout(args); got != 65*time.Second {
+		if got := commandTimeout(args); got != 125*time.Second {
 			t.Fatalf("%v has budget %s", args, got)
 		}
 	}
@@ -122,7 +123,7 @@ func TestOutboxLeaseProtectsSlowRequest(t *testing.T) {
 		a.Client.Transport = releaseTransport(func(r *http.Request) (*http.Response, error) {
 			calls.Add(1)
 			select {
-			case <-time.After(29 * time.Second):
+			case <-time.After(59 * time.Second):
 				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"event_id":"` + d.EventID + `","state":"apns_accepted"}`))}, nil
 			case <-r.Context().Done():
 				return nil, r.Context().Err()
@@ -133,7 +134,7 @@ func TestOutboxLeaseProtectsSlowRequest(t *testing.T) {
 		done := make(chan error, 1)
 		go func() { _, err := deliverOne(ctx, s, a, d); done <- err }()
 		synctest.Wait()
-		time.Sleep(20 * time.Second)
+		time.Sleep(40 * time.Second)
 		if _, err := deliverOne(ctx, s, a, d); err != nil {
 			t.Fatal(err)
 		}
@@ -151,4 +152,70 @@ func TestOutboxLeaseProtectsSlowRequest(t *testing.T) {
 			t.Fatalf("slow request result not committed: state=%s posts=%d lease=%d", got.State, got.Posts, got.Lease)
 		}
 	})
+}
+
+// Exercise the actual capability -> encrypted reminder -> durable receipt path.
+// Each response fits its request budget, while the total exceeds sixty seconds.
+func TestCompletionNegotiationAndSendBudget(t *testing.T) {
+	for _, short := range []bool{false, true} {
+		t.Run(map[bool]string{false: "network_command", true: "short_observer"}[short], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				s := testStore(t)
+				id, _ := s.installation()
+				p := testPair(id, "https://api.invalid")
+				if err := s.savePair(context.Background(), p); err != nil {
+					t.Fatal(err)
+				}
+				a := newAPI()
+				posts := 0
+				a.Client.Transport = releaseTransport(func(r *http.Request) (*http.Response, error) {
+					delay := 35 * time.Second
+					if r.Method == "POST" {
+						delay = 59 * time.Second
+					}
+					select {
+					case <-time.After(delay):
+					case <-r.Context().Done():
+						return nil, r.Context().Err()
+					}
+					var value any = activityCaps(p)
+					if r.Method == "POST" {
+						var e Envelope
+						if err := json.NewDecoder(r.Body).Decode(&e); err != nil {
+							t.Fatal(err)
+						}
+						posts++
+						value = map[string]any{"v": 2, "event_id": e.EventID, "state": "apns_accepted"}
+					}
+					raw, _ := json.Marshal(value)
+					return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(string(raw)))}, nil
+				})
+				budget := commandTimeout([]string{"notify"})
+				if short {
+					budget = commandTimeout([]string{"observe"})
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), budget)
+				defer cancel()
+				l := fixtureLocator()
+				l.InstallationID = id
+				activity := Activity{Agent: "codex", Session: "session", Instance: "instance", Run: "run", Occurrence: "completed", State: "turn_completed", Reminder: "turn_completed"}
+				started := time.Now()
+				err := publishActivity(ctx, s, a, l, activity)
+				db, readErr := loadRuns(s)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if short {
+					if err == nil || posts != 0 || len(db.Intents) != 1 || time.Since(started) > budget {
+						t.Fatalf("short observer lost obligation or exceeded deadline: %v", err)
+					}
+					return
+				}
+				records, readErr := outboxRecords(context.Background(), s, p.PairID, false)
+				if err != nil || readErr != nil || posts != 1 || len(db.Intents) != 0 || len(records) != 1 || records[0].State != "apns_accepted" || time.Since(started) != 94*time.Second {
+					t.Fatalf("slow completion not committed: err=%v read=%v posts=%d records=%v elapsed=%s", err, readErr, posts, records, time.Since(started))
+				}
+			})
+		})
+	}
 }

@@ -32,7 +32,7 @@ multiple versions and unknown forms fail safely. Probe output is bounded by the
 `hooks install` and `status --agents-json` allow 25 seconds for the probe and
 local cleanup; hook removal and installation-identity lookup retain ten seconds.
 Status probes the four independent Agents concurrently to retain time for pair
-readback within the full status command's 65-second context; deadline failures are reported
+readback within the full status command's 125-second context; deadline failures are reported
 as `probe_timeout` without exposing command output.
 `status --agents-json` uses the same runtime selection and isolated probes without
 initializing installation identity, reading pairs/outbox or calling the notification

@@ -393,18 +393,22 @@ and build outputs must never be committed.
 
 ### Notification API request deadlines
 
-Notification API requests wait up to 30 seconds, including DNS, connection, TLS,
+Notification API requests wait up to 60 seconds, including DNS, connection, TLS,
 response headers and body. The API client's independent transport allows up to
-30 seconds for TLS negotiation **within**, not in addition to, that request budget;
+60 seconds for TLS negotiation **within**, not in addition to, that request budget;
 certificate verification, proxy rules and redirect refusal remain in place.
 Commands that use the API have a
-65-second total budget, including retries/readback and local persistence.
+125-second total budget, including retries/readback and local persistence.
 Agent version probes allow 20 seconds; `hooks install` and `status --agents-json`
 allow 25 seconds including local cleanup. Other local-only commands keep their
 existing budgets and `upgrade` keeps two minutes. A shorter caller deadline
 or cancellation still wins. Existing Agent hook deadlines are unchanged and may
 stop notification commands earlier; no installed hooks are rewritten by this change.
-Older Apps can likewise end their SSH wait before the longer CLI budget expires.
+Codex completion notifications and explicit outbox flushes use the full command
+budget for capability negotiation and reminder sending, rather than a two-second
+phase cap. Native `observe` hooks retain their two-second caller budget.
+The App currently waits 75 seconds for SSH notification commands and can end its
+wait before the longer CLI budget expires.
 
 Pairing reports typed network timeouts (including TLS handshake timeouts) as the
 existing `timeout` failure; explicit cancellation takes priority. Response-body

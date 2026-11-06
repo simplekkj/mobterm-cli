@@ -544,9 +544,10 @@ func enqueueRunReminder(ctx context.Context, s Store, intent RunIntent) (deliver
 	return d, s.saveShard(idx, key, old, sh)
 }
 func flushRunSnapshots(ctx context.Context, s Store, api API) error {
-	// Three short phases: fresh business first, due durable reminders next,
-	// coalesced observations last. All inherit the native caller's deadline.
-	budget := 2 * time.Second
+	// Fresh business first, due durable reminders next, coalesced observations
+	// last. Network commands allow capability negotiation and a full send;
+	// synchronous observation hooks retain their short caller deadline.
+	budget := networkCommandTimeout
 	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 5*time.Second {
 		budget = 600 * time.Millisecond
 	}

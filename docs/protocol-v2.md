@@ -128,13 +128,16 @@ Other JSON configuration retains a matching
 permissions, no-follow reads and cross-process locks remain mandatory. Downgrade
 must preserve the new run file: old CLIs cannot read a run file over 2 MiB.
 
-Fresh business intents receive the first short transport phase, then due durable
-outbox records are retried fairly across Pairs, then coalesced state. A durable
+Fresh business intents receive the first transport phase, then due durable
+outbox records are retried fairly across Pairs, then coalesced state. Network
+commands allow up to 125 seconds overall and 60 seconds per HTTP request, including
+capability negotiation before a reminder. Short observation callers retain their
+600 ms phase slices within the existing two-second deadline. A durable
 per-phase Pair cursor interleaves up to four intents so failed capabilities
 cannot pin every later flush to the same senders. All phases
 inherit the native command deadline; short HTTP budgets reserve a proportional
 local commit margin. State claims are persisted under a process-shared lock
-before I/O (35-second crash lease), with at least two seconds between sends per
+before I/O (65-second crash lease), with at least two seconds between sends per
 Pair and longer server Retry-After respected. Observation/encoding capabilities
 are cached by exact origin/Pair/installation/credential for at most 60 seconds,
 bounded to 128 cache entries; a capability 429 persists its Retry-After instead

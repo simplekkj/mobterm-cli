@@ -33,8 +33,8 @@ The phone rechecks its local pair and connection binding before opening a target
 
 Hook errors are quiet on stdout, sanitized on stderr, and return zero. An existing
 Codex notifier is invoked with its original argv/input and its own output/exit
-status preserved. Mobterm's API commands have a 65-second overall command budget and 30-second HTTP
-timeouts, including a 30-second TLS handshake limit within that same request
+status preserved. Mobterm's API commands have a 125-second overall command budget and 60-second HTTP
+timeouts, including a 60-second TLS handshake limit within that same request
 budget on an independent transport. Default proxy rules, certificate verification
 and redirect refusal remain unchanged. Shorter parent deadlines and cancellation
 still win, with the final parent-context second reserved for persistence.
