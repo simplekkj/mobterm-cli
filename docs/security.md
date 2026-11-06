@@ -43,8 +43,12 @@ minutes. v2 observation uses a two-second budget; permission wait has an absolut
 120-second request budget within a configured 130-second host deadline. A disabled
 permission hook returns after durable observation and may launch one five-second
 short-lived drain child; it does not wait for HTTP. Existing Agent-managed hook timeouts can cancel the CLI earlier; upgrading
-the binary does not change installed Agent configuration or adapter deadlines. Each new delivery makes one immediate POST; later events or explicit
-flush can recover up to 32 due deliveries, with at most four requests at once.
+the binary does not change installed Agent configuration or adapter deadlines.
+Completion, test and explicit flush commands allow at most two POST attempts per
+event within the command budget, sharing that limit across fresh sending and
+recovery. Jittered backoff respects Retry-After and cancellation and waits outside
+store locks. Short observation callers remain single-attempt. Later events or
+explicit flush can recover up to 32 due deliveries, with at most four requests at once.
 A delivery reserves at most 12 POST attempts across calls. Durable owner leases
 and exact-envelope reuse protect concurrent hook/flush operations. Per-event
 service handoff ends local POST recovery; receipt refresh only performs GETs. Interactive test/status expose failures instead of
@@ -58,6 +62,15 @@ Underlying causes are kept only internally: displayed response-read errors remai
 text, URLs, credentials and response bodies are never added to failure metadata.
 Ordinary body-read errors, invalid JSON and oversized responses keep their previous
 safe behavior; they are not relabeled as connection failures.
+
+Failed API requests emit allowlisted network diagnostics to stderr; setting
+`MOBTERM_NETWORK_DIAGNOSTICS=1` includes successful requests. Only fixed method,
+phase/outcome, timings, connection reuse, protocol, HTTP status and a strictly
+validated UUID request ID are emitted. No URLs, addresses, credentials, hook
+payloads, arbitrary headers or raw server/network errors are retained. There is
+no CLI diagnostic file and no change to stdout JSON. HTTP error responses retain
+status and Retry-After even when their body is unreadable, using a fixed fallback
+code instead of response content.
 
 Upgrades trust the public project's GitHub release account and HTTPS release
 assets, not arbitrary mirrors or script URLs. SHA-256 verifies integrity against

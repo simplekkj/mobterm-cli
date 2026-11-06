@@ -453,7 +453,7 @@ func deliveryResult(d delivery) map[string]any {
 	}
 	return v
 }
-func deliverOne(ctx context.Context, s Store, a API, d delivery) (map[string]any, error) {
+func deliverAttempt(ctx context.Context, s Store, a API, d delivery) (map[string]any, error) {
 	owner := randomID()
 	now := time.Now().Unix()
 	claimed, err := updateDelivery(ctx, s, d.PairID, d.EventID, func(current *delivery) error {
@@ -468,6 +468,9 @@ func deliverOne(ctx context.Context, s Store, a API, d delivery) (map[string]any
 			}
 			current.Envelope = nil
 			return nil
+		}
+		if !deliveryAttemptAllowed(ctx, deliveryKey(d.PairID, d.EventID), true) {
+			return errors.New("outbox_not_due")
 		}
 		current.Owner = owner
 		// Keep ownership throughout a full API request and its result commit.
@@ -547,16 +550,11 @@ func deliverOne(ctx context.Context, s Store, a API, d delivery) (map[string]any
 			return nil
 		}
 		current.Error = "api_unavailable"
-		delay := 15 * time.Second * time.Duration(1<<min(current.Posts-1, 5))
-		if delay > 5*time.Minute {
-			delay = 5 * time.Minute
-		}
+		var retryAfter time.Duration
 		var ae *APIError
 		if errors.As(requestErr, &ae) {
 			current.Error = safeCode(ae.Code)
-			if ae.RetryAfter > delay {
-				delay = ae.RetryAfter
-			}
+			retryAfter = ae.RetryAfter
 			if ae.Status >= 400 && ae.Status < 500 && ae.Status != 429 {
 				current.State = "permanent_failed"
 				current.Envelope = nil
@@ -566,7 +564,13 @@ func deliverOne(ctx context.Context, s Store, a API, d delivery) (map[string]any
 		if requestErr == nil {
 			current.Error = "service_handoff_unconfirmed"
 		}
-		current.Next = time.Now().Add(delay).Unix()
+		delay := deliveryRetryDelay(current.Posts, retryAfter)
+		// Round up: persisted second precision must not retry before Retry-After.
+		next := time.Now().Add(delay)
+		current.Next = next.Unix()
+		if next.Nanosecond() != 0 {
+			current.Next++
+		}
 		if current.Next >= current.Expires || current.Posts >= 12 {
 			current.State = "permanent_failed"
 			current.Envelope = nil

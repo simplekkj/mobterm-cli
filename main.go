@@ -208,6 +208,10 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	defer stop()
 	ctx, cancel := context.WithTimeout(base, commandTimeout(args))
 	defer cancel()
+	ctx = withNetworkDiagnostics(ctx, diagnostic, os.Getenv("MOBTERM_NETWORK_DIAGNOSTICS") == "1")
+	if args[0] == "notify" || args[0] == "test" || args[0] == "outbox" && len(args) > 1 && args[1] == "flush" {
+		ctx = withDeliveryRetries(ctx)
+	}
 	a := newAPI()
 	var value any
 	switch args[0] {

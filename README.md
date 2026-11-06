@@ -241,8 +241,9 @@ user updates or maintains the connection. See the [frame/receipt contract](docs/
 Retirement markers contain only digests/reason/time and are bounded at 4096
 identities; the CLI refuses new retirement identities at that boundary rather
 than evicting markers that still prevent delayed operations from reviving an ID.
-Events are durably saved for all active pairs before sending. Pending work waits
-for another Agent event or explicit flush; an idle host does not wake itself.
+Events are durably saved for all active pairs before sending. Completion, test and
+explicit flush commands can retry once within their remaining budget. Work still
+pending waits for another Agent event or explicit flush; an idle host does not wake itself.
 Once the service explicitly takes responsibility, refresh queries its receipt
 without posting the event again. Status is read-only. The original one-hour TTL,
 nonce/ciphertext and event ID never change on retry. Terminal results and source
@@ -414,6 +415,28 @@ Pairing reports typed network timeouts (including TLS handshake timeouts) as the
 existing `timeout` failure; explicit cancellation takes priority. Response-body
 timeout/cancellation evidence is preserved without displaying raw network errors.
 A generic `api_unavailable` result alone cannot identify the failed network phase.
+
+Failed API requests now write a safe diagnostic line to stderr, prefixed with
+`mobterm-cli network: `. To include successful requests during troubleshooting:
+
+```sh
+MOBTERM_NETWORK_DIAGNOSTICS=1 mobterm-cli test --pair PAIR_ID --json
+MOBTERM_NETWORK_DIAGNOSTICS=1 mobterm-cli outbox flush --pair PAIR_ID --json
+```
+
+Records distinguish DNS, TCP, TLS, request write, response headers and body phases,
+and include available timings, connection reuse, HTTP protocol/status and a valid
+UUID request ID. `first_byte_ms` measures elapsed time from request start, not an
+additional phase duration. No URLs, addresses, credentials, payloads or raw error
+text are logged. The CLI does not retain a diagnostic file, and stdout JSON is
+unchanged. A completed request write does not prove API acceptance or phone display.
+
+Retryable completion delivery and capability failures get at most one additional
+attempt during the command, with a randomized delay starting at 15–18.75 seconds.
+Retries reuse the original event and ciphertext, respect longer `Retry-After`
+values, and require at least five seconds left after the wait. Cancellation ends
+the wait. Short observation hooks keep their existing budgets; there is no
+background retry after the command exits.
 
 For a field report, record the App build, API origin, attempt time, and the absolute
 CLI path plus version/commit observed by the App's installation step. Setup and

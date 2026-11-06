@@ -131,7 +131,11 @@ must preserve the new run file: old CLIs cannot read a run file over 2 MiB.
 Fresh business intents receive the first transport phase, then due durable
 outbox records are retried fairly across Pairs, then coalesced state. Network
 commands allow up to 125 seconds overall and 60 seconds per HTTP request, including
-capability negotiation before a reminder. Short observation callers retain their
+capability negotiation before a reminder. Completion/test/explicit outbox flush
+commands may retry ordinary capability negotiation once on transient failures,
+with jittered backoff and Retry-After respected within that budget. The retry wait
+occurs outside the capability-cache lock; approval authorization remains fresh
+and does not gain this retry. Short observation callers retain their
 600 ms phase slices within the existing two-second deadline. A durable
 per-phase Pair cursor interleaves up to four intents so failed capabilities
 cannot pin every later flush to the same senders. All phases

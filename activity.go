@@ -616,7 +616,7 @@ func flushRunIntents(ctx context.Context, s Store, api API, states bool) error {
 				// freshly registered request using a stale authorization clock.
 				c, e = runCapabilities(ctx, api, p)
 			} else {
-				c, e = cachedRunCapabilities(ctx, s, api, p)
+				c, e = completionCapabilities(ctx, s, api, p)
 			}
 			if e != nil {
 				last = e

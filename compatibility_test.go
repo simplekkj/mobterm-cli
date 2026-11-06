@@ -654,6 +654,8 @@ func TestRangeNotifyEncryptedIdentity(t *testing.T) {
 					attempt := len(bodies)
 					mu.Unlock()
 					if attempt%2 == 1 {
+						// Defer beyond this command so the fixture exercises later recovery.
+						w.Header().Set("Retry-After", "180")
 						w.WriteHeader(503)
 						return
 					}

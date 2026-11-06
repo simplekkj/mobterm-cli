@@ -46,7 +46,7 @@ func newAPI() API {
 	}
 	return API{&http.Client{Transport: transport, Timeout: apiRequestTimeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return errors.New("redirect refused") }}}
 }
-func (a API) request(ctx context.Context, p Pair, method, path string, body any) (map[string]any, error) {
+func (a API) request(ctx context.Context, p Pair, method, path string, body any) (result map[string]any, requestErr error) {
 	// Keep the last second of a finite command budget for durable result commits.
 	deadline := time.Now().Add(apiRequestTimeout)
 	if end, ok := ctx.Deadline(); ok {
@@ -79,20 +79,36 @@ func (a API) request(ctx context.Context, p Pair, method, path string, body any)
 	}
 	req.Header.Set("Authorization", "Bearer "+p.SendToken)
 	req.Header.Set("Content-Type", "application/json")
+	traceCtx, trace := traceRequest(req.Context(), method)
+	req = req.WithContext(traceCtx)
+	defer func() { trace.finish(requestErr) }()
 	resp, err := a.Client.Do(req)
 	if err != nil {
 		return nil, &apiConnectionError{cause: err}
 	}
 	defer resp.Body.Close()
+	trace.response(resp)
+	retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+	responseError := &APIError{Status: resp.StatusCode, Code: "invalid_api_response", RetryAfter: retryAfter}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 16385))
+	trace.bodyResult(err)
 	if err != nil && (errors.Is(err, context.Canceled) || isTimeoutError(err)) {
+		if resp.StatusCode >= 400 {
+			err = errors.Join(err, responseError)
+		}
 		return nil, &apiResponseError{cause: err}
 	}
 	if err != nil || len(b) > 16384 {
+		if resp.StatusCode >= 400 {
+			return nil, responseError
+		}
 		return nil, errors.New("invalid API response")
 	}
 	v := map[string]any{}
 	if json.Unmarshal(b, &v) != nil {
+		if resp.StatusCode >= 400 {
+			return nil, responseError
+		}
 		return nil, errors.New("invalid API response")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -100,7 +116,6 @@ func (a API) request(ctx context.Context, p Pair, method, path string, body any)
 		if len(code) > 80 || strings.ContainsAny(code, "\r\n") {
 			code = "request_failed"
 		}
-		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		return v, &APIError{Status: resp.StatusCode, Code: code, RetryAfter: retryAfter}
 	}
 	return v, nil

@@ -616,8 +616,12 @@ policy denial terminates only that delivery. No automatic re-pair loop exists.
 Every eligible pair is independently persisted **before the first network send**.
 A failed save is `not_saved`, never claimed queued. The command remains bounded to
 125 seconds, each HTTP to 60 seconds. New events run before old due work. This
-implementation uses one immediate POST per hook delivery (within the maximum of
-two); subsequent invocations/explicit flush retry persisted work. Flush selects
+implementation allows one initial POST and at most one retry per event during
+completion (`notify`), test and explicit flush commands. The same per-command
+limit covers both fresh sending and later recovery. Retries wait outside store
+locks, honor cancellation, and only wait when at least five seconds remain after
+the delay. Other callers retain single-attempt behavior. Subsequent invocations
+or explicit flush recover remaining persisted work. Flush selects
 at most 32 records with at most 4 concurrent requests and pair round-robin.
 There is no daemon, cron installation, port, detached child, or idle wake-up.
 
@@ -648,8 +652,11 @@ shorten an in-flight lease.
 
 Each delivery retains its original event ID, nonce, ciphertext, first creation
 and one-hour expiry. Across calls at most 12 POST attempts are reserved durably.
-Retry delay starts at 15 seconds, doubles to 5 minutes. A valid longer Retry-After
-is respected. Integer overflow/excessive numeric headers saturate to one day
+Retry delay starts at 15 seconds and doubles to a four-minute base, with up to
+25% positive jitter (five minutes maximum). Persisted next-attempt times round up
+to seconds. A valid longer Retry-After is respected, including on HTTP error
+responses with malformed JSON or failed body reads; these preserve the HTTP status
+and use the fixed fallback code `invalid_api_response`. Integer overflow/excessive numeric headers saturate to one day
 (which exceeds the original TTL), HTTP dates are supported, invalid headers use
 the local delay. A retry at/after expiry terminates; expiry is never extended.
 
