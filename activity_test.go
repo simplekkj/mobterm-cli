@@ -262,6 +262,7 @@ func TestApprovalInputRefusesUnknownAndOversize(t *testing.T) {
 func TestNativeWaitConsumedWithoutReplay(t *testing.T) {
 	claudeNotifyEnvironment(t)
 	s := testStore(t)
+	holdApprovalDispatch(t, s)
 	id, _ := s.installation()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

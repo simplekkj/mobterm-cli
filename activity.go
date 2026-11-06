@@ -241,6 +241,11 @@ func applyActivity(ctx context.Context, s Store, l Locator, a Activity) (string,
 		return "", StoredRun{}, false, err
 	}
 	defer unlock()
+	return applyActivityLocked(s, l, a)
+}
+
+// Caller owns Store.lock, including when persisting an approval lifecycle change.
+func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, bool, error) {
 	db, err := loadRuns(s)
 	if err != nil {
 		return "", StoredRun{}, false, err
@@ -292,6 +297,12 @@ func applyActivity(ctx context.Context, s Store, l Locator, a Activity) (string,
 	}
 	if terminalRun(r.State) {
 		return key, r, false, nil
+	}
+	if a.Approval != nil {
+		request, readErr := approvalRead(s, a.Approval.RequestID)
+		if readErr != nil || request.State != "pending" || request.ExpiresAt <= now || !approvalAlive(request) || request.Digest != a.Approval.Digest || request.Locator != l || request.Session != "" && (request.Agent != a.Agent || request.Session != a.Session || request.Run != a.Run || request.Instance != a.Instance || request.RequestID != a.RequestID) {
+			return key, r, false, nil
+		}
 	}
 	r.Revision++
 	r.Updated = now
@@ -535,7 +546,7 @@ func enqueueRunReminder(ctx context.Context, s Store, intent RunIntent) (deliver
 	}
 	old := cloneShard(sh)
 	raw, _ := json.Marshal(intent.Payload.Locator)
-	d := delivery{PairID: e.PairID, EventID: e.EventID, Kind: e.Kind, LocatorHash: digest(string(raw)), Created: intent.Payload.OccurredAt, Expires: e.ExpiresAt, State: "pending", Envelope: &e}
+	d := delivery{PairID: e.PairID, EventID: e.EventID, Kind: e.Kind, LocatorHash: digest(string(raw)), Created: intent.Payload.OccurredAt, Expires: e.ExpiresAt, State: "pending", Envelope: &e, Approval: intent.Payload.Approval}
 	sh.Records[key] = d
 	idx, err := s.outboxLoad(true)
 	if err != nil {
@@ -551,6 +562,10 @@ func flushRunSnapshots(ctx context.Context, s Store, api API) error {
 	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 5*time.Second {
 		budget = 600 * time.Millisecond
 	}
+	return flushRunSnapshotsWithBudget(ctx, s, api, budget)
+}
+
+func flushRunSnapshotsWithBudget(ctx context.Context, s Store, api API, budget time.Duration) error {
 	fresh, cancel := context.WithTimeout(ctx, budget)
 	first := flushRunIntents(fresh, s, api, false)
 	cancel()
@@ -608,10 +623,20 @@ func flushRunIntents(ctx context.Context, s Store, api API, states bool) error {
 			continue
 		}
 		count++
+		if hint := intent.Payload.Approval; hint != nil {
+			if err := reconcileApprovalHint(s, hint); err != nil {
+				last = err
+				continue
+			}
+			if !approvalNotificationValid(s, hint, p.PairID) {
+				last = removeRunIntent(ctx, s, key, intent.Occurrence)
+				continue
+			}
+		}
 		if intent.Envelope == nil {
 			var c RunCapabilities
 			var e error
-			if intent.Payload.Interaction != nil {
+			if intent.Payload.Interaction != nil || intent.Payload.Approval != nil {
 				// A new grant may postdate the observation cache. Never strip a
 				// freshly registered request using a stale authorization clock.
 				c, e = runCapabilities(ctx, api, p)
@@ -621,6 +646,19 @@ func flushRunIntents(ctx context.Context, s Store, api API, states bool) error {
 			if e != nil {
 				last = e
 				continue
+			}
+			if hint := intent.Payload.Approval; hint != nil {
+				request, readErr := approvalRead(s, hint.RequestID)
+				if readErr != nil || !approvalNotificationValid(s, hint, p.PairID) || !c.Enabled || !c.States || !c.Inbox || !c.Approvals[intent.Payload.Agent] || request.Pairs[p.PairID] != c.PolicyGeneration {
+					if readErr == nil && (!c.Enabled || !c.States || !c.Inbox || !c.Approvals[intent.Payload.Agent] || request.Pairs[p.PairID] != c.PolicyGeneration) {
+						if err := revokeApprovalPair(s, hint.RequestID, p.PairID); err != nil {
+							last = err
+							continue
+						}
+					}
+					last = removeRunIntent(ctx, s, key, intent.Occurrence)
+					continue
+				}
 			}
 			if !c.Enabled || !c.States || !c.Inbox {
 				if intent.Kind == "turn_completed" || intent.Kind == "needs_input" {
@@ -640,12 +678,6 @@ func flushRunIntents(ctx context.Context, s Store, api API, states bool) error {
 					last = removeRunIntent(ctx, s, key, intent.Occurrence)
 				}
 				continue
-			}
-			if hint := intent.Payload.Approval; hint != nil {
-				request, readErr := approvalRead(s, hint.RequestID)
-				if readErr != nil || !c.Approvals[intent.Payload.Agent] || request.Pairs[p.PairID] != c.PolicyGeneration {
-					intent.Payload.Approval = nil
-				}
 			}
 			interactionAllowed := false
 			if hint := intent.Payload.Interaction; hint != nil {

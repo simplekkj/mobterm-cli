@@ -1692,3 +1692,130 @@ in its own report. Under the agreed single static Review workflow, Codex will
 save/read back the same-page repair report and close the original task directly;
 no second ChatGPT Review is required. Exact commit/push/status receipts are in
 that Notion report.
+
+## Codex hooks 第 1 轮 v1.0 P1 delivery (2026-11-06)
+
+Scope: P1-A approval observation/waiter lifecycle and P1-B ordinary Codex tool
+Hook reception/dispatch. G0 is still a known event-contract blocker: a Stop Hook
+can cause the current turn to continue before legacy notify. P0 has not been
+implemented, and the overall requirement remains **待实施**, not 待验收/已完成.
+No completion mapping, installed Hook template, migration, installer, third-party
+notifier chain, user Codex configuration or remote Agent runtime was changed.
+
+Opening CLI: main at `a1cae43c2ce260e27bffbbb3a2ed6cb51013b5dc`, clean. API was
+read-only/clean at `adaa3db7b4f70d09de89fd34bbc585e9be136ebb`. App was read-only/clean
+at `cfe565f2a18d7c423f95bad6da15dcb846f23c7e`, ahead of the analysis reference
+`2f077d10ba894656f3c17353b71558f7e7f9c2d2`. Its intervening configuration UI and
+installation changes do not alter NotificationActivity's state/hint contract;
+that consumer and API notification-v2's independent revisioned state path were
+read. App/API received no task changes, tests or deployments.
+
+Environment: macOS 15.8.1 (24H32), Intel Core i7-8569U, x86_64, Go 1.27.1
+(darwin/amd64). [Raw subprocess measurements and limitations](evidence/codex-p1-latency/README.md)
+record baseline/after build fingerprints, sample counts, percentiles, synchronous
+HTTP, durable receipt and sampled worker/target metrics. Counts from fixtures
+are not real Codex/native approval or API/APNs delivery evidence. No real Herdr
+application, phone display, Jump to UI, external API, model calls or paid runtime
+was exercised. Real isolated tmux identity coverage is reported by the Go suite
+and the separate real-tmux measurement scenario.
+
+Focused dispatch tests cover durable reception and zero synchronous HTTP,
+including full-store recovery; late Pre cannot regress a returned tool; a
+concurrent burst admits one active and one pending worker; a final queued
+business event is sent; a killed pending worker and failed executable launch
+release admission without deleting stored responsibility. An initial worker
+race fixture reported only one of two sends: investigation found the new short
+worker inherited the old 600ms foreground phase cap. The dispatcher now passes
+its explicit five-second network budget. The focused dispatch suite passed
+three repeats after that repair; no business-state assertion was weakened.
+Approval lifecycle coverage and complete required check results follow below.
+
+P1-A focused checks passed (24.349s), covering passive observations, two same-text
+requests without native IDs, request-level resolution alongside another approval
+and question, expiry/parent identity/local permission loss, resolved intents and
+already-encoded outbox, resolution during capability lookup, Pair-scoped
+revocation, terminal run protection, native consumption and existing CAS.
+A subsequent registration-sweep regression passed (3.233s): old expired waiters
+are removed from their exact run before retention cleanup or new registration.
+
+Measurement failures are retained, not relabelled as passes. The first baseline
+was contaminated by three test processes started before the test executable's
+child-command routing existed. Only those owned processes were terminated;
+`exploratory-contaminated` data is excluded from performance comparisons. A clean
+baseline was collected without concurrent builds/tests. It had zero sequential
+receipt failures but 22/512 missing durable occurrences under eight-way load.
+The first modified build (`after-initial`) still had 10/512 concurrent and 2/64
+history/multiple-Pair receipt failures despite zero foreground HTTP. Five of the
+concurrent calls failed before target query, identifying the existing installation
+read's global write-lock acquisition as a concrete contributor. The identity
+read now avoids that lock for an existing valid atomic file; initialization,
+private-path checks and invalid-data rejection remain unchanged. Regression tests
+for reading while a run writer holds the lock and for eight simultaneous first
+initializations passed (1.152s). No operation timeout or Hook template was relaxed.
+Final measurements and complete-suite results follow below.
+
+The identity-only follow-up still had 8/512 concurrent and 1/64 history receipt
+failures; all target queries now completed. A temporary receiver-priority gate
+also failed (9/512 and 2/64) and was removed rather than retained as unused
+complexity. The remaining store contention used fixed 20ms nonblocking polls,
+allowing newer writers to reacquire repeatedly while earlier writers slept.
+Contended Store.lock now joins the kernel lock wait queue with an unbuffered
+ownership handoff. The original deadline remains; a cancelled waiter cannot
+write state or leak the later-acquired lock. All other lock users retain their
+existing behavior. Focused dispatch, concurrent storage, identity and cancelled
+waiter tests passed (4.282s). The same subprocess follow-up then saved 512/512
+concurrent and 64/64 history observations, with zero foreground HTTP; the final
+full measurement matrix uses that frozen binary. All failed intermediate data
+remains in the evidence directory; no operation timeout was increased.
+
+The schema fixture check initially failed because the existing Codex
+PermissionRequest sample still expected `waiting_approval`. The same stale
+expectation surfaced in the first full ordinary run, which was stopped after
+recording that confirmed failure (owned test process group only). Updated just
+that Codex fixture to `tool_pending`; Claude/OpenCode assertions remain intact.
+`go test ./... -run '^TestActivitySchemas$' -count=1` then passed (1.395s).
+The measured Go-source manifest still exactly matches the working tree; only
+this expected-result fixture and documentation changed after measurement.
+A fresh full ordinary/vet/race sequence follows, with the failed initial record
+preserved in [checks-initial](evidence/codex-p1-checks-initial.json).
+
+Final full-matrix measurement: 3,080 actual CLI calls, including 2,920 ordinary
+Pre/Post observations; every ordinary observation was immediately durable, emitted
+no stdout and made zero foreground HTTP attempts. Concurrent 8-lane reception
+was 512/512 (clean baseline 490/512); three-Pair history was 64/64; isolated real
+tmux was 200/200. Sampled dispatcher maximum was two processes, receiver overlap
+one request. Sequential Pre P50/P95/P99 was 64.56/90.65/100.27ms versus clean
+baseline 84.73/178.12/278.60ms; Post was 64.62/90.61/99.77ms versus
+84.59/260.87/285.18ms. The full table includes all seven installed Hook types;
+small-sample UserPromptSubmit/Interrupt tails did not uniformly improve. Separate
+lock-wait/fsync metrics and real device/native runtime evidence remain unmeasured.
+
+Final ordinary suite: `go test -json -timeout 20m ./...` PASS, 465.984s, 742 test
+items passed, no failures or skips. `go vet ./...` PASS, 0.520s. JSON output and a
+20-minute suite ceiling only improve traceability; no per-operation test or Hook
+budget was relaxed. Portable command results are in
+[checks](evidence/codex-p1-checks.json). Full race results follow.
+
+Final race suite: `go test -race -json -timeout 20m ./...` PASS, 571.214s, 742
+items passed, no failures, skips or data race report. `test -z "$(gofmt -l .)"`
+and `git diff --check` PASS. The measurement script compiled with Python and all
+seven CSV rounds were independently recomputed against their JSON percentiles,
+sample counts and durable-receipt counts; final ordinary stdout/HTTP/receipt
+assertions passed. No further production or test-source edits followed these
+successful complete checks.
+
+A1–A7 and A11 have passing local behavior/regression evidence. A8 additionally
+includes real isolated tmux tests and measurements, but real Herdr and App Jump
+to UI were not exercised. A9 has unchanged wire contracts, CLI vector/compatibility
+tests and read-only App/API inspection; it is not proof of real API/APNs or phone
+delivery. A10 has complete per-installed-Hook timing evidence and disclosed
+sample sizes, but no separately instrumented lock-wait/fsync duration/counts or
+enabled human-wait timing. A12/A13 remain blocked by G0 and unimplemented. No
+release, deployment, live configuration migration or completion-source change
+was performed. The full requirement must remain 待实施.
+
+The first staged diff check additionally caught CRLF line endings in newly added
+CSV evidence (untracked files were not covered by earlier unstaged diff checks).
+Normalized them to LF and made the exporter explicit; parsed samples are exactly
+unchanged. Python compilation and the final staged diff check then passed. This
+format-only change does not alter the measured or tested Go implementation.

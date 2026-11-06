@@ -1,0 +1,16 @@
+{
+  "command": [
+    "go",
+    "test",
+    "-json",
+    "-timeout",
+    "20m",
+    "./..."
+  ],
+  "result": "interrupted after confirmed obsolete Codex PermissionRequest fixture expectation",
+  "failed_tests": [
+    "TestActivitySchemas/codex_waiting_approval",
+    "TestActivitySchemas"
+  ],
+  "raw_local_log": "/tmp/mobterm-codex-p1-test-initial.log"
+}

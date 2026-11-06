@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -21,6 +20,9 @@ import (
 )
 
 type ApprovalRequest struct {
+	Session        string           `json:"session,omitempty"`
+	Run            string           `json:"run,omitempty"`
+	Instance       string           `json:"instance,omitempty"`
 	NativeIdentity string           `json:"native_identity,omitempty"`
 	V              int              `json:"v"`
 	RequestID      string           `json:"request_id"`
@@ -153,7 +155,12 @@ func approvalCommand(ctx context.Context, s Store, api API, command string, in i
 		if err != nil {
 			return nil, err
 		}
-		defer unlock()
+		defer func() {
+			unlock()
+			if err == nil && !f.Enabled {
+				startActivityFlush(s)
+			}
+		}()
 		m, err := localApprovals(s)
 		if err != nil {
 			return nil, err
@@ -217,6 +224,12 @@ func approvalCommand(ctx context.Context, s Store, api API, command string, in i
 		}
 	}
 	if err = approvalEligible(ctx, s, api, p, r, generation); err != nil {
+		if err.Error() == "approval_disabled" {
+			if settleErr := revokeApprovalPair(s, r.RequestID, p.PairID); settleErr != nil {
+				return nil, settleErr
+			}
+			_ = startActivityFlush(s)
+		}
 		return nil, err
 	}
 	if err = approvalTarget(ctx, s, r.Locator); err != nil {
@@ -226,7 +239,12 @@ func approvalCommand(ctx context.Context, s Store, api API, command string, in i
 	if err != nil {
 		return nil, err
 	}
-	defer unlock()
+	defer func() {
+		unlock()
+		if err == nil && command == "release" {
+			startActivityFlush(s)
+		}
+	}()
 	r, err = approvalRead(s, f.RequestID)
 	if err != nil {
 		return nil, err
@@ -237,7 +255,7 @@ func approvalCommand(ctx context.Context, s Store, api API, command string, in i
 	if r.State != "pending" {
 		return nil, errors.New("approval_conflict")
 	}
-	if time.Now().Unix() >= r.ExpiresAt || !approvalAlive(r) {
+	if time.Now().Unix() >= r.ExpiresAt || !approvalAlive(r) || !approvalRunWaiting(s, r) {
 		return nil, errors.New("approval_expired")
 	}
 	if command == "inspect" {
@@ -252,6 +270,9 @@ func approvalCommand(ctx context.Context, s Store, api API, command string, in i
 		r.OperationJSON = ""
 	}
 	err = s.writeJSON("approval-"+r.RequestID+".json", r)
+	if err == nil && command == "release" {
+		err = resolveApprovalActivityLocked(s, r)
+	}
 	return approvalResult(r, f.PairID, generation, false), err
 }
 func approvalDecisions(agent string) []string {
@@ -349,7 +370,7 @@ func approvalOperation(l Locator, a Activity, input activityInput, id string, cr
 	}
 	return raw, nil
 }
-func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, input activityInput) (any, error) {
+func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, input activityInput) (result any, resultErr error) {
 	// Opt-in is local as well as remote: disabled hooks never wait on an API lookup.
 	configured, err := localApprovals(s)
 	if err != nil {
@@ -360,6 +381,10 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 		if agents[a.Agent] > 0 {
 			enabled = true
 		}
+	}
+	if a.Agent == "codex" {
+		a.State, a.Reminder = "tool_pending", ""
+		a.Approval, a.RequestID = nil, ""
 	}
 	if !enabled || !approvalInputSupported(a.Agent, input) {
 		// Disabled approval observes locally and returns immediately; it never holds
@@ -401,7 +426,7 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 	if err != nil {
 		return nil, nil
 	}
-	r := ApprovalRequest{V: 3, RequestID: id, Digest: digest(string(raw)), Agent: a.Agent, OperationJSON: string(raw), Locator: l, ExpiresAt: expires, CreatedAt: created, PID: os.Getpid(), Birth: birth, ParentPID: os.Getppid(), ParentBirth: parentBirth, State: "pending", Pairs: map[string]int64{}}
+	r := ApprovalRequest{Session: a.Session, Run: a.Run, Instance: a.Instance, V: 3, RequestID: id, Digest: digest(string(raw)), Agent: a.Agent, OperationJSON: string(raw), Locator: l, ExpiresAt: expires, CreatedAt: created, PID: os.Getpid(), Birth: birth, ParentPID: os.Getppid(), ParentBirth: parentBirth, State: "pending", Pairs: map[string]int64{}}
 	if input.ToolUseID != "" {
 		r.NativeIdentity = digest(a.Agent + "\x00" + a.Session + "\x00" + a.Run + "\x00" + input.ToolUseID + "\x00" + l.InstallationID + "\x00" + l.OccupantID)
 	}
@@ -411,7 +436,7 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 	}
 	for pid, p := range pairs {
 		g := configured[pid][a.Agent]
-		if g > 0 {
+		if g > 0 && p.Status == "active" && p.InstallationID == l.InstallationID {
 			check, cancel := context.WithTimeout(ctx, 2*time.Second)
 			c, e := runCapabilities(check, api, p)
 			cancel()
@@ -429,9 +454,27 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 			return nil, nil
 		}
 	}
+	if err = approvalTarget(ctx, s, l); err != nil {
+		return nil, err
+	}
 	unlock, err := s.lock(ctx)
 	if err != nil {
 		return nil, err
+	}
+	// Recheck local authority under the same lock as request registration.
+	configured, err = localApprovals(s)
+	if err != nil {
+		unlock()
+		return nil, err
+	}
+	for pid := range r.Pairs {
+		if configured[pid][a.Agent] <= 0 {
+			delete(r.Pairs, pid)
+		}
+	}
+	if len(r.Pairs) == 0 {
+		unlock()
+		return nil, nil
 	}
 	entries, err := os.ReadDir(s.Dir)
 	count := 0
@@ -440,6 +483,10 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 			if stringsHasApproval(entry.Name()) {
 				old, e := approvalRead(s, entry.Name()[9:len(entry.Name())-5])
 				if e == nil && old.ExpiresAt+3600 < created {
+					if e = resolveApprovalActivityLocked(s, old); e != nil {
+						err = e
+						break
+					}
 					_ = os.Remove(filepath.Join(s.Dir, entry.Name()))
 					continue
 				}
@@ -447,10 +494,16 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 					unlock()
 					return nil, nil
 				}
-				if e == nil && old.ExpiresAt <= created && old.OperationJSON != "" {
-					old.State = "expired"
-					old.OperationJSON = ""
-					if e = s.writeJSON(entry.Name(), old); e != nil {
+				if e == nil && old.ExpiresAt <= created {
+					if old.OperationJSON != "" {
+						old.State = "expired"
+						old.OperationJSON = ""
+						if e = s.writeJSON(entry.Name(), old); e != nil {
+							err = e
+							break
+						}
+					}
+					if e = resolveApprovalActivityLocked(s, old); e != nil {
 						err = e
 						break
 					}
@@ -467,20 +520,35 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 	if err == nil {
 		err = s.writeJSON("approval-"+id+".json", r)
 	}
+	if err == nil {
+		a.State, a.Reminder = "waiting_approval", "needs_input"
+		a.RequestID = id
+		a.Approval = &ApprovalHint{id, r.Digest, expires}
+		a.Occurrence = digest("approval\x00" + id)
+		var changed bool
+		_, _, changed, err = applyActivityLocked(s, l, a)
+		if err == nil && !changed {
+			r.State, r.OperationJSON = "cancelled", ""
+			err = s.writeJSON("approval-"+id+".json", r)
+			unlock()
+			return nil, err
+		}
+	}
 	unlock()
 	if err != nil {
+		_ = finishApproval(s, id, "cancelled")
 		return nil, err
 	}
-	a.Approval = &ApprovalHint{id, r.Digest, expires}
-	a.Occurrence = digest("approval\x00" + id)
-	// Notification IO has a separate short budget and cannot block the consumer.
-	sent := make(chan struct{})
-	go func() {
-		defer close(sent)
-		sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		_ = publishActivity(sendCtx, s, api, l, a)
+	// Persist both the waiter and its waiting state before any sender can run.
+	// Every return path settles this request, including already-consumed/released.
+	defer func() {
+		if err := finishApproval(s, id, "cancelled"); err != nil && resultErr == nil {
+			result, resultErr = nil, err
+		}
+		startActivityFlush(s)
 	}()
+	startActivityFlush(s)
+	lastValidation := time.Now()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -496,8 +564,11 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 		if e != nil {
 			return nil, e
 		}
-		if current.State == "released" {
-			return nil, nil
+		if current.State != "pending" && current.State != "decision_recorded" {
+			return nil, finishApproval(s, id, current.State)
+		}
+		if !approvalAlive(current) || !approvalRunWaiting(s, current) {
+			return nil, finishApproval(s, id, "cancelled")
 		}
 		configured, e := localApprovals(s)
 		if e != nil {
@@ -513,6 +584,15 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 			return nil, finishApproval(s, id, "released")
 		}
 		if current.State != "decision_recorded" {
+			if time.Since(lastValidation) >= time.Second {
+				lastValidation = time.Now()
+				check, cancel := context.WithTimeout(ctx, 2*time.Second)
+				e = approvalTarget(check, s, l)
+				cancel()
+				if e != nil {
+					return nil, finishApproval(s, id, "cancelled")
+				}
+			}
 			continue
 		}
 		p, ok := pairs[current.DecidingPair]
@@ -533,10 +613,13 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 			return nil, e
 		}
 		again, e := approvalRead(s, id)
-		if e == nil && again.State == "decision_recorded" && again.DecisionID == current.DecisionID && time.Now().Unix() < expires && approvalAlive(again) {
+		if e == nil && again.State == "decision_recorded" && again.DecisionID == current.DecisionID && time.Now().Unix() < expires && approvalAlive(again) && approvalRunWaiting(s, again) {
 			again.State = "consumed"
 			again.OperationJSON = ""
 			e = s.writeJSON("approval-"+id+".json", again)
+			if e == nil {
+				e = resolveApprovalActivityLocked(s, again)
+			}
 		} else {
 			e = errors.New("approval_consume_conflict")
 		}
@@ -558,20 +641,6 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 	}
 }
 
-// A bounded child drains this invocation's durable intent without holding the
-// synchronous native permission prompt. It exits after five seconds, opens no
-// listener and schedules no future wakeups.
-func startActivityFlush(s Store) {
-	executable, err := os.Executable()
-	if err != nil {
-		return
-	}
-	cmd := exec.Command(executable, "activity", "flush")
-	cmd.Env = append(os.Environ(), "MOBTERM_CONFIG_DIR="+s.Dir)
-	if cmd.Start() == nil {
-		go func() { _ = cmd.Wait() }()
-	}
-}
 func stringsHasApproval(name string) bool {
 	return len(name) > 14 && name[:9] == "approval-" && name[len(name)-5:] == ".json" && name != "approval-policy-v2.json"
 }
@@ -590,9 +659,11 @@ func finishApproval(s Store, id, state string) error {
 	if r.State == "pending" || r.State == "decision_recorded" {
 		r.State = state
 		r.OperationJSON = ""
-		return s.writeJSON("approval-"+id+".json", r)
+		if err = s.writeJSON("approval-"+id+".json", r); err != nil {
+			return err
+		}
 	}
-	return nil
+	return resolveApprovalActivityLocked(s, r)
 }
 
 // Caller owns Store.lock. The configuration write precedes this sweep; waiters
@@ -625,7 +696,102 @@ func releaseDisabledApprovalsLocked(s Store, configured map[string]map[string]in
 			if err = s.writeJSON(entry.Name(), r); err != nil {
 				return err
 			}
+			if err = resolveApprovalActivityLocked(s, r); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// New requests carry exact run attribution. Legacy records without it cannot
+// safely identify a pending request and are deliberately left untouched.
+func resolveApprovalActivityLocked(s Store, r ApprovalRequest) error {
+	if r.Session == "" || r.Run == "" || r.Instance == "" {
+		return nil
+	}
+	_, _, _, err := applyActivityLocked(s, r.Locator, Activity{Agent: r.Agent, Session: r.Session, Run: r.Run, Instance: r.Instance, RequestID: r.RequestID, ResolveRequest: true, State: "running", Occurrence: digest("approval-resolved\x00" + r.RequestID)})
+	return err
+}
+
+// Notification suppression never rewrites an existing envelope. A consumed,
+// expired or otherwise invalid waiter cannot produce a fresh needs_input alert.
+func approvalNotificationValid(s Store, hint *ApprovalHint, pair string) bool {
+	r, err := approvalRead(s, hint.RequestID)
+	if err != nil || r.State != "pending" || r.Digest != hint.Digest || r.ExpiresAt != hint.ExpiresAt || r.ExpiresAt <= time.Now().Unix() || !approvalAlive(r) || r.Pairs[pair] <= 0 || !approvalRunWaiting(s, r) {
+		return false
+	}
+	configured, err := localApprovals(s)
+	return err == nil && configured[pair][r.Agent] > 0
+}
+
+func reconcileApprovalHint(s Store, hint *ApprovalHint) error {
+	r, err := approvalRead(s, hint.RequestID)
+	if err != nil {
+		return nil // Unknown legacy provenance is not permission to rewrite runs.
+	}
+	if r.State != "pending" && r.State != "decision_recorded" {
+		return finishApproval(s, r.RequestID, r.State)
+	}
+	if r.ExpiresAt <= time.Now().Unix() {
+		return finishApproval(s, r.RequestID, "expired")
+	}
+	if !approvalAlive(r) || !approvalRunWaiting(s, r) {
+		return finishApproval(s, r.RequestID, "cancelled")
+	}
+	configured, err := localApprovals(s)
+	if err != nil {
+		return err
+	}
+	for pid := range r.Pairs {
+		if configured[pid][r.Agent] > 0 {
+			return nil
+		}
+	}
+	return finishApproval(s, r.RequestID, "released")
+}
+
+// A verified policy failure belongs to one pair. Preserve other phones' still
+// valid authority and settle the run only once no pair can answer this request.
+func revokeApprovalPair(s Store, id, pair string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	r, err := approvalRead(s, id)
+	if err != nil {
+		return err
+	}
+	if r.State != "pending" && r.State != "decision_recorded" {
+		return resolveApprovalActivityLocked(s, r)
+	}
+	delete(r.Pairs, pair)
+	if len(r.Pairs) == 0 {
+		r.State, r.OperationJSON = "released", ""
+	}
+	if err = s.writeJSON("approval-"+id+".json", r); err != nil {
+		return err
+	}
+	if r.State == "released" {
+		return resolveApprovalActivityLocked(s, r)
+	}
+	return nil
+}
+
+func approvalRunWaiting(s Store, r ApprovalRequest) bool {
+	if r.Session == "" || r.Run == "" || r.Instance == "" {
+		return true // Historical records lack sufficient attribution to guess.
+	}
+	db, err := loadRuns(s)
+	if err != nil {
+		return false
+	}
+	target, _ := json.Marshal(r.Locator)
+	instance := digest(r.Agent + "\x00" + r.Session + "\x00" + r.Instance + "\x00" + string(target))
+	run, ok := db.Runs[digest(instance+"\x00"+r.Run)]
+	request := run.Requests[r.RequestID]
+	return ok && !terminalRun(run.State) && request.Approval != nil && request.Approval.Digest == r.Digest
 }

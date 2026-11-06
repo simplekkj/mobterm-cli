@@ -1,0 +1,83 @@
+{
+  "label": "after-queued-lock",
+  "source": "a1cae43c2ce260e27bffbbb3a2ed6cb51013b5dc+manifest-c6002aa878e1cc6f1e42c5a77abf7139ccab1261931091a2cb7946621a3e3969",
+  "harness_sha256": "89bd5c91c1c5eb2219a4e674dba40b55aef6816475c654b648633af9f9d7b633",
+  "binary_sha256": "35dd45846405243ee3c9e6ec61f97788944702a9eab383c73252805e66e88c92",
+  "binary_version": "mobterm-cli dev unknown darwin/amd64",
+  "platform": "macOS-15.8.1-x86_64-i386-64bit",
+  "machine": "x86_64",
+  "python": "3.9.6",
+  "go": "go version go1.27.1 darwin/amd64",
+  "cpu": "Intel(R) Core(TM) i7-8569U CPU @ 2.80GHz",
+  "wall_clock": "perf_counter_ns around subprocess.run; includes launch, stdin/stdout, target, locks, persistence, foreground exit",
+  "sample_percentiles": "nearest rank; no removed outliers",
+  "model_calls": 0,
+  "real_apns": false,
+  "lock_wait_ms": null,
+  "fsync_count": null,
+  "worker_sampling_interval_ms": 50,
+  "scenarios": {
+    "normal-concurrent8": {
+      "total_receiver_http": 3,
+      "target_queries": 512,
+      "target_queries_note": "counted Herdr protocol fixture requests",
+      "max_parallel_receiver_requests": 1,
+      "events": {
+        "PostToolUse": {
+          "n": 256,
+          "p50_ms": 373.7683,
+          "p95_ms": 426.9834,
+          "p99_ms": 566.8726,
+          "synchronous_http": 0,
+          "persisted_true": 256,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        },
+        "PreToolUse": {
+          "n": 256,
+          "p50_ms": 373.6569,
+          "p95_ms": 421.9751,
+          "p99_ms": 505.0132,
+          "synchronous_http": 0,
+          "persisted_true": 256,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        }
+      },
+      "max_sampled_worker_processes": 2
+    },
+    "history-multipair": {
+      "total_receiver_http": 10,
+      "target_queries": 64,
+      "target_queries_note": "counted Herdr protocol fixture requests",
+      "max_parallel_receiver_requests": 1,
+      "events": {
+        "PostToolUse": {
+          "n": 32,
+          "p50_ms": 94.1183,
+          "p95_ms": 183.1817,
+          "p99_ms": 183.4098,
+          "synchronous_http": 0,
+          "persisted_true": 32,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        },
+        "PreToolUse": {
+          "n": 32,
+          "p50_ms": 107.7506,
+          "p95_ms": 182.0744,
+          "p99_ms": 183.034,
+          "synchronous_http": 0,
+          "persisted_true": 32,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        }
+      },
+      "max_sampled_worker_processes": 2
+    }
+  },
+  "history_fixture": {
+    "runs": 17,
+    "outbox_files": 29
+  }
+}

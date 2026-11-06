@@ -67,7 +67,7 @@
         "command": "printf fixture"
       }
     },
-    "state": "waiting_approval"
+    "state": "tool_pending"
   },
   {
     "source": "claude",

@@ -1,0 +1,51 @@
+{
+  "environment": "Go 1.27.1 darwin/amd64; macOS 15.8.1; serialized after subprocess measurements",
+  "checks": [
+    {
+      "command": [
+        "go",
+        "test",
+        "-json",
+        "-timeout",
+        "20m",
+        "./..."
+      ],
+      "exit_code": 0,
+      "seconds": 465.984,
+      "completed_utc": "2026-11-06T09:21:49.712698+00:00",
+      "raw_local_log": "/tmp/mobterm-codex-p1-test.log",
+      "passed_tests": 742,
+      "skipped_tests": [],
+      "failed_tests": []
+    },
+    {
+      "command": [
+        "go",
+        "vet",
+        "./..."
+      ],
+      "exit_code": 0,
+      "seconds": 0.52,
+      "completed_utc": "2026-11-06T09:21:50.249207+00:00",
+      "raw_local_log": "/tmp/mobterm-codex-p1-vet.log"
+    },
+    {
+      "command": [
+        "go",
+        "test",
+        "-race",
+        "-json",
+        "-timeout",
+        "20m",
+        "./..."
+      ],
+      "exit_code": 0,
+      "seconds": 571.214,
+      "completed_utc": "2026-11-06T09:31:21.471580+00:00",
+      "raw_local_log": "/tmp/mobterm-codex-p1-race.log",
+      "passed_tests": 742,
+      "skipped_tests": [],
+      "failed_tests": []
+    }
+  ]
+}

@@ -31,7 +31,7 @@ func TestApprovalContextBindsNativeDirectory(t *testing.T) {
 	}
 	s := testStore(t)
 	a, p, err := parseActivity(context.Background(), s, "codex", []byte(`{"hook_event_name":"PermissionRequest","session_id":"session","turn_id":"turn","cwd":"/work/native","tool_name":"Bash","tool_input":{"command":"pwd"}}`))
-	if err != nil || a.State != "waiting_approval" || p.Cwd != "/work/native" || !approvalInputSupported("codex", p) {
+	if err != nil || a.State != "tool_pending" || a.Reminder != "" || p.Cwd != "/work/native" || !approvalInputSupported("codex", p) {
 		t.Fatal("native context lost", err)
 	}
 	if !approvalInputSupported("claude", p) {

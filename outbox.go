@@ -18,19 +18,20 @@ const outboxByteLimit = 80 * 1024 * 1024
 const outboxShardLimit = 2 * 1024 * 1024
 
 type delivery struct {
-	PairID      string    `json:"pair_id"`
-	EventID     string    `json:"event_id"`
-	Kind        string    `json:"kind"`
-	LocatorHash string    `json:"locator_hash"`
-	Created     int64     `json:"created"`
-	Expires     int64     `json:"expires_at"`
-	State       string    `json:"state"`
-	Error       string    `json:"error,omitempty"`
-	Next        int64     `json:"next_attempt_at,omitempty"`
-	Posts       int       `json:"posts"`
-	Owner       string    `json:"owner,omitempty"`
-	Lease       int64     `json:"lease_until,omitempty"`
-	Envelope    *Envelope `json:"envelope,omitempty"`
+	Approval    *ApprovalHint `json:"approval,omitempty"`
+	PairID      string        `json:"pair_id"`
+	EventID     string        `json:"event_id"`
+	Kind        string        `json:"kind"`
+	LocatorHash string        `json:"locator_hash"`
+	Created     int64         `json:"created"`
+	Expires     int64         `json:"expires_at"`
+	State       string        `json:"state"`
+	Error       string        `json:"error,omitempty"`
+	Next        int64         `json:"next_attempt_at,omitempty"`
+	Posts       int           `json:"posts"`
+	Owner       string        `json:"owner,omitempty"`
+	Lease       int64         `json:"lease_until,omitempty"`
+	Envelope    *Envelope     `json:"envelope,omitempty"`
 }
 type outboxCount struct {
 	Records    int `json:"records"`
@@ -454,11 +455,21 @@ func deliveryResult(d delivery) map[string]any {
 	return v
 }
 func deliverAttempt(ctx context.Context, s Store, a API, d delivery) (map[string]any, error) {
+	if d.Approval != nil {
+		if err := reconcileApprovalHint(s, d.Approval); err != nil {
+			return nil, err
+		}
+	}
 	owner := randomID()
 	now := time.Now().Unix()
 	claimed, err := updateDelivery(ctx, s, d.PairID, d.EventID, func(current *delivery) error {
 		if current.State != "pending" || current.Next > now || current.Lease > now {
 			return errors.New("outbox_not_due")
+		}
+		if current.Approval != nil && !approvalNotificationValid(s, current.Approval, current.PairID) {
+			current.State, current.Error = "disabled", "approval_resolved"
+			current.Envelope = nil
+			return nil
 		}
 		if current.Expires <= now || current.Posts >= 12 {
 			current.State = "permanent_failed"
@@ -500,7 +511,27 @@ func deliverAttempt(ctx context.Context, s Store, a API, d delivery) (map[string
 		if claimed.Envelope.V == 2 {
 			path = "/v2/pairs/" + p.PairID + "/events"
 		}
-		response, err = a.request(ctx, p, "POST", path, claimed.Envelope)
+		if claimed.Approval != nil {
+			request, readErr := approvalRead(s, claimed.Approval.RequestID)
+			if readErr != nil || !approvalNotificationValid(s, claimed.Approval, p.PairID) {
+				err = errors.New("approval_resolved")
+			} else if err = approvalEligible(ctx, s, a, p, request, request.Pairs[p.PairID]); err == nil {
+				if err = approvalTarget(ctx, s, request.Locator); err != nil {
+					_ = finishApproval(s, request.RequestID, "cancelled")
+					err = errors.New("approval_resolved")
+				} else if !approvalNotificationValid(s, claimed.Approval, p.PairID) {
+					err = errors.New("approval_resolved")
+				}
+			}
+		}
+		if err != nil && err.Error() == "approval_disabled" && claimed.Approval != nil {
+			if settleErr := revokeApprovalPair(s, claimed.Approval.RequestID, p.PairID); settleErr != nil {
+				err = settleErr
+			}
+		}
+		if err == nil {
+			response, err = a.request(ctx, p, "POST", path, claimed.Envelope)
+		}
 	}
 	// Authentication failures suspend only this pair; network errors never retire it.
 	var authError *APIError
@@ -546,6 +577,11 @@ func deliverAttempt(ctx context.Context, s Store, a API, d delivery) (map[string
 		if !ok || p.Status != "active" {
 			current.State = "permanent_failed"
 			current.Error = "pair_not_active"
+			current.Envelope = nil
+			return nil
+		}
+		if requestErr != nil && (requestErr.Error() == "approval_resolved" || requestErr.Error() == "approval_disabled") {
+			current.State, current.Error = "disabled", requestErr.Error()
 			current.Envelope = nil
 			return nil
 		}

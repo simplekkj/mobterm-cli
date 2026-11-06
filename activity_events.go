@@ -162,6 +162,11 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 	case "PermissionRequest":
 		a.State = "waiting_approval"
 		a.Reminder = "needs_input"
+		if source == "codex" {
+			// This hook precedes native approval aggregation; it proves no wait.
+			a.State = "tool_pending"
+			a.Reminder = ""
+		}
 	case "Interrupt":
 		if source == "codex" {
 			a.State = "interrupted"
@@ -343,6 +348,9 @@ func observe(ctx context.Context, s Store, api API, source string, raw []byte) (
 	}
 	if input.HookEventName == "PermissionRequest" {
 		return approvalWait(ctx, s, api, l, a, input)
+	}
+	if source == "codex" && (input.HookEventName == "PreToolUse" || input.HookEventName == "PostToolUse") && input.ToolName != "request_user_input" && input.ToolName != "request_user_input_async" {
+		return nil, receiveActivity(ctx, s, l, a)
 	}
 	return nil, publishActivity(ctx, s, api, l, a)
 }

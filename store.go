@@ -120,9 +120,13 @@ func (s Store) lock(ctx context.Context) (func(), error) {
 	if err := ensureDir(s.Dir, true); err != nil {
 		return nil, err
 	}
-	return lockFile(ctx, filepath.Join(s.Dir, ".lock"))
+	return lockFileWait(ctx, filepath.Join(s.Dir, ".lock"), true)
 }
 func lockFile(ctx context.Context, path string) (func(), error) {
+	return lockFileWait(ctx, path, false)
+}
+
+func lockFileWait(ctx context.Context, path string, queued bool) (func(), error) {
 	if ctx.Err() != nil {
 		return nil, errors.New("command_budget_exhausted")
 	}
@@ -130,13 +134,43 @@ func lockFile(ctx context.Context, path string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
+	unlock := func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }
 	for {
 		if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
-			return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }, nil
+			return unlock, nil
 		}
 		if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
 			f.Close()
 			return nil, err
+		}
+		if queued {
+			// Store writers must join the kernel wait queue, rather than sleep
+			// 20ms while a new observer/flush repeatedly acquires the lock first.
+			// The unbuffered handoff gives the file exactly one owner. If the
+			// caller's budget expires, this waiter only unlocks/closes when the
+			// current writer finishes; it can never perform a late state write.
+			acquired := make(chan error)
+			go func() {
+				err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+				select {
+				case acquired <- err:
+				case <-ctx.Done():
+					unlock()
+				}
+			}()
+			select {
+			case err := <-acquired:
+				if err != nil || ctx.Err() != nil {
+					unlock()
+					if err != nil {
+						return nil, err
+					}
+					return nil, errors.New("configuration busy")
+				}
+				return unlock, nil
+			case <-ctx.Done():
+				return nil, errors.New("configuration busy")
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -164,6 +198,27 @@ func (s Store) writeJSON(name string, v any) error {
 	return atomicWrite(filepath.Join(s.Dir, name), append(b, '\n'), 0600)
 }
 func (s Store) installation() (string, error) {
+	if err := ensureDir(s.Dir, true); err != nil {
+		return "", err
+	}
+	var v struct {
+		V  int    `json:"v"`
+		ID string `json:"installation_id"`
+	}
+	read := func() (string, error) {
+		if err := s.readJSON("installation.json", &v); err != nil {
+			return "", err
+		}
+		if v.V != 1 || !opaqueID.MatchString(v.ID) {
+			return "", errors.New("invalid installation identity")
+		}
+		return v.ID, nil
+	}
+	// Existing identity is immutable and written atomically. A read must not
+	// queue behind run/outbox fsyncs before every high-frequency tool Hook.
+	if id, err := read(); !errors.Is(err, os.ErrNotExist) {
+		return id, err
+	}
 	ctx, c := context.WithTimeout(context.Background(), 2*time.Second)
 	defer c()
 	unlock, err := s.lock(ctx)
@@ -171,19 +226,9 @@ func (s Store) installation() (string, error) {
 		return "", err
 	}
 	defer unlock()
-	var v struct {
-		V  int    `json:"v"`
-		ID string `json:"installation_id"`
-	}
-	err = s.readJSON("installation.json", &v)
-	if err == nil {
-		if v.V != 1 || !opaqueID.MatchString(v.ID) {
-			return "", errors.New("invalid installation identity")
-		}
-		return v.ID, nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return "", err
+	// Concurrent first use still chooses exactly one identity under Store.lock.
+	if id, err := read(); !errors.Is(err, os.ErrNotExist) {
+		return id, err
 	}
 	v.V = 1
 	v.ID = randomID()

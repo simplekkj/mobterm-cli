@@ -1,0 +1,324 @@
+{
+  "label": "after-initial",
+  "source": "a1cae43c2ce260e27bffbbb3a2ed6cb51013b5dc+manifest-a3a5aa976aaaeb2401e45ec013b40c3d032cf992e4788020f4f4c79be616eb43",
+  "harness_sha256": "52073bf794ab44df5734d034447d42da8f2f3edd494208e3782f33a9c57e9a95",
+  "binary_sha256": "47be8a9c95e2c9404b6940adbe765aa7fcf65f1af82ad89ca339ac4582a4a59e",
+  "binary_version": "mobterm-cli dev unknown darwin/amd64",
+  "platform": "macOS-15.8.1-x86_64-i386-64bit",
+  "machine": "x86_64",
+  "python": "3.9.6",
+  "go": "go version go1.27.1 darwin/amd64",
+  "cpu": "Intel(R) Core(TM) i7-8569U CPU @ 2.80GHz",
+  "wall_clock": "perf_counter_ns around subprocess.run; includes launch, stdin/stdout, target, locks, persistence, foreground exit",
+  "sample_percentiles": "nearest rank; no removed outliers",
+  "model_calls": 0,
+  "real_apns": false,
+  "lock_wait_ms": null,
+  "fsync_count": null,
+  "worker_sampling_interval_ms": 50,
+  "scenarios": {
+    "normal-sequential": {
+      "total_receiver_http": 76,
+      "target_queries": 2000,
+      "target_queries_note": "counted Herdr protocol fixture requests",
+      "max_parallel_receiver_requests": 1,
+      "events": {
+        "PostToolUse": {
+          "n": 1000,
+          "p50_ms": 61.4592,
+          "p95_ms": 102.3551,
+          "p99_ms": 293.8726,
+          "synchronous_http": 0,
+          "persisted_true": 1000,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        },
+        "PreToolUse": {
+          "n": 1000,
+          "p50_ms": 61.5916,
+          "p95_ms": 103.994,
+          "p99_ms": 292.6356,
+          "synchronous_http": 0,
+          "persisted_true": 1000,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        }
+      },
+      "max_sampled_worker_processes": 2
+    },
+    "normal-concurrent8": {
+      "total_receiver_http": 16,
+      "target_queries": 507,
+      "target_queries_note": "counted Herdr protocol fixture requests",
+      "max_parallel_receiver_requests": 1,
+      "events": {
+        "PostToolUse": {
+          "n": 256,
+          "p50_ms": 270.891,
+          "p95_ms": 1598.1511,
+          "p99_ms": 2016.379,
+          "synchronous_http": 0,
+          "persisted_true": 250,
+          "persisted_false": 6,
+          "nonzero_exit": 0
+        },
+        "PreToolUse": {
+          "n": 256,
+          "p50_ms": 293.0728,
+          "p95_ms": 1430.4535,
+          "p99_ms": 2018.2454,
+          "synchronous_http": 0,
+          "persisted_true": 252,
+          "persisted_false": 4,
+          "nonzero_exit": 0
+        }
+      },
+      "max_sampled_worker_processes": 2
+    },
+    "cold-cache": {
+      "total_receiver_http": 10,
+      "target_queries": 80,
+      "target_queries_note": "counted Herdr protocol fixture requests",
+      "max_parallel_receiver_requests": 1,
+      "events": {
+        "PostToolUse": {
+          "n": 40,
+          "p50_ms": 62.6935,
+          "p95_ms": 114.7451,
+          "p99_ms": 125.3407,
+          "synchronous_http": 0,
+          "persisted_true": 40,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        },
+        "PreToolUse": {
+          "n": 40,
+          "p50_ms": 63.1087,
+          "p95_ms": 122.8156,
+          "p99_ms": 132.8155,
+          "synchronous_http": 0,
+          "persisted_true": 40,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        }
+      },
+      "max_sampled_worker_processes": 2
+    },
+    "slow-api": {
+      "total_receiver_http": 3,
+      "target_queries": 32,
+      "target_queries_note": "counted Herdr protocol fixture requests",
+      "max_parallel_receiver_requests": 1,
+      "events": {
+        "PostToolUse": {
+          "n": 16,
+          "p50_ms": 62.3595,
+          "p95_ms": 113.7821,
+          "p99_ms": 113.7821,
+          "synchronous_http": 0,
+          "persisted_true": 16,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        },
+        "PreToolUse": {
+          "n": 16,
+          "p50_ms": 61.5298,
+          "p95_ms": 87.7035,
+          "p99_ms": 87.7035,
+          "synchronous_http": 0,
+          "persisted_true": 16,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        }
+      },
+      "max_sampled_worker_processes": 2
+    },
+    "offline-api": {
+      "total_receiver_http": 0,
+      "target_queries": 32,
+      "target_queries_note": "counted Herdr protocol fixture requests",
+      "max_parallel_receiver_requests": 0,
+      "events": {
+        "PostToolUse": {
+          "n": 16,
+          "p50_ms": 62.6619,
+          "p95_ms": 86.8509,
+          "p99_ms": 86.8509,
+          "synchronous_http": 0,
+          "persisted_true": 16,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        },
+        "PreToolUse": {
+          "n": 16,
+          "p50_ms": 61.8865,
+          "p95_ms": 89.0513,
+          "p99_ms": 89.0513,
+          "synchronous_http": 0,
+          "persisted_true": 16,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        }
+      },
+      "max_sampled_worker_processes": 1
+    },
+    "history-multipair": {
+      "total_receiver_http": 29,
+      "target_queries": 63,
+      "target_queries_note": "counted Herdr protocol fixture requests",
+      "max_parallel_receiver_requests": 1,
+      "events": {
+        "PostToolUse": {
+          "n": 32,
+          "p50_ms": 63.6276,
+          "p95_ms": 1260.4708,
+          "p99_ms": 1497.5082,
+          "synchronous_http": 0,
+          "persisted_true": 32,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        },
+        "PreToolUse": {
+          "n": 32,
+          "p50_ms": 63.5851,
+          "p95_ms": 2017.0574,
+          "p99_ms": 2017.1563,
+          "synchronous_http": 0,
+          "persisted_true": 30,
+          "persisted_false": 2,
+          "nonzero_exit": 0
+        }
+      },
+      "max_sampled_worker_processes": 2
+    },
+    "real-tmux": {
+      "total_receiver_http": 10,
+      "target_queries": null,
+      "target_queries_note": "real tmux queries not instrumented",
+      "max_parallel_receiver_requests": 1,
+      "events": {
+        "PostToolUse": {
+          "n": 100,
+          "p50_ms": 83.1064,
+          "p95_ms": 111.7286,
+          "p99_ms": 303.6302,
+          "synchronous_http": 0,
+          "persisted_true": 100,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        },
+        "PreToolUse": {
+          "n": 100,
+          "p50_ms": 84.4027,
+          "p95_ms": 306.9005,
+          "p99_ms": 324.5398,
+          "synchronous_http": 0,
+          "persisted_true": 100,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        }
+      },
+      "max_sampled_worker_processes": 2
+    },
+    "installed-UserPromptSubmit": {
+      "total_receiver_http": 3,
+      "target_queries": 32,
+      "target_queries_note": "counted Herdr protocol fixture requests",
+      "max_parallel_receiver_requests": 1,
+      "events": {
+        "UserPromptSubmit": {
+          "n": 32,
+          "p50_ms": 82.6063,
+          "p95_ms": 398.4512,
+          "p99_ms": 408.259,
+          "synchronous_http": 3,
+          "persisted_true": 0,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        }
+      },
+      "max_sampled_worker_processes": 0
+    },
+    "installed-PermissionRequest": {
+      "total_receiver_http": 2,
+      "target_queries": 32,
+      "target_queries_note": "counted Herdr protocol fixture requests",
+      "max_parallel_receiver_requests": 1,
+      "events": {
+        "PermissionRequest": {
+          "n": 32,
+          "p50_ms": 62.2819,
+          "p95_ms": 215.4434,
+          "p99_ms": 293.1771,
+          "synchronous_http": 0,
+          "persisted_true": 0,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        }
+      },
+      "max_sampled_worker_processes": 2
+    },
+    "installed-Interrupt": {
+      "total_receiver_http": 33,
+      "target_queries": 32,
+      "target_queries_note": "counted Herdr protocol fixture requests",
+      "max_parallel_receiver_requests": 1,
+      "events": {
+        "Interrupt": {
+          "n": 32,
+          "p50_ms": 587.858,
+          "p95_ms": 669.6299,
+          "p99_ms": 714.9689,
+          "synchronous_http": 33,
+          "persisted_true": 0,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        }
+      },
+      "max_sampled_worker_processes": 0
+    },
+    "installed-SessionStart": {
+      "total_receiver_http": 0,
+      "target_queries": 0,
+      "target_queries_note": "counted Herdr protocol fixture requests",
+      "max_parallel_receiver_requests": 0,
+      "events": {
+        "SessionStart": {
+          "n": 32,
+          "p50_ms": 13.3075,
+          "p95_ms": 16.2014,
+          "p99_ms": 16.7832,
+          "synchronous_http": 0,
+          "persisted_true": 0,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        }
+      },
+      "max_sampled_worker_processes": 0
+    },
+    "installed-SessionEnd": {
+      "total_receiver_http": 0,
+      "target_queries": 0,
+      "target_queries_note": "counted Herdr protocol fixture requests",
+      "max_parallel_receiver_requests": 0,
+      "events": {
+        "SessionEnd": {
+          "n": 32,
+          "p50_ms": 12.5936,
+          "p95_ms": 15.0961,
+          "p99_ms": 15.6588,
+          "synchronous_http": 0,
+          "persisted_true": 0,
+          "persisted_false": 0,
+          "nonzero_exit": 0
+        }
+      },
+      "max_sampled_worker_processes": 0
+    }
+  },
+  "history_fixture": {
+    "runs": 17,
+    "outbox_files": 39
+  },
+  "known_failure": "10/512 concurrent tool observations and 2/64 history/multipair tool observations were not durable on foreground return. Retained as initial implementation failure evidence, not final acceptance."
+}

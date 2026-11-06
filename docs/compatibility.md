@@ -440,3 +440,60 @@ reply contracts, conditional limitations, schema subsets, lifecycle boundaries
 and primary source links are recorded in [native interactions](native-interactions.md).
 Notifications keep their existing minimum versions. An installed integration is
 not proof that a running TUI has loaded it or that a real model consumed an answer.
+
+### Codex P1 approval and observation changes (2026-11-06)
+
+Codex `PermissionRequest` is a pre-decision observation. It now contributes only
+ordinary `tool_pending` state until an explicitly enabled MobTerm approval Hook
+has validated its input, Pair, live policy/capability and target and durably saved
+its actual waiter. Only that waiter creates `waiting_approval` / `needs_input`
+with a request-bound hint. This confirms a MobTerm Hook waiting for a response;
+it does not prove the native Codex UI is waiting, override another Hook's deny,
+or change Codex's own aggregation. Disabled/unsupported observations perform no
+synchronous capability lookup and create no actionable/high-priority request.
+
+Approval resolution removes only the matching request and recomputes remaining
+waits/tools. Requests without a native ID retain distinct generated identities.
+Consumed, released, cancelled, expired and invalid waiters cannot be revived by
+late observations. New approval intents/outbox records carry local provenance so
+senders can suppress a stale request before sending; an existing ciphertext is
+never re-sealed under the same event ID. Already accepted API/APNs notifications
+cannot be recalled. Unknown legacy provenance is not grounds to delete history.
+The existing default-off authorization, native reply, live decision/consumption
+checks, target proof, CAS and 120-second response window remain in force.
+
+Ordinary Codex `PreToolUse` / `PostToolUse` now synchronously validate the target
+and durably apply/coalesce state, then request a bounded `activity dispatch`
+child. They do not perform capability, snapshot, event or outbox HTTP, including
+when admission fails for capacity. Admission failure retains older obligations
+and is not a successful enqueue. `request_user_input`,
+`request_user_input_async`, PermissionRequest and other interaction paths retain
+their dedicated handling; successful async-question PostToolUse registration is
+not discarded. Hook JSON/TOML definitions and native synchronous semantics are
+unchanged; no blanket `async=true` or tool filtering is introduced.
+
+A configuration root admits one active dispatcher and at most one pending
+successor through inherited kernel file locks. A pending child batches arrivals
+for 250ms, releases its admission slot only after obtaining the active lock and
+before reading durable work, and uses at most five seconds for network draining
+within a twelve-second total lifetime. It never launches another child. Crashes
+release the locks; durable intents/outbox survive failed launches, exhausted
+budgets and network failures for a later Hook or explicit `outbox flush`.
+There is no daemon, listener or scheduled future retry. Existing per-Pair
+fairness, rate limits, retry deadlines, immutable envelopes, terminal latch and
+returned-tool ordering remain authoritative. Existing installation identity is
+securely read from its atomic file without queuing behind the run-store writer;
+initial creation still locks and reads again before generating an identity.
+Contended run-store writers join the kernel lock queue instead of periodically
+polling while newer writers reacquire it. The caller's deadline is unchanged;
+an expired waiter can only release/close a subsequently acquired lock, never
+perform a late state write. No second activity queue is introduced.
+This is not an identity/target cache. Target validation is not cached or
+weakened. [Measurement evidence](evidence/codex-p1-latency/README.md) separates controlled
+fixtures from real terminal/device evidence.
+
+G0 remains blocked: Stop hooks can request continuation of the same turn before
+legacy notify runs. This round adds no Stop completion mapping and performs no
+P0 configuration migration. `notify` and its old reader/third-party chain remain
+in place. Completing these two independent P1 changes does not complete the
+hooks-only requirement or authorize a completion-source switch.

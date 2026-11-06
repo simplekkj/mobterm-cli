@@ -145,6 +145,9 @@ func commandTimeout(args []string) time.Duration {
 	}
 	switch args[0] {
 	case "activity":
+		if len(args) == 2 && args[1] == "dispatch" {
+			return activityDispatchBudget
+		}
 		return 5 * time.Second
 	case "observe":
 		return 2 * time.Second
@@ -216,6 +219,12 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	var value any
 	switch args[0] {
 	case "activity":
+		if len(args) == 2 && args[1] == "dispatch" {
+			if dispatchActivity(ctx, s, a, os.NewFile(3, "activity-pending-lock")) != nil {
+				return 1
+			}
+			return 0
+		}
 		if len(args) != 2 || args[1] != "flush" {
 			return 1
 		}

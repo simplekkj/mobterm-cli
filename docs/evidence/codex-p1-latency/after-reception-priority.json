@@ -1,0 +1,84 @@
+{
+  "label": "after-reception-priority",
+  "source": "a1cae43c2ce260e27bffbbb3a2ed6cb51013b5dc+manifest-1d9c97d1ab382209494034af440c79163e9de2dd9ea81a5d162fb2db351cf84e",
+  "harness_sha256": "89bd5c91c1c5eb2219a4e674dba40b55aef6816475c654b648633af9f9d7b633",
+  "binary_sha256": "87f22ed6ad82f285dede517d0d87ffe01a24504dd60a428a09146f3f85546908",
+  "binary_version": "mobterm-cli dev unknown darwin/amd64",
+  "platform": "macOS-15.8.1-x86_64-i386-64bit",
+  "machine": "x86_64",
+  "python": "3.9.6",
+  "go": "go version go1.27.1 darwin/amd64",
+  "cpu": "Intel(R) Core(TM) i7-8569U CPU @ 2.80GHz",
+  "wall_clock": "perf_counter_ns around subprocess.run; includes launch, stdin/stdout, target, locks, persistence, foreground exit",
+  "sample_percentiles": "nearest rank; no removed outliers",
+  "model_calls": 0,
+  "real_apns": false,
+  "lock_wait_ms": null,
+  "fsync_count": null,
+  "worker_sampling_interval_ms": 50,
+  "scenarios": {
+    "normal-concurrent8": {
+      "total_receiver_http": 1,
+      "target_queries": 512,
+      "target_queries_note": "counted Herdr protocol fixture requests",
+      "max_parallel_receiver_requests": 1,
+      "events": {
+        "PostToolUse": {
+          "n": 256,
+          "p50_ms": 189.0761,
+          "p95_ms": 1398.149,
+          "p99_ms": 2016.2949,
+          "synchronous_http": 0,
+          "persisted_true": 253,
+          "persisted_false": 3,
+          "nonzero_exit": 0
+        },
+        "PreToolUse": {
+          "n": 256,
+          "p50_ms": 145.9648,
+          "p95_ms": 1341.2635,
+          "p99_ms": 2016.6892,
+          "synchronous_http": 0,
+          "persisted_true": 250,
+          "persisted_false": 6,
+          "nonzero_exit": 0
+        }
+      },
+      "max_sampled_worker_processes": 2
+    },
+    "history-multipair": {
+      "total_receiver_http": 35,
+      "target_queries": 64,
+      "target_queries_note": "counted Herdr protocol fixture requests",
+      "max_parallel_receiver_requests": 1,
+      "events": {
+        "PostToolUse": {
+          "n": 32,
+          "p50_ms": 62.3127,
+          "p95_ms": 1659.8731,
+          "p99_ms": 2015.0322,
+          "synchronous_http": 0,
+          "persisted_true": 31,
+          "persisted_false": 1,
+          "nonzero_exit": 0
+        },
+        "PreToolUse": {
+          "n": 32,
+          "p50_ms": 61.5081,
+          "p95_ms": 1835.9686,
+          "p99_ms": 2014.1582,
+          "synchronous_http": 0,
+          "persisted_true": 31,
+          "persisted_false": 1,
+          "nonzero_exit": 0
+        }
+      },
+      "max_sampled_worker_processes": 2
+    }
+  },
+  "history_fixture": {
+    "runs": 17,
+    "outbox_files": 34
+  },
+  "known_failure": "Receiver-priority locking alone still left 9/512 concurrent and 2/64 history/multipair observations without durable receipt. All target queries completed; concurrent receiver HTTP count was 1. Not final acceptance."
+}
