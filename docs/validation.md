@@ -1819,3 +1819,69 @@ CSV evidence (untracked files were not covered by earlier unstaged diff checks).
 Normalized them to LF and made the exporter explicit; parsed samples are exactly
 unchanged. Python compilation and the final staged diff check then passed. This
 format-only change does not alter the measured or tested Go implementation.
+
+## 2026-11-09 — Codex hooks round 2 v1.2, R1 sender cleanup
+
+[Effective scope and repair instructions](https://app.notion.com/p/410cede208238114a929c77dbacc1edb).
+CLI start/review: `67ba0a446c1e524b9d686838878b9aa43905f72a`, clean `main`.
+App `cfe565f2a18d7c423f95bad6da15dcb846f23c7e` and API
+`adaa3db7b4f70d09de89fd34bbc585e9be136ebb` remain read-only and unchanged.
+The user deferred P0 (pure hooks and old configuration migration); final scope
+is P1-A, P1-B and R1. The existing notify completion source remains in use.
+G0 remains a contract limitation, but no longer blocks this adjusted scope.
+
+The earlier local PASS does not supersede the subsequent
+[macos-26-intel race-step failure](https://github.com/simplekkj/mobterm-cli/actions/runs/42195870502/job/127818867353).
+That SHA's CI finished with 10 successful jobs and one failed job.
+`TestInteractionHeldDispatchNeverReplays` returned after its native waiter,
+while the independent `publishActivity` goroutine could still write outbox
+files during TempDir removal. The log reports `directory not empty`, not a
+Go `DATA RACE` report. This was not an activity-dispatch child-process failure.
+
+`withInteractionSenders` provides optional, context-scoped ownership of the
+actual sender goroutines. Registration precedes launch; completion follows
+all publication work and cancellation cleanup. Test owners stop/join native
+waiters first, then join senders before their HTTP server and store cleanup.
+The adjacent Claude elicitation and OpenCode form fixtures use the same boundary.
+Production native output, cancellation policy, five-second sender budget,
+durable intents/outbox, ordinary tool reception and dispatcher are unchanged.
+
+`TestInteractionHeldSenderCleanup` gates the actual capability transport after
+durable activity reception. Both completion and cancellation cases keep the
+sender blocked until teardown, while the native answer and response receipt
+finish first. Teardown releases the gate and joins the whole sender, including
+its final store writes, before resource destruction. The original dispatching
+CAS, no replay for the same native identity, duplicate receipt, response_written
+and sensitive-data scrubbing assertions run in every case. No fixed sleep,
+skip, ignored cleanup error or extended production budget is used as the fix.
+
+Local environment: macOS 15.8.1 (24H32), x86_64; Go 1.27.1 darwin/amd64;
+tmux 3.7c. Checks ran on the repair working tree based on the review SHA;
+the accompanying repair commit contains the same tested Go sources.
+
+- Focused ordinary run: PASS, 4.018s. The transport completion marker was then
+  tightened to cover RoundTrip return before the following race/full checks.
+- `go test -race -count=20 -run '^TestInteractionHeld(DispatchNeverReplays|SenderCleanup)$' -json ./...`:
+  PASS, 74.531s; original, delayed completion and delayed cancellation each ran
+  20 times (80 test/subtest PASS outcomes), zero failures/skips.
+- `go test -race -count=1 -run 'TestInteraction|TestCodexPassiveApproval|TestApproval|TestResolvedApproval|TestTerminalRunCannotKeepActionableApproval|TestOrdinaryCodexObservation|TestActivityDispatch' -json ./...`:
+  PASS, 32.534s; 47 outcomes, zero failures/skips. Includes ordinary synchronous
+  HTTP=0/durable reception and bounded dispatcher recovery regressions.
+- `test -z "$(gofmt -l .)"`: PASS.
+- `go test -count=1 -json -timeout 20m ./...`: PASS, 455.005s; 745 outcomes,
+  zero failures/skips.
+- `go vet ./...`: PASS.
+- `go test -race -count=1 -json -timeout 20m ./...`: PASS, 547.811s; 745 outcomes,
+  zero failures/skips or data race reports.
+- `git diff --check`: PASS.
+
+The prior performance matrix belongs to the first-round SHA. This repair does
+not change the measured ordinary reception/dispatcher paths, and no new latency
+measurement is claimed. No local packaging matrix, App/API full suite, real
+model, production API/APNs, phone display or Jump to UI test was performed.
+The existing CI matrix and exact final-SHA results are recorded in the linked
+handoff after push; local results are not a claim that CI passed.
+
+P0 已延期，纯 hooks 及旧配置迁移尚未实施；按唯一一次静态 Review 后修复的约定直接关闭。
+This closing rule applies only after R1, required checks, push and final-SHA CI
+verification succeed. No second ChatGPT Review or acceptance prompt is required.

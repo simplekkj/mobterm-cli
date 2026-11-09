@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -539,6 +540,16 @@ func interactionReceipt(ctx context.Context, s Store, in io.Reader) (any, error)
 	return map[string]any{"v": 1, "state": r.State}, e
 }
 
+type interactionSendersKey struct{}
+
+// In-process owners can join notification senders before destroying their store
+// or transport. Stop/join all native waiters before calling wait, so no sender
+// can be added after the join. Native response delivery itself never waits here.
+func withInteractionSenders(ctx context.Context) (context.Context, func()) {
+	var senders sync.WaitGroup
+	return context.WithValue(ctx, interactionSendersKey{}, &senders), senders.Wait
+}
+
 func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a Activity, spec InteractionSpec) (*InteractionDecision, error) {
 	if !interactionKind(spec.Kind) || !interactionAgent(a.Agent) || interactionSchema(spec.Fields) != nil {
 		return nil, errors.New("unsupported_interaction_schema")
@@ -730,7 +741,14 @@ func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a A
 	if spec.Kind == "approval" {
 		a.State = "waiting_approval"
 	}
+	senders, _ := ctx.Value(interactionSendersKey{}).(*sync.WaitGroup)
+	if senders != nil {
+		senders.Add(1)
+	}
 	go func() {
+		if senders != nil {
+			defer senders.Done()
+		}
 		sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		_ = publishActivity(sendCtx, s, api, l, a)

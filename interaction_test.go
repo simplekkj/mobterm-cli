@@ -297,13 +297,45 @@ func TestInteractionCrossLanguageGolden(t *testing.T) {
 }
 
 func TestInteractionHeldDispatchNeverReplays(t *testing.T) {
+	testInteractionHeldDispatch(t, "")
+}
+
+func TestInteractionHeldSenderCleanup(t *testing.T) {
+	for _, mode := range []string{"complete", "cancel"} {
+		t.Run(mode, func(t *testing.T) { testInteractionHeldDispatch(t, mode) })
+	}
+}
+
+func testInteractionHeldDispatch(t *testing.T, delayed string) {
+	t.Helper()
 	s, api, pairs, existing := interactionTestSetup(t)
 	// Remove the unrelated seeded fixture, leaving a real held waiter to register.
 	if e := os.Remove(s.Dir + "/interaction-" + existing.RequestID + ".json"); e != nil {
 		t.Fatal(e)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx, waitSenders := withInteractionSenders(ctx)
+	senderStarted, releaseSender, transportDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var gate sync.Once
+	if delayed != "" {
+		base := api.Client.Transport
+		api.Client = &http.Client{Transport: releaseTransport(func(req *http.Request) (*http.Response, error) {
+			held := false
+			if strings.HasSuffix(req.URL.Path, "/capabilities") {
+				gate.Do(func() {
+					held = true
+					close(senderStarted)
+					// Hold the actual sender after its durable apply, independently
+					// of cancellation, until the resource owner begins teardown.
+					<-releaseSender
+				})
+			}
+			if held {
+				defer close(transportDone)
+			}
+			return base.RoundTrip(req)
+		})}
+	}
 	spec := InteractionSpec{Kind: "question", NativeID: "native/question/one", AgentVersion: "2.1.317", Fields: []InteractionField{{ID: "q0", Type: "string", Label: "Q", Required: true}}, SupportedActions: []string{"answer", "release"}, TTL: 120 * time.Second}
 	activity := Activity{Agent: "claude", Session: "session", Run: "turn", Instance: "runtime", State: "waiting_input", Reminder: "needs_input", Occurrence: "observed"}
 	type result struct {
@@ -311,7 +343,33 @@ func TestInteractionHeldDispatchNeverReplays(t *testing.T) {
 		e error
 	}
 	done := make(chan result, 1)
+	waiterDone := make(chan struct{})
+	t.Cleanup(func() {
+		if delayed != "complete" {
+			cancel()
+		}
+		<-waiterDone
+		close(releaseSender)
+		waitSenders()
+		cancel()
+		// This runs before server.Close and TempDir cleanup, including on Fatal.
+		if delayed != "" {
+			select {
+			case <-senderStarted:
+				select {
+				case <-transportDone:
+				default:
+					t.Error("sender join returned before transport settled")
+				}
+			default:
+			}
+		}
+		if _, e := loadRuns(s); e != nil {
+			t.Error("sender did not leave a readable store before cleanup", e)
+		}
+	})
 	go func() {
+		defer close(waiterDone)
 		d, e := interactionNativeWait(ctx, s, api, existing.Locator, activity, spec)
 		done <- result{d, e}
 	}()
@@ -331,6 +389,17 @@ func TestInteractionHeldDispatchNeverReplays(t *testing.T) {
 	}
 	if r.RequestID == "" {
 		t.Fatal("no held request")
+	}
+	if delayed != "" {
+		select {
+		case <-senderStarted:
+		case <-ctx.Done():
+			t.Fatal("sender did not reach controlled transport gate")
+		}
+		db, e := loadRuns(s)
+		if e != nil || len(db.Intents) == 0 {
+			t.Fatal("blocked sender has no durable reminder responsibility", e)
+		}
 	}
 	f := interactionTestFrame(pairs[0], r)
 	if _, e := interactionCommand(ctx, s, api, "respond", bytes.NewReader(interactionFrameBytes(f))); e != nil {
@@ -364,6 +433,13 @@ func TestInteractionHeldDispatchNeverReplays(t *testing.T) {
 	saved, _ = interactionRead(s, r.RequestID)
 	if saved.State != "response_written" || saved.RequestJSON != "" || saved.Frame.ResponseJSON != "" {
 		t.Fatal("delivery receipt/scrub missing")
+	}
+	if delayed != "" {
+		select {
+		case <-transportDone:
+			t.Fatal("sender escaped its gate before native output and cleanup")
+		default:
+		}
 	}
 }
 

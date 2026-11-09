@@ -170,6 +170,8 @@ func TestInteractionClaudeElicitationPreservesPromptCyclesAndErrors(t *testing.T
 	s, api, pair, l, notices := reviewInteractionSetup(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	ctx, waitSenders := withInteractionSenders(ctx)
+	t.Cleanup(waitSenders)
 	var previous string
 	for cycle := 0; cycle < 2; cycle++ {
 		prompt := []byte(`{"hook_event_name":"UserPromptSubmit","session_id":"session"}`)
@@ -284,6 +286,8 @@ func TestInteractionOpenCodeAdjacentNormalizedBudgetAndSmallForm(t *testing.T) {
 	s, api, pair, _, notices := reviewInteractionSetup(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	ctx, waitSenders := withInteractionSenders(ctx)
+	t.Cleanup(waitSenders)
 	run := func(index, count int, overflow bool) int {
 		form := map[string]any{"id": fmt.Sprintf("frm_%d", index), "sessionID": "session", "state": map[string]any{"status": "pending"}, "fields": []any{map[string]any{"key": "q", "type": "string", "title": strings.Repeat("x", count)}}}
 		raw, _ := json.Marshal(map[string]any{"adapter_revision": 2, "runtime_version": "2.2.5", "event": "form.created", "session_id": "session", "run_id": "run", "event_id": fmt.Sprintf("event-%d", index), "instance_id": "runtime", "request_id": fmt.Sprintf("frm_%d", index), "native_form": form})
