@@ -1,5 +1,20 @@
 # Validation records
 
+This is a historical evidence ledger, not a statement that the current HEAD has
+passed every check. Records were both prepended and appended; file order does
+not establish recency. Preserve each record’s dates, source identifiers, failures,
+skips and environment limitations. Local artifact paths describe the original
+run and may no longer exist. Current contracts are routed from the
+[README documentation map](../README.md#documentation-map).
+
+Topic entry points: [2026-11-09 sender cleanup](#2026-11-09--codex-hooks-round-2-v12-r1-sender-cleanup),
+[2026-11-06 Codex P1](#codex-hooks-第-1-轮-v10-p1-delivery-2026-11-06),
+[2026-11-04 interaction repairs](#2026-11-04--remote-interactions-review-repairs-r4r5-wf-10),
+[interaction implementation](#remote-interaction-wire-v1--implementation-validation),
+and [fixed compatibility samples](#mobterm-cli-compatibility--round-1-v10--2026-10-16).
+The earlier records below retain their original scope; they are not rerun by
+documentation maintenance.
+
 ## 2026-10-31 — Agent activity and native approval, round 1 v1.0
 
 [Implementation and acceptance](https://app.notion.com/p/40acede2082381daa4a8f505dff3b649).

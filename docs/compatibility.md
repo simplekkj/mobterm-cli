@@ -1,6 +1,19 @@
 # Agent and terminal compatibility
 
-Checked on 2026-10-16. Install, notify and status share one local stable-version
+## Reading scope
+
+The table below records fixed notification regression samples, originally checked
+on 2026-10-16 and extended for OpenCode/Pi on 2026-10-20. “Current reference” is a
+reproducible sample label, not the newest upstream release or an action allowlist.
+For current v2 observation and legacy approval behavior, see
+[negotiated state and approval](#negotiated-state-and-approval-2026-10-31); for
+new request/answer actions, use the separate exact-version gates in
+[native interactions](native-interactions.md). Codex completion remains native
+`notify`; the hooks-only G0 requirement remains blocked as recorded below.
+
+## Notification version policy and fixed samples
+
+Install, notify and status share one local stable-version
 policy; they do not query a registry at runtime. Stable versions at or above the
 minimum can use the existing adapter, with no mechanical upper limit. Every event
 must still satisfy the field, semantic, target and pairing checks. A future version
@@ -74,6 +87,12 @@ project files are copied into it. Claude 2.0.36's version bootstrap
 otherwise migrates `~/.claude.json`; probe isolation prevents that native side
 effect on user configuration. No probe state/cache is retained. Install refuses
 before configuration or ownership writes. Uninstall never requires a present or compatible Agent.
+
+### Legacy v1 event mapping
+
+This table describes the original v1 mapping only. Later v2 observations and
+interaction waiters below add distinct behavior; a PermissionRequest observation
+alone still does not prove either completion or an actionable human wait.
 
 | Source | Native event | Mapping / limitation |
 | --- | --- | --- |
@@ -296,8 +315,9 @@ Only explicit `aborted:false` completes. Retry/compaction/continuation intermedi
 end events are not subscribed. Session switch/reload/shutdown invalidates pending
 associations; a half-turn after reload produces no historical notification.
 Revision 2 observes native `ui_prompt_start/end` intervals as waiting input;
-these events have no general native reply handle, so mobile approval remains
-unavailable for Pi. `hasUI` alone is insufficient because
+these events have no general native reply handle, so legacy mobile approval is
+unavailable for them. The separate opt-in Pi tool gate is described in
+[native interactions](native-interactions.md). `hasUI` alone is insufficient because
 RPC can have UI. Fork/resume parent history is not treated as a background agent.
 A non-aborted settled can follow a final error: the message means a turn ended,
 not that the user's task succeeded.
@@ -352,9 +372,11 @@ capture/resolve instead of weakening identity. Moves are supported within one
 tmux session; Herdr terminal moves are supported within one namespace/socket
 incarnation. Strong tmux validation needs App and CLI together.
 
-Pending work remains short-lived/conditionally triggered. One immediate POST is
-used per hook delivery; future flushes use persisted, bounded attempts and exact
-envelopes. An idle host without another event/user retry will not wake itself.
+Pending work remains short-lived/conditionally triggered. The original v1 path
+used one immediate POST per hook delivery. Current completion/test/explicit flush
+may retry within the [current command budget](../README.md#notification-api-request-deadlines);
+short observation paths retain their own limits. Future flushes use persisted,
+bounded attempts and exact envelopes. An idle host without another event/user retry will not wake itself.
 Once service handoff is known, only bounded GET refreshes are allowed locally.
 Seven-day tombstones protect recognizable source identities; Claude human waits
 lack upstream occurrence IDs, and arbitrary raw callback replay beyond a retained

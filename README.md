@@ -2,12 +2,32 @@
 
 A short-lived remote notification helper for Mobterm. It reports verified Agent
 events from tmux or Herdr, encrypts the terminal locator for the paired phone,
-and exits. It does not run a daemon, listen on a port, read transcripts, upload
-terminal content, approve tools, or run remote commands on behalf of the API.
+and exits. Explicit opt-in enables bounded native approval and interaction
+bridges over trusted SSH, with per-Agent/version limits. It does not run a daemon,
+listen on a port, read transcripts, upload terminal content, inject terminal keys,
+or run remote commands on behalf of the API.
 
 Linux and macOS are supported on amd64 and arm64. This repository contains only
 the independent Go CLI and public protocol; it does not license other Mobterm
 repositories. See [LICENSE](LICENSE) and [THIRD_PARTY.md](THIRD_PARTY.md).
+
+## Documentation map
+
+- **Use and development:** [Install](#install), [Pair and use](#pair-and-use),
+  [Upgrade](#upgrade), [Build and verify](#build-and-verify), and the
+  [current command budgets and diagnostics](#notification-api-request-deadlines).
+- **Protocol and operation:** [v1 setup, notifications and targets](docs/protocol-v1.md),
+  [v2 state/inbox/badge and legacy approval wire v3](docs/protocol-v2.md),
+  [independent interaction wire v1](docs/interaction-v1.md),
+  [native interaction support](docs/native-interactions.md),
+  [notification compatibility and fixed samples](docs/compatibility.md), and
+  [security](docs/security.md). These are separate contracts, not a system-wide
+  version upgrade; v1 AAD and compatibility remain supported.
+- **Engineering constraints:** [AGENTS.md](AGENTS.md).
+- **History and provenance:** [dated validation records](docs/validation.md),
+  [Codex P1 measurement evidence](docs/evidence/codex-p1-latency/README.md),
+  [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY.md). Historical PASS
+  results do not establish current runtime, release or phone delivery status.
 
 ## Install
 
@@ -388,28 +408,43 @@ and nonessential traffic, and use no Agent login credentials or real model/APNs
 requests. Linux setup requests use a loopback HTTPS fixture. Native runtime
 notification events and phone delivery/navigation remain separate verification.
 
-See [protocol v1](docs/protocol-v1.md), [security](docs/security.md), and the
-honest scope of [validation](docs/validation.md). Secrets, transcripts, caches,
-and build outputs must never be committed.
+Secrets, transcripts, caches, and build outputs must never be committed.
+See the [documentation map](#documentation-map) for contracts and evidence scope.
 
 ### Notification API request deadlines
 
-Notification API requests wait up to 60 seconds, including DNS, connection, TLS,
-response headers and body. The API client's independent transport allows up to
-60 seconds for TLS negotiation **within**, not in addition to, that request budget;
-certificate verification, proxy rules and redirect refusal remain in place.
-Commands that use the API have a
-125-second total budget, including retries/readback and local persistence.
-Agent version probes allow 20 seconds; `hooks install` and `status --agents-json`
-allow 25 seconds including local cleanup. Other local-only commands keep their
-existing budgets and `upgrade` keeps two minutes. A shorter caller deadline
-or cancellation still wins. Existing Agent hook deadlines are unchanged and may
-stop notification commands earlier; no installed hooks are rewritten by this change.
-Codex completion notifications and explicit outbox flushes use the full command
-budget for capability negotiation and reminder sending, rather than a two-second
-phase cap. Native `observe` hooks retain their two-second caller budget.
-The App currently waits 75 seconds for SSH notification commands and can end its
-wait before the longer CLI budget expires.
+This is the current command-budget reference, derived from `main.go:commandTimeout`,
+`api.go`, `compatibility.go` and `activity_dispatch.go`. Protocol-specific waiter
+lifetimes remain in [approval](docs/protocol-v2.md#native-approval-over-ssh) and
+[native interaction](docs/native-interactions.md) contracts.
+
+| Command or phase | Maximum budget |
+| --- | --- |
+| `setup`, `notify`, `test`, full/pair `status`, `outbox flush/refresh`, `pairs reconcile` | 125 seconds total, including retries/readback and persistence |
+| One notification API request | 60 seconds across DNS, connection, TLS, headers and body; TLS negotiation is included, not added |
+| Agent version probe | 20 seconds |
+| `hooks install`, `status --agents-json` | 25 seconds including probe and cleanup |
+| `status --installation-json`, hook removal and other default local commands | 10 seconds |
+| `observe` | 2 seconds |
+| `activity dispatch` | 12 seconds total; at most 5 seconds for network draining |
+| Other `activity` commands | 5 seconds |
+| `approval` commands | 125 seconds; native permission request lifetime is at most 120 seconds within the configured 130-second host Hook deadline |
+| `interaction` commands | 335 seconds; supported native question/helper lifetimes have a separate 300-second maximum |
+| `upgrade` | 2 minutes |
+
+The independent API transport preserves certificate verification, proxy rules,
+HTTP/2 and redirect refusal. Shorter parent deadlines or cancellation win; API
+requests reserve the final second of the parent context for persistence (one
+fifth of remaining time when less than five seconds remain). Installed native Hook
+budgets can stop a command earlier; replacing the CLI binary does not rewrite them.
+Completion reminders and explicit outbox flushes inherit the network command
+budget for capability negotiation and sending. Ordinary Codex tool observations
+persist locally and may launch the bounded dispatcher; it is not a daemon or an
+idle retry scheduler. Its lifecycle is described in
+[compatibility](docs/compatibility.md#codex-p1-approval-and-observation-changes-2026-11-06).
+The App's generic SSH notification wait is 75 seconds and its setup outer wait is
+90 seconds (`AgentNotificationsSSH.swift` in the App repository). These caller
+limits are distinct from the CLI's 125 seconds and may end waiting earlier.
 
 Pairing reports typed network timeouts (including TLS handshake timeouts) as the
 existing `timeout` failure; explicit cancellation takes priority. Response-body

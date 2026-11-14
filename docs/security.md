@@ -33,17 +33,15 @@ The phone rechecks its local pair and connection binding before opening a target
 
 Hook errors are quiet on stdout, sanitized on stderr, and return zero. An existing
 Codex notifier is invoked with its original argv/input and its own output/exit
-status preserved. Mobterm's API commands have a 125-second overall command budget and 60-second HTTP
-timeouts, including a 60-second TLS handshake limit within that same request
-budget on an independent transport. Default proxy rules, certificate verification
-and redirect refusal remain unchanged. Shorter parent deadlines and cancellation
-still win, with the final parent-context second reserved for persistence.
-Local-only commands retain their ten-second budget; upgrade retains two
-minutes. v2 observation uses a two-second budget; permission wait has an absolute
-120-second request budget within a configured 130-second host deadline. A disabled
-permission hook returns after durable observation and may launch one five-second
-short-lived drain child; it does not wait for HTTP. Existing Agent-managed hook timeouts can cancel the CLI earlier; upgrading
-the binary does not change installed Agent configuration or adapter deadlines.
+status preserved. The [current command-budget reference](../README.md#notification-api-request-deadlines)
+covers network, local discovery, observation, approval, interaction and upgrade
+commands; local-only commands do not all share a ten-second limit. Shorter parent
+deadlines and cancellation win. A disabled permission Hook durably records its
+observation and may launch the bounded `activity dispatch` child without waiting
+for HTTP: 12 seconds total, including at most 5 seconds of network draining.
+It has no listener, scheduled idle wakeup or recursive child creation. Installed
+Agent-managed Hook timeouts may cancel a CLI earlier; upgrading the binary does
+not change installed Agent configuration or adapter deadlines.
 Completion, test and explicit flush commands allow at most two POST attempts per
 event within the command budget, sharing that limit across fresh sending and
 recovery. Jittered backoff respects Retry-After and cancellation and waits outside
@@ -94,8 +92,10 @@ a purpose-separated HKDF/HMAC proof, the exact full-operation digest, live waite
 strong target and current Pair eligibility at submission and consumption. This
 does not isolate an attacker already controlling the same SSH account or make
 cloud revocation and native consumption atomic. A submitted decision is not proof
-of successful native execution; forms, Pi prompts and unverifiable inputs retain
-terminal handling. Neither approval nor release writes keys into a terminal.
+of successful native execution. In the legacy approval channel, forms, Pi UI
+prompts and unverifiable inputs retain terminal handling; separately enabled
+interaction kinds have the exact support limits below. Neither approval nor
+release writes keys into a terminal.
 
 ## Remote interaction decisions
 

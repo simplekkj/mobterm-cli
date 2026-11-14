@@ -1,6 +1,7 @@
 # Notification protocol v2
 
-Updated for Round 2 v1.1, 2026-10-31. This contract adds encrypted run state, recoverable
+Origin: Round 2 v1.1, 2026-10-31; maintained as the current v2 contract, with
+legacy approval distinctions calibrated on 2026-11-14. This adds encrypted run state, recoverable
 reminders and an opt-in native approval bridge. [Protocol v1](protocol-v1.md)
 and its golden vectors are unchanged. Native target stdin frames still contain
 only the v1 locator whitelist. The API cannot decrypt or execute approvals.
@@ -130,8 +131,8 @@ must preserve the new run file: old CLIs cannot read a run file over 2 MiB.
 
 Fresh business intents receive the first transport phase, then due durable
 outbox records are retried fairly across Pairs, then coalesced state. Network
-commands allow up to 125 seconds overall and 60 seconds per HTTP request, including
-capability negotiation before a reminder. Completion/test/explicit outbox flush
+commands follow the [current command budgets](../README.md#notification-api-request-deadlines),
+including capability negotiation before a reminder. Completion/test/explicit outbox flush
 commands may retry ordinary capability negotiation once on transient failures,
 with jittered backoff and Retry-After respected within that budget. The retry wait
 occurs outside the capability-cache lock; approval authorization remains fresh
@@ -220,21 +221,28 @@ Hook with a configured 130-second host timeout and an absolute request budget of
 at most 120 seconds, including admission and delivery. Unsupported/oversize
 requests, disabled policy, capacity exhaustion, timeout and cancellation return
 no decision so native terminal flow resumes. Disabled hooks persist observations
-and start at most a bounded five-second short-lived `activity flush` child, then
-return immediately; they never block the native prompt on HTTP. Observation hooks
+and may start a short-lived `activity dispatch` child, then return without
+waiting for HTTP. Its 12-second total budget includes at most 5 seconds of network
+draining; see [dispatcher lifecycle](compatibility.md#codex-p1-approval-and-observation-changes-2026-11-06). Observation hooks
 use a two-second command budget (Codex Interrupt host budget is three seconds).
 
 OpenCode keeps one finite child per verified pending request, at most eight, with
 a separate control path. After a decision, it re-queries the native pending
 request, verifies exact contents/location/root and deadline, then calls official
-`context.client.permission.reply` with `once` or `reject`. Route changes,
-resolution, cleanup or deadline cancel children. Pi UI prompt events are observed
-only and never offer native approval. Form/free-input/unknown tools use terminal.
+`context.client.permission.reply` with `once` only in this legacy approval channel.
+Legacy `deny` is rejected with `approval_batch_scope_requires_interaction`.
+Batch rejection affects the session's pending permissions and is offered only by
+[new interaction](native-interactions.md) after disclosing and confirming that
+scope and rechecking the native pending list. Route changes, resolution, cleanup
+or deadline cancel children. Legacy Pi UI prompt events are observation-only;
+legacy form/free-input/unknown tools use the terminal. The separately enabled
+interaction path has its own exact version and kind gates.
 
 `approval inspect|decide|release --stdin-frame` uses the existing four-byte
 big-endian length-prefixed JSON frame, maximum 16384 bytes. Inspect accepts
 `{v:3,pair_id,request_id}` and returns request/digest/expiry/generation/state/agent,
-`operation_json` and `allowed_decisions:["allow_once","deny"]`. Inspect actively
+`operation_json` and `allowed_decisions` (`["allow_once"]` for OpenCode,
+`["allow_once","deny"]` for supported Codex/Claude requests). Inspect actively
 checks the exact locator, live waiting process and current remote eligibility.
 Inspection and decide/release use version 3 so old Apps cannot approve context
 they do not display. New Apps reject old version-2 inspections; old clients and
@@ -245,7 +253,8 @@ Only supported native operation structures up to 6144 bytes are accepted;
 canonical full operation output is at most 8192 bytes. No truncation can enable
 approval. Current Codex/Claude supported structures are Bash.command,
 Codex apply_patch.command, Write.file_path/content, Edit.file_path/old_string/
-new_string. OpenCode uses the complete native PermissionRequest snapshot.
+new_string, and Codex canonical `mcp__server__tool` names with their complete
+argument object. OpenCode uses the complete native PermissionRequest snapshot.
 
 `operation_json` is exact UTF-8 JSON with sorted object keys recursively, native
 JSON numeric tokens preserved, Go JSON escaping (including HTML characters), and
@@ -261,7 +270,8 @@ bytes; it must not hash a Foundation reserialization. This is not a terminal
 transcript. Unknown or truncated inputs cannot be approved.
 
 Decide/release accept `{v:3,pair_id,request_id,digest,decision_id,action,
-policy_generation,expires_at,proof}`. Action is allow_once/deny/release. Derive
+policy_generation,expires_at,proof}`. Action is allow_once/deny/release, with
+legacy OpenCode deny refused as above. Derive
 32 bytes using HKDF-SHA256: IKM = Pair encryption key, salt = UTF-8 pair_id,
 info = UTF-8 `mobterm/approval/2`. Proof is standard Base64 HMAC-SHA256 over these
 UTF-8 LF-separated fields with no trailing LF:

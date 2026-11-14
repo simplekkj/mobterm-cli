@@ -9,7 +9,7 @@
 
 ## Code and Verification
 
-- The root contains one Go `main` package: `main.go` dispatches commands; `protocol.go` / `api.go` handle the protocol and requests; `events.go` / `hooks.go` handle events and configuration; `target.go` verifies targets; `store.go` manages state; `upgrade.go` handles upgrades.
+- The root contains one Go `main` package: `main.go` dispatches commands; `protocol.go` / `api.go` handle the protocol and requests; `events.go` / `hooks.go` handle events and configuration; `activity*.go` owns run state and bounded dispatch; `approval*.go` and `interaction*.go` own the distinct native decision paths; `target.go` verifies targets; `store.go` manages state; `upgrade.go` handles upgrades.
 - Use the toolchain in `go.mod` and `.github/workflows/ci.yml`, currently Go 1.27.1; retain `go.sum`. Local build: `go build -trimpath -o mobterm-cli .`.
 - For Go changes, run these CI checks from the repository root; CI runs on Linux/macOS. For documentation-only changes, verify facts, references, and `git diff --check`.
 
@@ -25,7 +25,8 @@
 
 ## Cross-Repository Protocol (App / CLI / API)
 
-- The repositories are `../mobterm` (App), `../mobterm-cli`, and `../mobterm-api`. The public contract is defined in `../mobterm-cli/docs/protocol-v1.md`.
+- The repositories are independent: `../mobterm` (App), `../mobterm-cli`, and `../mobterm-api`. Contract authority is split across [v1 setup/notifications/targets](docs/protocol-v1.md), [v2 state/inbox/badge and legacy approval wire v3](docs/protocol-v2.md), and [interaction wire v1](docs/interaction-v1.md). [Native interactions](docs/native-interactions.md) and [compatibility](docs/compatibility.md) distinguish exact action gates from notification samples; [security](docs/security.md) defines trust/lifecycle boundaries. Current command budgets are in [README](README.md#notification-api-request-deadlines).
+- Preserve default-off per-Agent/kind grants, exact request/target identity, cancellation and late-result ownership. Notification envelope versions, approval wire v3, interaction wire v1, HMAC purposes and fixture names are independent; do not mechanically rename `approval-v2.json` or `mobterm/approval/2`.
 - Changes to SSH stdin frames/CLI JSON, REST authorization and states (including `token_generation`), event envelopes/AAD, target identities, or APNs fields require checking producers and consumers across all three repositories, including mixed old/new versions. For breaking changes, specify supported versions and upgrade order; a change in one repository must not break pairing, notifications, revocation, or navigation.
 - Update affected implementations, docs, and regression tests together. For encryption contracts, check CLI `testdata/protocol-v1.json`, API `tests/fixtures/protocol-v1.json`, and the embedded vector in App `Tests/Core/AgentNotificationTests.swift`; run affected notification and navigation tests. Follow each repository's verification entry points. Report gaps when repositories or environments are unavailable; tests in one repository alone do not establish cross-client compatibility.
 - Distinguish API acceptance, APNs acceptance, phone display, and successful navigation. Local tests do not prove real push delivery.

@@ -623,29 +623,17 @@ locks, honor cancellation, and only wait when at least five seconds remain after
 the delay. Other callers retain single-attempt behavior. Subsequent invocations
 or explicit flush recover remaining persisted work. Flush selects
 at most 32 records with at most 4 concurrent requests and pair round-robin.
-There is no daemon, cron installation, port, detached child, or idle wake-up.
+The v1 notify/outbox path installs no daemon, cron or listener and does not wake
+an idle host. Current native observation/approval paths may launch a short-lived
+`activity dispatch` child: 12 seconds total, at most 5 seconds of network draining,
+one active and at most one pending successor per config root, no child spawning
+another child. See [the dispatcher contract](compatibility.md#codex-p1-approval-and-observation-changes-2026-11-06).
+The separately enabled [interaction helpers](native-interactions.md) are also
+finite; this is not a blanket prohibition on every detached process.
 
-The 125-second budget covers `setup`, full/pair `status`, `notify`, `test`,
-`outbox flush|refresh` and `pairs reconcile`. It allows two full requests plus
-local result persistence; a request still reserves the final second of its parent
-context for persistence. Each API client clones the standard transport and sets
-its TLS handshake limit to 60 seconds, included in the same 60-second request
-budget covering connection through body read. Global transport settings, proxy
-rules, certificate verification, HTTP/2 and redirect refusal remain unchanged.
-Completion reminder phases inherit the network command budget, allowing a full
-capability request followed by a full notification request. Synchronous observation
-hooks retain their short caller deadline and 600 ms phase slices.
-Agent version probes allow 20 seconds; `hooks install` and `status --agents-json`
-allow 25 seconds including local cleanup. Other local-only commands retain their
-existing budgets and `upgrade` two minutes. Existing Claude/OpenCode/Pi hook caller
-deadlines remain unchanged and
-can stop a CLI process before its API timeout; this binary change does not rewrite
-Agent configuration or installed adapters. Cancellation remains authoritative.
-Old App SSH waits may stop a slow command earlier; an App with extended notification
-command waits is needed to use the full budget from the phone. API wire formats and
-credentials are unchanged, so the API needs no deployment for this timeout change.
-The current App uses a 75-second notification command wait and a 90-second outer
-setup wait, so it cannot wait for the entire new CLI command budget. Existing CLI
+The [current command-budget reference](../README.md#notification-api-request-deadlines)
+separates CLI/API limits from shorter native Hook and App caller deadlines. API
+wire formats and credentials are unchanged by budget changes. Existing CLI
 processes retain their earlier budgets and leases; new processes honor persisted
 lease deadlines and write 65-second leases, so a binary replacement does not
 shorten an in-flight lease.
