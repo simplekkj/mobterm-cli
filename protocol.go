@@ -146,6 +146,9 @@ func seal(key []byte, e Envelope, l Locator, nonce []byte) (Envelope, error) {
 	return sealAgent(key, e, l, nonce, "")
 }
 func sealAgent(key []byte, e Envelope, l Locator, nonce []byte, agent string) (Envelope, error) {
+	return sealAgentSummary(key, e, l, nonce, agent, "")
+}
+func sealAgentSummary(key []byte, e Envelope, l Locator, nonce []byte, agent, summary string) (Envelope, error) {
 	if len(key) != 32 {
 		return e, errors.New("AES-256 key required")
 	}
@@ -172,19 +175,34 @@ func sealAgent(key []byte, e Envelope, l Locator, nonce []byte, agent string) (E
 	if agent != "" && agent != "codex" && agent != "claude" && agent != "opencode" && agent != "pi" {
 		return e, errors.New("invalid agent")
 	}
-	plain, err := json.Marshal(struct {
-		Locator
-		Agent string `json:"agent,omitempty"`
-	}{l, agent})
-	if err != nil {
-		return e, err
+	summary = cleanMessageSummary(summary)
+	for {
+		plain, err := json.Marshal(struct {
+			Locator
+			Agent   string `json:"agent,omitempty"`
+			Summary string `json:"summary,omitempty"`
+		}{l, agent, summary})
+		if err != nil {
+			return e, err
+		}
+		if len(plain)+g.Overhead() <= maxCiphertext {
+			e.Nonce = base64.StdEncoding.EncodeToString(nonce)
+			e.Ciphertext = base64.StdEncoding.EncodeToString(g.Seal(nil, nonce, plain, e.aad()))
+			if notificationPayloadSize(e) <= 4096 {
+				return e, nil
+			}
+			// A revised plaintext always receives a new nonce, including when
+			// a caller supplied the initial nonce for a protocol fixture.
+			nonce = make([]byte, 12)
+			if _, err = rand.Read(nonce); err != nil {
+				return e, err
+			}
+		}
+		if summary == "" {
+			return e, errors.New("encrypted target exceeds APNs budget")
+		}
+		summary = truncateMessageSummary(summary, len([]rune(summary))/2, 512)
 	}
-	e.Nonce = base64.StdEncoding.EncodeToString(nonce)
-	e.Ciphertext = base64.StdEncoding.EncodeToString(g.Seal(nil, nonce, plain, e.aad()))
-	if len(plain)+g.Overhead() > maxCiphertext {
-		return e, errors.New("encrypted target exceeds APNs budget")
-	}
-	return e, nil
 }
 func openEnvelope(key []byte, e Envelope, now time.Time) (Locator, error) {
 	var l Locator

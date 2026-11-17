@@ -1,0 +1,15 @@
+{
+  "fixture_version": 1,
+  "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "plaintext": "{\"v\":1,\"installation_id\":\"install_fixture_0000000000000001\",\"backend\":\"tmux\",\"namespace\":\"/tmp/tmux-1000/default\",\"server_identity\":\"1234:1700000000:1700000001\",\"workspace_id\":\"$1\",\"view_id\":\"@2\",\"pane_id\":\"%3\",\"agent\":\"codex\",\"summary\":\"已修复会话归属。Tests passed; awaiting review. 🔒\"}",
+  "aad": "mobterm/1\npair_fixture_000000000000000001\nevent_summary_fixture_00000001\nturn_completed\n2000000000",
+  "envelope": {
+    "v": 1,
+    "pair_id": "pair_fixture_000000000000000001",
+    "event_id": "event_summary_fixture_00000001",
+    "kind": "turn_completed",
+    "expires_at": 2000000000,
+    "nonce": "UFFSU1RVVldYWVpb",
+    "ciphertext": "6QVAVt5hlcQ12E4RrI3vtJdGkoV9GP4AHquJtYM09Bg9sOy0E1LmxgyF1a7lssnn4RtGKRotYl2v98Yojatl8VsPsv6ryTUFT4KcLbJkJCLqmOx3lZVjTspZYrVzYKNyytEi72vMwRU4SlyUCxNiKsR8M2eiP3I2lpOnGcj55e66wKQlIm5eO/jkL3f89SpmFks6nhX5kk9Jy8PSnoZd3vcZmC7y46pE6llzFgUO+epJXuiUHI5Cq6//iTwAIoty2tGN1f+zDo7TKYRuyxQoabafIAt35JUap3MqcE+jWfk24oSMpi5Qqsnp/oxvzAVWQseJTY5p9jh0uEt7Xk7ICDzgPzUcTVAPGrWnKLUcRnFiT8m/3BaHqtQJAcv1PFweVtc69mc+kvYWD+KEQ9o/e4UstN9xF8qI1t/E"
+  }
+}

@@ -201,6 +201,7 @@ func TestClaudeSemantics(t *testing.T) {
 	}
 }
 func TestCodexStableIdentityAndIgnoreApproval(t *testing.T) {
+	codexMetadataFixture(t, "thread-a", nil)
 	s := testStore(t)
 	for _, typ := range []string{"PermissionRequest", "Stop", "approval-requested"} {
 		b, _ := json.Marshal(map[string]string{"type": typ})

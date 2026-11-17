@@ -620,6 +620,9 @@ func TestRangeNotifyEncryptedIdentity(t *testing.T) {
 				case "invalid_event", "invalid_target", "ambiguous_target":
 					v, allowed = samples["current"][agent], false
 				}
+				if agent == "codex" {
+					codexMetadataFixture(t, "same-thread", nil)
+				}
 				t.Setenv("FIXTURE_VERSION", agentOutput(agent, v))
 				if sample == "unknown" {
 					t.Setenv("FIXTURE_VERSION", "unknown")

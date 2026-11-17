@@ -13,6 +13,39 @@ const stableVersion = (value, minimum) => {
     (parts[0] === minimum[0] && (parts[1] > minimum[1] || (parts[1] === minimum[1] && parts[2] >= minimum[2]))));
 };
 
+// Bounded prose only. The CLI applies the same final wire limits before storage.
+const messageSummary = (content) => {
+  if (!Array.isArray(content)) return;
+  for (const part of content.slice(0, 128)) {
+    if (part?.type !== "text" || typeof part.text !== "string") continue;
+    const clean = part.text.slice(0, 16384)
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)/g, "")
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "");
+    if (/^(?:[\[{]|<(?:think|thinking|analysis|reasoning)(?:\s|>))/i.test(clean.trimStart())) continue;
+    let fence, paragraph = [];
+    for (const line of clean.split("\n")) {
+      const trimmed = line.trim();
+      const marker = /^(\x60{3,}|~{3,})/.exec(trimmed)?.[0]?.[0];
+      if (marker) { if (paragraph.length) break; fence = fence === marker ? undefined : fence ?? marker; continue; }
+      if (fence) continue;
+      if (!trimmed) { if (paragraph.length) break; continue; }
+      if (/^(?:[\[{]|!\[)/.test(trimmed) || /^(?: {4}|\t)/.test(line)) { if (paragraph.length) break; continue; }
+      paragraph.push(trimmed);
+    }
+    const text = paragraph.join(" ").replace(/\s+/gu, " ").trim();
+    if (!text) continue;
+    let result = "", scalars = 0, bytes = 0;
+    for (const {segment} of new Intl.Segmenter(undefined, {granularity:"grapheme"}).segment(text)) {
+      const count = [...segment].length, size = Buffer.byteLength(segment);
+      if (scalars + count > 120 || bytes + size > 512) break;
+      result += segment; scalars += count; bytes += size;
+    }
+    return result.trim() || undefined;
+  }
+};
+
 // One child and at most eight queued jobs; callbacks never await remote HTTP.
 function bridge(source, warn) {
   let stopped = false, active, warned = false;
@@ -23,7 +56,10 @@ function bridge(source, warn) {
     const job = queue.shift();
     try {
       if (!job.valid()) { queueMicrotask(drain); return; }
-      const body = JSON.stringify(job.payload);
+      let body = JSON.stringify(job.payload);
+      if (Buffer.byteLength(body) > 4096 && job.payload.summary) {
+        const {summary, ...required} = job.payload; body = JSON.stringify(required);
+      }
       if (Buffer.byteLength(body) > 4096) { diagnostic(); queueMicrotask(drain); return; }
       const child = spawn(executable, ["notify", "--source", source], {
         env: { ...process.env, MOBTERM_CONFIG_DIR: store },
@@ -146,9 +182,28 @@ export default Plugin.define({
       if (!current?.run || current.terminal) return;
       const epoch = routeEpoch, location = locationKey(context.data.session.get(sessionID)?.location);
       if (event.location && locationKey(event.location) !== location) return;
+      current.summary = undefined; current.messageID = undefined;
       transport.enqueue({adapter_revision:2,runtime_version:version,event:name,session_id:sessionID,
         run_id:current.run,event_id:event.id,instance_id:memory.instance,...extra},
         () => alive && epoch === routeEpoch && root(route()) === sessionID && locationKey(context.data.session.get(sessionID)?.location) === location);
+    };
+    const summaryStep = (event, ended = false) => {
+      const sessionID = event.data?.sessionID, current = lifecycles.get(sessionID);
+      if (!alive || !validID(event.id) || !current || current.terminal ||
+          root(route()) !== sessionID || root(sessionID) !== sessionID ||
+          !validID(event.data.assistantMessageID)) return;
+      const location = locationKey(context.data.session.get(sessionID)?.location);
+      if (event.location && locationKey(event.location) !== location) return;
+      current.summary = undefined;
+      if (!ended) { current.messageID = event.data.assistantMessageID; current.summaryLocation = location; return; }
+      if (current.messageID !== event.data.assistantMessageID || current.summaryLocation !== location) return;
+      // Read exactly this step's assistant from the official synchronous cache.
+      // Missing cache entries degrade to status; never sync/scan old messages.
+      try {
+        const message = context.data.session.message?.get(sessionID, current.messageID);
+        if (message?.id === current.messageID && message.type === "assistant")
+          current.summary = messageSummary(message.content);
+      } catch { /* Optional content cannot interrupt completion. */ }
     };
     const stableJSON = value => {
       if (Array.isArray(value)) return "["+value.map(stableJSON).join(",")+"]";
@@ -290,7 +345,7 @@ export default Plugin.define({
         const runID = lifecycles.get(eventRoot)?.run ?? generation?.run ?? randomUUID();
         const payload = { adapter_revision: 2, runtime_version: version, event: nativeType,
           session_id: sessionID, run_id: runID, event_id: event.id, instance_id: memory.instance,
-          ...(completion ? {} : {request_id:requestID}) };
+          ...(completion ? (generation?.summary && generation.summaryLocation === location ? {summary:generation.summary} : {}) : {request_id:requestID}) };
         if (!completion) {
           const rootGeneration=lifecycles.get(eventRoot);
           const validResolved=()=>alive && epoch===routeEpoch && route()===selected &&
@@ -323,7 +378,7 @@ export default Plugin.define({
         disposeRoute = release;
         createEffect(() => {
           const current = route();
-          if (current !== previousRoute) { previousRoute = current; routeEpoch++; transport.cancel(); pendingObservations.clear(); for(const child of approvalChildren.values())child.kill("SIGTERM"); approvalChildren.clear(); }
+          if (current !== previousRoute) { previousRoute = current; routeEpoch++; transport.cancel(); pendingObservations.clear(); for (const current of lifecycles.values()) {current.summary=undefined;current.messageID=undefined;} for(const child of approvalChildren.values())child.kill("SIGTERM"); approvalChildren.clear(); }
         });
       });
       for (const [type, handler] of [
@@ -331,6 +386,8 @@ export default Plugin.define({
         ["session.execution.failed", (event) => {state(event,event.type);lifecycle(event.data.sessionID,true);}],
         ["session.execution.interrupted", (event) => {state(event,event.type);lifecycle(event.data.sessionID,true);}],
         ["session.execution.succeeded", handle],
+        ["session.step.started", event => summaryStep(event)],
+        ["session.step.ended", event => summaryStep(event, true)],
         ["session.tool.input.started", event => {if(validID(event.data.id)&&typeof event.data.name==="string"){tools.set(event.data.id,event.data.name);if(tools.size>128)tools.delete(tools.keys().next().value);state(event,"tool_pending",{tool_id:event.data.id,tool_name:event.data.name});}}],
         ["session.tool.called", event => {if(validID(event.data.id))state(event,event.data.executed===true?"tool_execution_start":"tool_pending",{tool_id:event.data.id,tool_name:tools.get(event.data.id)??"other"});}],
         ["session.tool.success", event => {void confirmQuestion(event);if(validID(event.data.id))state(event,"tool_execution_end",{tool_id:event.data.id,tool_name:tools.get(event.data.id)??"other",tool_status:"succeeded"});}],

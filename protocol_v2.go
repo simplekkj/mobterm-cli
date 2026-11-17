@@ -24,6 +24,7 @@ type ApprovalHint struct {
 	ExpiresAt int64  `json:"expires_at"`
 }
 type RunPayload struct {
+	Summary         string           `json:"summary,omitempty"`
 	Interaction     *InteractionHint `json:"interaction,omitempty"`
 	ActiveToolCount int              `json:"active_tool_count"`
 	ToolsTruncated  bool             `json:"tools_truncated"`
@@ -66,13 +67,7 @@ func sealRun(key []byte, e Envelope, p RunPayload, nonce []byte) (Envelope, erro
 	if len(nonce) != 12 {
 		return e, errors.New("invalid_nonce")
 	}
-	raw, err := json.Marshal(p)
-	if err != nil {
-		return e, err
-	}
-	if len(raw)+16 > maxV2Ciphertext {
-		return e, errors.New("v2_payload_too_large")
-	}
+	p.Summary = cleanMessageSummary(p.Summary)
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return e, err
@@ -81,19 +76,31 @@ func sealRun(key []byte, e Envelope, p RunPayload, nonce []byte) (Envelope, erro
 	if err != nil {
 		return e, err
 	}
-	e.Nonce = base64.StdEncoding.EncodeToString(nonce)
-	e.Ciphertext = base64.StdEncoding.EncodeToString(g.Seal(nil, nonce, raw, e.aad()))
-	// Match the conservative Foundation reserialization budget including slash escaping.
-	payload := map[string]any{"aps": map[string]any{"alert": map[string]any{"title": "MobTerm", "loc-key": "agentNotificationNeedsInputAlert"}, "sound": "default", "mutable-content": 1, "badge": 2147483647}, "mobterm": e}
-	b, _ := json.Marshal(payload)
-	n := len(b)
-	for _, c := range b {
-		if c == '/' {
-			n++
+	for {
+		raw, err := json.Marshal(p)
+		if err != nil {
+			return e, err
 		}
-	}
-	if e.Kind != "state" && n > 4096 {
+		if len(raw)+g.Overhead() <= maxV2Ciphertext {
+			e.Nonce = base64.StdEncoding.EncodeToString(nonce)
+			e.Ciphertext = base64.StdEncoding.EncodeToString(g.Seal(nil, nonce, raw, e.aad()))
+			if e.Kind == "state" || notificationPayloadSize(e) <= 4096 {
+				return e, nil
+			}
+			nonce = make([]byte, 12)
+			if _, err = rand.Read(nonce); err != nil {
+				return e, err
+			}
+		}
+		if p.Summary != "" {
+			p.Summary = truncateMessageSummary(p.Summary, len([]rune(p.Summary))/2, 512)
+			continue
+		}
+		if len(p.Tools) > 0 {
+			p.Tools = p.Tools[:len(p.Tools)-1]
+			p.ToolsTruncated = true
+			continue
+		}
 		return e, errors.New("v2_payload_too_large")
 	}
-	return e, nil
 }

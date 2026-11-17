@@ -343,3 +343,68 @@ func TestNativeSeparateStoresDoNotCoOwnIntegration(t *testing.T) {
 		})
 	}
 }
+
+// Upgrade a previously owned revision without adopting user-edited assets.
+func TestNativeSummaryAssetUpgrade(t *testing.T) {
+	for _, agent := range []string{"opencode", "pi"} {
+		t.Run(agent, func(t *testing.T) {
+			s, path := setupNativeTest(t, agent)
+			ctx := context.Background()
+			const cli = "/bin/mobterm-cli"
+			if agent == "opencode" {
+				if err := os.WriteFile(path, []byte(`{"plugins":["user-plugin"],"theme":"dark"}`), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := changeHooks(ctx, s, agent, "install", "", cli, false); err != nil {
+				t.Fatal(err)
+			}
+			var record nativeHookRecord
+			if err := s.readJSON(nativeRecordName(agent), &record); err != nil {
+				t.Fatal(err)
+			}
+			record.Revision = 3
+			for asset := range record.Files {
+				if filepath.Ext(asset) == ".json" {
+					continue
+				}
+				old := []byte("// previous owned adapter without summaries\n")
+				if err := os.WriteFile(asset, old, 0600); err != nil {
+					t.Fatal(err)
+				}
+				record.Files[asset] = nativeOwnedFile{SHA: nativeDigest(old)}
+			}
+			if err := s.writeJSON(nativeRecordName(agent), record); err != nil {
+				t.Fatal(err)
+			}
+			if err := changeHooks(ctx, s, agent, "install", "", cli, false); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.readJSON(nativeRecordName(agent), &record); err != nil {
+				t.Fatal(err)
+			}
+			if record.Revision != 4 || record.Pending != "" {
+				t.Fatalf("upgrade incomplete: revision=%d pending=%q", record.Revision, record.Pending)
+			}
+			files, _, err := nativeRenderedFiles(s, agent, path, cli)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for asset, want := range files {
+				got, err := os.ReadFile(asset)
+				if err != nil || !bytes.Equal(got, want) || record.Files[asset].SHA != nativeDigest(got) {
+					t.Fatal("generated asset/fingerprint mismatch", err)
+				}
+				if filepath.Ext(asset) != ".json" && !bytes.Contains(got, []byte("messageSummary")) {
+					t.Fatal("summary adapter missing")
+				}
+			}
+			if agent == "opencode" {
+				config, err := os.ReadFile(path)
+				if err != nil || !bytes.Contains(config, []byte("user-plugin")) || !bytes.Contains(config, []byte(`"theme":"dark"`)) {
+					t.Fatal("unrelated settings lost", err)
+				}
+			}
+		})
+	}
+}

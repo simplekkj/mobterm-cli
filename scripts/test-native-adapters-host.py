@@ -36,7 +36,7 @@ assert.equal(api.VERSION,process.argv[3]);
 const result=await api.discoverAndLoadExtensions([],process.cwd(),process.env.PI_CODING_AGENT_DIR);
 assert.deepEqual(result.errors,[]);
 assert.equal(result.extensions.length,1);
-for(const event of ['session_start','session_shutdown','agent_start','agent_settled'])
+for(const event of ['session_start','session_shutdown','agent_start','agent_settled','message_start','message_end'])
   assert.equal(result.extensions[0].handlers.get(event).length,1);
 assert.equal(result.extensions[0].handlers.has('ui_prompt_start'),true);
 console.log('PASS Pi official discovery/import/registration '+api.VERSION);
@@ -65,7 +65,7 @@ export default function(pi) {
                     except OSError:break
             if not marker.exists():raise RuntimeError('Pi TUI did not load extension: '+repr(tail))
             result=json.loads(marker.read_text())
-            assert result=={'version':version,'mode':'tui','listeners':9},result
+            assert result=={'version':version,'mode':'tui','listeners':11},result
             print('PASS Pi actual TUI session_start',result)
         finally:
             if proc.poll() is None:os.killpg(proc.pid,signal.SIGTERM)
@@ -74,7 +74,7 @@ export default function(pi) {
             os.close(master)
     else:
         # Instrument only the temporary copy: native setup still runs unchanged and
-        # must register all nine listeners. A second TUI launch proves restart loading.
+        # must register all fifteen listeners. A second TUI launch proves restart loading.
         assets=list((root/'store').rglob('tui.js'))
         assert len(assets)==1, assets
         asset=assets[0];original=asset.with_name('original.js');asset.rename(original)
@@ -101,7 +101,7 @@ export default {...plugin,setup(context){
                         except OSError:break
                 if not marker.exists(): raise RuntimeError('official TUI did not load plugin; isolated output: '+repr(tail))
                 result=json.loads(marker.read_text())
-                assert result['version']==version and result['listeners']==13,result
+                assert result['version']==version and result['listeners']==15,result
                 print('PASS OpenCode official TUI setup/restart',result)
             finally:
                 if proc.poll() is None:os.killpg(proc.pid,signal.SIGTERM)

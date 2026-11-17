@@ -73,17 +73,18 @@ function host(memory = { instance: 'test-instance', seen: [] }, router = createS
     sessions.set(id, { id, parentID, location: { directory: '/fixture' } });
   let reads = 0;
   const [selected, setSelected] = router;
-  const pending = new Map();
+  const pending = new Map(), messages = new Map(), messageReads = [];
   const context = {
     app: {version:'2.1.0',channel:'latest'}, storage:{memory:()=>[memory, f=>f(memory)]},
     ui:{router:{current:()=>{reads++;return {type:'session',sessionID:selected()};}},toast:{show:()=>{diagnostics++;}}},
     data:{on:(type,f)=>{let list=handlers.get(type)??[];list.push(f);handlers.set(type,list);return()=>handlers.set(type,list.filter(x=>x!==f));},session:{
       get:id=>sessions.get(id), root:id=>id==='child'?'root':id,
       family:id=>id==='root'?['root','child']:[id],
+      message:{get:(sessionID,messageID)=>{messageReads.push([sessionID,messageID]);return messages.get(JSON.stringify([sessionID,messageID]));}},
       permission:{list:id=>pending.get(id)??[]},form:{list:id=>pending.get(id)??[]},
     }},
   };
-  return {context,memory,pending,emit:(type,id,data)=>{for(const f of handlers.get(type)??[])f({type,id,data});},
+  return {context,memory,pending,messages,messageReads,sessions,emit:(type,id,data)=>{for(const f of handlers.get(type)??[])f({type,id,data});},
     route:setSelected,router,reads:()=>reads,handlers};
 }
 try {
@@ -233,7 +234,7 @@ try {
   for(const value of await events()) {
     assert.equal(value.adapter_revision,2);
     assert.equal(typeof value.run_id,'string');
-    for(const key of Object.keys(value)) assert.ok(['aborted','adapter_revision','runtime_version','event','session_id','run_id','event_id','instance_id','hook_event_name','tool_name','tool_use_id','tool_input','request_id','unavailable_reason'].includes(key));
+    for(const key of Object.keys(value)) assert.ok(['summary','aborted','adapter_revision','runtime_version','event','session_id','run_id','event_id','instance_id','hook_event_name','tool_name','tool_use_id','tool_input','request_id','unavailable_reason'].includes(key));
   }
   ctx.mode='tui';session='state-session';emit('session_start');emit('agent_start');
   emit('tool_execution_start',{toolCallId:'tool-one',toolName:'bash',args:{secret:'not uploaded'}});
@@ -383,6 +384,64 @@ try {
   gateCallbacks.get('session_shutdown')({},gateCtx);
   assert.equal((await blocked).block,true,'shutdown settles gate immediately without awaiting child close');
   await rm(join(temp,'interaction-policy-v1.json'));
+  // Summary candidates belong to the current root/run/step, never a session's last message.
+  const summaryHost=host(), stopSummary=plugin.setup(summaryHost.context);
+  const put=(id,content,type='assistant')=>summaryHost.messages.set(JSON.stringify(['root',id]),{id,type,content});
+  const oc=(type,id,sessionID='root')=>summaryHost.emit(type,'summary-'+type+'-'+id,{sessionID,assistantMessageID:id});
+  const finish=async id=>{oc('session.execution.succeeded',id);return (await allEvents()).find(e=>e.event_id==='summary-session.execution.succeeded-'+id);};
+  put('old',[{type:'text',text:'Previous round must stay private'}]);
+  oc('session.execution.started','one');
+  put('answer',[{type:'reasoning',text:'reasoning must stay private'},{type:'text',text:'\u001b[31m已修复本轮问题。\u001b[0m\n\nSecond paragraph'}]);
+  oc('session.step.started','answer');oc('session.step.ended','answer');
+  for(const owner of ['child','other','global','unknown','orphan'])oc('session.step.ended','old',owner);
+  assert.equal((await finish('one')).summary,'已修复本轮问题。');
+  assert.deepEqual(summaryHost.messageReads,[['root','answer']],'only precise current root message read');
+  oc('session.execution.started','two');oc('session.step.ended','old');
+  assert.equal((await finish('two')).summary,undefined,'late prior step cannot populate a new run');
+  oc('session.execution.started','three');oc('session.step.started','answer');oc('session.step.ended','answer');
+  oc('session.step.started','missing');oc('session.step.ended','missing');
+  assert.equal((await finish('three')).summary,undefined,'missing latest message clears candidate');
+  oc('session.execution.started','four');oc('session.step.started','answer');oc('session.step.ended','answer');
+  summaryHost.emit('session.tool.input.started','summary-tool',{sessionID:'root',id:'t',name:'bash'});
+  assert.equal((await finish('four')).summary,undefined,'continued tool work clears prior response');
+  oc('session.execution.started','five');oc('session.step.started','answer');oc('session.step.ended','answer');
+  summaryHost.route('other');summaryHost.route('root');
+  assert.equal((await finish('five')).summary,undefined,'route round trip clears candidate');
+  for(const [id,parts] of [['reasoning',[{type:'reasoning',text:'private'}]],['tool',[{type:'tool',output:'private'}]],['image',[{type:'image',data:'private'}]],['code',[{type:'text',text:'```js\nsecret()\n```'}]],['json',[{type:'text',text:'{\n"private":true\n}'}]],['thought',[{type:'text',text:'<think>\nprivate internal reasoning\n</think>'}]]]) {
+    oc('session.execution.started',id);put(id,parts);oc('session.step.started',id);oc('session.step.ended',id);
+    assert.equal((await finish(id)).summary,undefined,id+' only is not prose');
+  }
+  oc('session.execution.started','bounded');put('bounded',[{type:'text',text:'👩‍💻'.repeat(200)}]);oc('session.step.started','bounded');oc('session.step.ended','bounded');
+  const bounded=(await finish('bounded')).summary;
+  assert.ok([...bounded].length<=120&&Buffer.byteLength(bounded)<=512);assert.ok(bounded.endsWith('👩‍💻'));
+  oc('session.execution.started','wrong-id');put('wrong-id',[{type:'text',text:'private'}]);
+  summaryHost.messages.get(JSON.stringify(['root','wrong-id'])).id='another-message';
+  oc('session.step.started','wrong-id');oc('session.step.ended','wrong-id');
+  assert.equal((await finish('wrong-id')).summary,undefined,'cache identity must match requested message');
+  oc('session.execution.started','location');oc('session.step.started','answer');oc('session.step.ended','answer');
+  summaryHost.sessions.get('root').location={directory:'/moved'};
+  // The old candidate is never transported to another location.
+  assert.equal((await finish('location')).summary,undefined,'location drift clears candidate');
+  stopSummary();
+  const summaryCallbacks=new Map();extension({on:(name,f)=>summaryCallbacks.set(name,f)});
+  let piSession='pi-summary';const summaryContext={mode:'tui',sessionManager:{getSessionId:()=>piSession},ui:{notify:()=>{}}};
+  const pe=(name,event={})=>summaryCallbacks.get(name)?.(event,summaryContext);
+  const pm=content=>pe('message_end',{message:{role:'assistant',content}});
+  const pf=async()=>{pe('agent_settled',{aborted:false});return (await allEvents()).filter(e=>e.session_id===piSession&&e.event==='agent_settled').at(-1);};
+  pe('session_start');pe('agent_start');pm([{type:'thinking',thinking:'private'},{type:'text',text:'Pi current reply'}]);
+  pe('agent_end');pe('turn_end');assert.equal((await allEvents()).some(e=>e.session_id===piSession&&e.event==='agent_settled'),false);
+  assert.equal((await pf()).summary,'Pi current reply');
+  pe('agent_start');assert.equal((await pf()).summary,undefined,'new round has no old summary');
+  pe('agent_start');pm([{type:'text',text:'stale'}]);pe('tool_execution_start',{toolCallId:'continue',toolName:'read'});
+  assert.equal((await pf()).summary,undefined,'tool continuation clears Pi summary');
+  pe('agent_start');pm([{type:'text',text:'stale'}]);pe('message_start',{message:{role:'assistant'}});pm([{type:'thinking',thinking:'private'}]);
+  assert.equal((await pf()).summary,undefined,'latest nontext assistant clears candidate');
+  pe('agent_start');pm([{type:'text',text:'stale'}]);pe('session_start');pe('agent_start');
+  assert.equal((await pf()).summary,undefined,'session epoch resets summary');
+  pe('agent_start');pm([{type:'text',text:'interrupted text'}]);pe('agent_settled',{aborted:true});
+  const interrupted=(await allEvents()).filter(e=>e.session_id===piSession&&e.event==='agent_settled').at(-1);
+  assert.equal(interrupted.aborted,true);assert.equal(interrupted.summary,undefined,'aborted does not imply completed response');
+  pe('session_shutdown');
   console.log('PASS native adapter contracts: ownership, pending, lifecycle, reload, identity, Pi settled/mode, bridge metadata');
 } finally {
   for (const child of children) child.kill('SIGKILL');

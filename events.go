@@ -8,20 +8,29 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
+	"unicode"
 )
 
 type hookInput struct {
-	Type             string `json:"type"`
-	ThreadID         string `json:"thread-id"`
-	TurnID           string `json:"turn-id"`
-	SessionID        string `json:"session_id"`
-	HookEventName    string `json:"hook_event_name"`
-	NotificationType string `json:"notification_type"`
+	NativeTurnID         string `json:"turn_id"`
+	AgentID              string `json:"agent_id"`
+	PromptID             string `json:"prompt_id"`
+	LastAssistantMessage string `json:"last-assistant-message"`
+	Type                 string `json:"type"`
+	ThreadID             string `json:"thread-id"`
+	TurnID               string `json:"turn-id"`
+	SessionID            string `json:"session_id"`
+	HookEventName        string `json:"hook_event_name"`
+	NotificationType     string `json:"notification_type"`
 }
 type claudeCycle struct {
-	Cycle   string `json:"cycle"`
-	Updated int64  `json:"updated"`
+	PromptID     string `json:"prompt_id,omitempty"`
+	Summary      string `json:"summary,omitempty"`
+	SummaryCycle string `json:"summary_cycle,omitempty"`
+	Cycle        string `json:"cycle"`
+	Updated      int64  `json:"updated"`
 }
 
 func parseEvent(ctx context.Context, s Store, source string, payload []byte) (kind, identity string, err error) {
@@ -43,12 +52,31 @@ func parseEvent(ctx context.Context, s Store, source string, payload []byte) (ki
 		if len(p.ThreadID) == 0 || len(p.ThreadID) > 256 || len(p.TurnID) == 0 || len(p.TurnID) > 256 {
 			return "", "", errors.New("Codex event lacks stable thread/turn identity")
 		}
+		if p.SessionID != "" && p.SessionID != p.ThreadID || p.NativeTurnID != "" && p.NativeTurnID != p.TurnID {
+			return "", "", errors.New("conflicting_codex_identity")
+		}
+		if p.AgentID != "" {
+			return "", "", nil
+		}
+		if strings.IndexFunc(p.ThreadID, unicode.IsControl) >= 0 || strings.IndexFunc(p.TurnID, unicode.IsControl) >= 0 {
+			return "", "", errors.New("invalid_codex_identity")
+		}
+		origin := codexCompletionOrigin(ctx, p.ThreadID)
+		if ctx.Err() != nil {
+			return "", "", ctx.Err()
+		}
+		if origin != codexOriginRoot {
+			return "", "", codexOriginError(origin)
+		}
 		return "turn_completed", digest("codex\x00" + p.ThreadID + "\x00" + p.TurnID), nil
 	case "claude":
 		if p.SessionID == "" || len(p.SessionID) > 256 {
 			return "", "", errors.New("Claude hook lacks session identity")
 		}
 		if p.HookEventName != "UserPromptSubmit" && p.HookEventName != "Notification" {
+			return "", "", nil
+		}
+		if p.AgentID != "" && (p.HookEventName == "UserPromptSubmit" || p.NotificationType == "idle_prompt") {
 			return "", "", nil
 		}
 		key := digest(p.SessionID)
@@ -87,11 +115,11 @@ func parseEvent(ctx context.Context, s Store, source string, payload []byte) (ki
 			if len(sessions) >= 256 && cycle.Cycle == "" {
 				return "", "", errors.New("Claude session association limit reached")
 			}
-			cycle = claudeCycle{Cycle: randomID(), Updated: now}
+			cycle = claudeCycle{Cycle: randomID(), Updated: now, PromptID: p.PromptID}
 			sessions[key] = cycle
 			return "", "", s.writeJSON("claude-cycles.json", sessions)
 		case "Notification":
-			if cycle.Cycle == "" {
+			if cycle.Cycle == "" || cycle.PromptID != "" && p.PromptID != "" && cycle.PromptID != p.PromptID {
 				return "", "", nil
 			}
 			return "turn_completed", digest("claude\x00" + key + "\x00" + cycle.Cycle + "\x00completed"), nil
@@ -171,6 +199,31 @@ func notify(ctx context.Context, s Store, a API, source string, payload []byte, 
 	if err != nil {
 		return nil, err
 	}
+	summary := ""
+	if kind == "turn_completed" {
+		var input hookInput
+		_ = json.Unmarshal(payload, &input)
+		if source == "codex" {
+			summary = cleanMessageSummary(input.LastAssistantMessage)
+		}
+		if source == "claude" {
+			cycle, _, candidate, e := claudeCycleEvent(ctx, s, input.SessionID, "read", "", input.PromptID)
+			err = e
+			if digest("claude\x00"+digest(input.SessionID)+"\x00"+cycle+"\x00completed") == identity {
+				summary = candidate
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if source == "opencode" || source == "pi" {
+		var native struct {
+			Summary string `json:"summary"`
+		}
+		_ = json.Unmarshal(payload, &native)
+		summary = cleanMessageSummary(native.Summary)
+	}
 	var results []map[string]any
 	var pending []delivery
 	var lastErr error
@@ -182,7 +235,8 @@ func notify(ctx context.Context, s Store, a API, source string, payload []byte, 
 		if p.InstallationID != id || p.Status != "active" {
 			continue
 		}
-		d, e := enqueueDelivery(ctx, s, p, kind, identity, l, source, nativeSource)
+
+		d, e := enqueueDeliverySummary(ctx, s, p, kind, identity, l, source, summary, nativeSource)
 		if e != nil {
 			lastErr = e
 			results = append(results, map[string]any{"v": 1, "pair_id": pid, "state": "not_saved", "error": safeCode(e.Error())})

@@ -3,14 +3,20 @@
 Each installation has a random local ID. Each paired phone has an independent
 32-byte sending credential and AES-256 key. Credentials and keys are local mode
 0600 files in a mode 0700 directory. The API stores credential hashes and cannot
-decrypt target locators. The CLI does not contain global service secrets.
+decrypt target locators or message summaries. The CLI does not contain global service secrets.
 
 Only routing metadata (opaque IDs, event kind, expiry, ciphertext length) reaches
 the API/APNs. Encryption does not hide timing, kind, or traffic volume. Server,
 username and terminal coordinates remain in the encrypted/local parts. Native
 Agent payloads may include responses, prompts, tool arguments and transcript
-paths; ordinary observations decode only explicit lifecycle fields and never open
-transcript files. The opt-in [v2 approval bridge](protocol-v2.md) additionally keeps
+paths; ordinary observations decode explicit lifecycle fields. Completion extracts
+only the current attributed assistant text, cleans it to at most 120 Unicode
+scalars / 512 UTF-8 bytes, and encrypts that bounded excerpt end to end. It does
+not collect full conversations, user prompts, reasoning, raw tool output or
+terminal screens. Codex attribution may read only the canonical first session
+metadata record under the resolved Codex home; it never reads subsequent
+conversation records or opens an arbitrary hook transcript path. This bounded
+read-only source header is distinct from conversation collection. The opt-in [v2 approval bridge](protocol-v2.md) additionally keeps
 a bounded full native operation snapshot locally for the short-lived waiter;
 only explicit SSH inspect reads it. It is never included in API/APNs, and terminal
 request transitions scrub it. If a process is killed, the next local approval
@@ -120,3 +126,24 @@ allow returns control to the host's remaining trusted extensions rather than
 bypassing them. OpenCode native deny affects the session's pending permission
 batch and requires the new explicit scope; legacy approval offers only once.
 See [the protocol and bounded lifecycle](interaction-v1.md).
+
+## Message summaries and preview consent
+
+A summary is an Agent output excerpt, not MobTerm's verification of claims such
+as “tests passed”. Authenticated event/state enums determine status: completion
+means this response ended, not that the overall task succeeded. Summaries do not
+participate in occurrence/event IDs, Locator hashes, SSH targets, approval or
+interaction digests, policy, or request selection. Only the cleaned candidate
+and frozen event excerpt enter the existing mode-0600 local store. Outboxes
+remain ciphertext-only; logs and additional APNs/userInfo/spool fields contain
+no plaintext summary. Same-event re-entry and retries reuse the original envelope.
+
+App records show the original authenticated event's summary independently of a
+later run snapshot. System notification summary preview requires its own local,
+default-off permission; an existing Agent/connection-name preview preference is
+not consent to response text. The extension also checks the current pair,
+installation, keys, validity, system previews and publication revision. Turning
+summary preview off retracts delivered detailed notifications which actually
+contained a summary, respecting revision races; it does not delete App history,
+unread records, generic reminders or change remote notification/action grants.
+System lock-screen policy retains final control over subsequent presentation.

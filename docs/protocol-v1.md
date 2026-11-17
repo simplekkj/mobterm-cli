@@ -444,7 +444,8 @@ native event ID and per-TUI in-memory instance across hot reload. Pi uses a fres
 random association per observed run and never fabricates completion after reload.
 Two TUI instances showing the same root can notify their own exact terminals.
 The local adapter stdin contains only revision, host runtime version, event,
-session/event/instance IDs and Pi aborted=false (maximum 4096 bytes); unknown
+session/event/instance IDs, Pi aborted=false, and optional bounded `summary`
+(maximum 4096 bytes); other unknown
 fields or invalid metadata are refused. It is not a public REST schema.
 
 The local retry cache contains ciphertext and a locator digest, never hook content.
@@ -521,7 +522,7 @@ These additions preserve the v1 public envelope and exact AES-GCM AAD above.
 The plaintext remains a **top-level locator**, with optional `agent` restricted to
 `codex`, `claude`, `opencode`, `pi`. Missing agent means “Agent”. Display metadata
 is not a target identity field. Before `target verify` or `target resolve`, callers
-must encode only the locator field whitelist; never forward the decrypted agent
+must encode only the locator field whitelist; never forward decrypted display metadata such as agent/summary
 field to the strict stdin decoder. The original golden vector is unchanged;
 [protocol-v1-extended.json](../testdata/protocol-v1-extended.json) adds agent and
 strong occupant fields using the same key/nonce/AAD convention.
@@ -793,3 +794,34 @@ proof). Temporary inability to query does not prove the terminal was replaced.
 command family, per-kind explicit opt-in, signed request/answer bytes and durable
 at-most-once native dispatch. Existing approval v3, v1/v2 encrypted envelopes,
 pairing, revocation and target resolution retain their existing contracts.
+
+## Optional encrypted message summary
+
+`summary` is an optional string in the same **top-level** v1 plaintext as the
+Locator and optional `agent`; it is never a nested Locator or an outer envelope
+field. The new [summary vector](../testdata/protocol-v1-summary.json) supplements,
+and does not replace, the original vectors. Old consumers ignore it; missing or
+invalid optional text in the new App degrades to the authenticated status. Core
+identity/authentication failure still rejects the event.
+
+The sender selects the first natural-language paragraph of the current attributed
+assistant reply, removes ANSI/OSC, control and bidi-override characters, collapses
+whitespace and clips at complete characters (common combining/emoji clusters are
+kept together), to at most 120 Unicode scalars and 512 UTF-8 bytes. Code-, JSON-,
+reasoning- and attachment-only sources produce no summary. The API cannot decrypt
+it and its strict outer whitelist still rejects plaintext `summary`.
+
+The 2800-byte ciphertext/tag and whole 4096-byte APNs/Foundation budgets remain.
+The sender shortens or omits optional summary before rejecting required identity;
+any changed plaintext after an encryption attempt uses a fresh nonce. The first
+durable delivery freezes event ID, expiry, nonce and ciphertext, including summary.
+Re-entry with different assistant text does not reseal it. Negotiated v2 downgrade
+uses the same frozen message summary and existing single-delivery path; unsupported
+failed/interrupted states never become fictitious v1 completions.
+
+New CLI + old App/NSE/current API keeps notification and navigation semantics.
+Old CLI + new App/NSE has state-only rendering and cannot gain the new sender-side
+Codex attribution protection. No API runtime change, migration or deployment is
+needed for this optional ciphertext extension. Upgrade affected owned adapters
+alongside CLI; old strict adapters/CLI combinations and activation requirements
+are documented in [compatibility](compatibility.md).

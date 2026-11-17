@@ -96,7 +96,7 @@ alone still does not prove either completion or an actionable human wait.
 
 | Source | Native event | Mapping / limitation |
 | --- | --- | --- |
-| Codex >=0.100.0 stable | `notify: agent-turn-complete` | `turn_completed`; requires opaque `thread-id` and `turn-id` |
+| Codex >=0.100.0 stable | `notify: agent-turn-complete` | `turn_completed`; requires stable thread/turn identity and positive root provenance below |
 | Codex | `PermissionRequest`, `Stop`, TUI approval alerts | Not forwarded: not proof of final completion or unresolved human wait |
 | Claude Code >=2.0.36 stable | `UserPromptSubmit` then `Notification: idle_prompt` | `turn_completed`; requires a live prompt association and native delayed idle |
 | Claude Code >=2.0.36 stable | `Notification: permission_prompt`, `elicitation_dialog` | `needs_input`; independent of completion associations |
@@ -305,6 +305,16 @@ Each activation owns a disposable Solid root for its route observer. Cleanup
 and partial setup failure release that root and all registered native listeners;
 TUI memory identity and deduplication remain available to the next activation.
 
+Optional completion `summary` reads only the current root/run's precise
+`session.step.started` → `session.step.ended.assistantMessageID` through
+`context.data.session.message.get(sessionID, messageID)`. The returned ID and
+assistant type must agree. It never lists or synchronizes session history.
+Only bounded `content` text is retained; reasoning/tool content is excluded.
+A new step, tool observation, execution, route change or reload invalidates the
+candidate. A missing/changed cache or a half-observed step yields status only.
+These message contracts were checked against the fixed 2.1.0 client/context above;
+completion still comes exclusively from `session.execution.succeeded`.
+
 Pi means the official `@earendil-works/pi-coding-agent` package in
 [earendil-works/pi](https://github.com/earendil-works/pi). Minimum 1.1.0
 (`abe508e1b89912adde45528136c3221eb69acdd7`) adds explicit settled cancellation;
@@ -312,7 +322,11 @@ current reference 1.3.0 (`71023aec1546d6d677a65669c5665c0927ce0dd0`).
 The extension uses host-resolved `VERSION`, `ctx.mode === "tui"`,
 `sessionManager.getSessionId()`, observed `agent_start` and final `agent_settled`.
 Only explicit `aborted:false` completes. Retry/compaction/continuation intermediate
-end events are not subscribed. Session switch/reload/shutdown invalidates pending
+end events never complete. `message_start/end` only manage the current round's
+last assistant text candidate; tools, a new assistant/user message, a new round,
+and reset clear the old candidate. Nontext-only assistants clear it as well.
+Only non-aborted final settled may attach that candidate; it is not copied to an
+interrupted notification. Session switch/reload/shutdown invalidates pending
 associations; a half-turn after reload produces no historical notification.
 Revision 2 observes native `ui_prompt_start/end` intervals as waiting input;
 these events have no general native reply handle, so legacy mobile approval is
@@ -341,11 +355,24 @@ stdout/stderr suppressed. New-source CLI failures return nonzero to this child
 bridge. Intentional route/session cancellation is silent and does not consume
 the diagnostic for a subsequent spawn, exit or timeout failure. The
 Codex/Claude notifier exit behavior is unchanged. No user model/API
-credentials, message content or original events enter the adapter payload.
+credentials, complete messages or original events enter the adapter payload.
+The optional `summary` is a plain-text excerpt limited to 120 Unicode scalars and
+512 UTF-8 bytes, with grapheme-safe clipping, control/ANSI/OSC removal and
+code/JSON-only fallback. It is produced in memory, sent over bounded stdin and
+then protected by the CLI's existing private storage and end-to-end encryption;
+no terminal screen or full transcript is collected. A bridge payload that exceeds
+4096 bytes first drops this optional summary. Missing native text stays absent.
 Generated assets and exact config references have local fingerprint ownership;
 interrupted transactions retain a retryable journal and never restore an entire
 user config as rollback. Edited/unowned files and symlinks are refused. Uninstall
 uses the saved root and remains available without the Agent on PATH.
+Summary assets use installation record revision 4 (wire adapter revision remains
+2). Upgrade the CLI and its owned assets together using the controlled installer,
+then reload/restart according to the host's rules. Old strict CLI decoders may
+reject the added key; new CLI accepts old assets without summaries. An installed
+fingerprint proves disk contents, not that a running Agent loaded them. Existing
+pairing normally remains valid. This implementation does not update real user
+Agent configuration or restart active sessions automatically.
 
 ## Reliability additions — 2026-10-21
 
@@ -519,3 +546,70 @@ legacy notify runs. This round adds no Stop completion mapping and performs no
 P0 configuration migration. `notify` and its old reader/third-party chain remain
 in place. Completing these two independent P1 changes does not complete the
 hooks-only requirement or authorize a completion-source switch.
+
+## Root attribution and response excerpts — 2026-11-17
+
+The notification version gate above is unchanged; passing it is not proof of
+support for every metadata format. This round checks Codex 0.100.0 session metadata
+and the fixed 0.169.0 source contract (commit
+`d32063f96c2dff1dc96af839b3952abb6acfeda4`). Codex native `notify` remains the sole
+completion source; Stop is not promoted and the deferred hooks-only migration is
+not resumed. A hidden title thread is a supported explanation of the reported
+incident, not a proven identity of the unretained original callback.
+
+Both legacy notify and rich observation gate MobTerm completion before creating a
+run, snapshot, reminder or outbox. Explicit child `agent_id` prevents root prompt,
+Stop and tool-state contamination; legitimate separately authorized questions and
+approvals keep their native delivery path with distinct child identity. Absence
+of `agent_id`, a SessionStart reason, a prior run, tool count, cwd, pane, text or
+elapsed time is never positive root proof. Existing pre-upgrade runs remain
+untrusted. Rich root proof is stored only after source validation and bound to
+Agent/session/turn/instance and the captured Locator; ordinary Pre/Post observations
+perform no metadata scan and remain local/durable.
+
+Without exact persisted proof, the CLI resolves `CODEX_HOME` (or the normal
+`~/.codex` root) and reads only the first canonical `session_meta` record. Supported
+layouts are `sessions/YYYY/MM/DD`, legacy `sessions/`, and `archived_sessions/`.
+Rollout and revert filenames only locate candidates: metadata ID must exactly
+match. Explicit source `cli`, `vscode`, `exec` or `mcp` with missing or `user`
+thread_source and no parent is root evidence. Explicit subagent/internal sources
+are non-root; source/parent/thread_source contradictions, absent/unknown sources,
+wrong ID, conflicting candidates and malformed/duplicate-key headers are unknown.
+A user's `forked_from_id` is history, not proof of a child agent.
+
+The fallback has a 150 ms total scan budget, 4096 directory-entry budget, eight
+candidate limit, 64 KiB maximum first record and 256 KiB total header bytes.
+Directory and file opens are pinned with `openat`/`O_NOFOLLOW`; symbolic links in
+the configured root path or scanned subtree, nonregular candidates and unknown
+layouts cannot provide proof. Use a canonical nonsymlink Codex home. Arbitrary
+`transcript_path` values are not opened. No bytes after the first record are read;
+there is no transcript scan, poll, new listener or fixed wait. Missing metadata,
+permissions or exhausted budgets produce the fixed redacted
+`codex_completion_origin_unknown` reason, not an infinite retry or a claim that
+this was definitely a background thread. A legacy-only legitimate ephemeral
+thread with no rollout or trusted lifecycle therefore cannot notify completion.
+The original third-party Codex notify argv/JSON/output/exit remains unchanged.
+
+| Agent/path | Completed response and excerpt support | Remaining boundary |
+| --- | --- | --- |
+| Codex rich and legacy | Proven root; current notify `last-assistant-message` | Unknown/ephemeral/no metadata fails closed; old sender lacks this fix |
+| Claude rich | Same root prompt cycle, Stop then idle; Stop `last_assistant_message` candidate | Missing optional field gives status only; continued tools/new prompt invalidate candidate |
+| Claude legacy | Existing root prompt cycle then native idle, no artificial short-turn filtering | Original legacy installation has no Stop capture, so status only |
+| OpenCode 2.1.0 | Existing visible-root/run/route guards, exact step message cache | Missing cache/text gives status only; official isolated loading is not model execution |
+| Pi 1.3.0 (also isolated load 1.5.0) | TUI current round final non-aborted settled and assistant text | Other modes, reload half-round, unknown text or aborted runs do not inherit excerpts |
+
+Claude `agent_type` alone is not a child flag: user `--agent` roots remain valid.
+When both the recorded prompt and a subsequent event provide native `prompt_id`,
+conflicting IDs reject delayed old Stop/idle. Missing optional IDs retain the
+existing prompt-cycle and (rich path) Stop gate;
+unknown historical event formats cannot be claimed as universally validated.
+No evidence in this task establishes that Claude/OpenCode/Pi reproduced the original
+Codex incident. Missing safe, request-bound short natural-language titles on waits
+continues to show only the authenticated waiting status, without serializing tool
+inputs, approval parameters or full native forms.
+
+The cross-version encrypted-summary and controlled asset activation matrix is in
+[protocol v1](protocol-v1.md#optional-encrypted-message-summary) and the adapter
+section above. Real model rounds, API/APNs delivery, lock-screen behavior and phone
+navigation are separate validation layers; this repository's local fixtures and
+isolated official-host loading do not prove them.

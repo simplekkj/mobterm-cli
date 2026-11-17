@@ -8,34 +8,42 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 	"unicode"
 )
 
 type activityInput struct {
-	UnavailableReason  string          `json:"unavailable_reason,omitempty"`
-	Cwd                string          `json:"cwd,omitempty"`
-	RequestID          string          `json:"request_id"`
-	AdapterRevision    int             `json:"adapter_revision"`
-	RuntimeVersion     string          `json:"runtime_version"`
-	Event              string          `json:"event"`
-	SessionID          string          `json:"session_id"`
-	EventID            string          `json:"event_id"`
-	InstanceID         string          `json:"instance_id"`
-	RunID              string          `json:"run_id"`
-	ToolID             string          `json:"tool_id"`
-	ToolName           string          `json:"tool_name"`
-	ToolStatus         string          `json:"tool_status"`
-	Aborted            *bool           `json:"aborted"`
-	HookEventName      string          `json:"hook_event_name"`
-	TurnID             string          `json:"turn_id"`
-	ToolUseID          string          `json:"tool_use_id"`
-	NotificationType   string          `json:"notification_type"`
-	Type               string          `json:"type"`
-	Thread             string          `json:"thread-id"`
-	Turn               string          `json:"turn-id"`
-	ToolInput          json.RawMessage `json:"tool_input"`
-	NativeForm         json.RawMessage `json:"native_form,omitempty"`
-	PendingPermissions json.RawMessage `json:"pending_permissions,omitempty"`
+	AgentID               string          `json:"agent_id,omitempty"`
+	AgentType             string          `json:"agent_type,omitempty"`
+	TranscriptPath        string          `json:"transcript_path,omitempty"`
+	PromptID              string          `json:"prompt_id,omitempty"`
+	Summary               string          `json:"summary,omitempty"`
+	LastAssistantMessage  string          `json:"last_assistant_message,omitempty"`
+	CodexAssistantMessage string          `json:"last-assistant-message,omitempty"`
+	UnavailableReason     string          `json:"unavailable_reason,omitempty"`
+	Cwd                   string          `json:"cwd,omitempty"`
+	RequestID             string          `json:"request_id"`
+	AdapterRevision       int             `json:"adapter_revision"`
+	RuntimeVersion        string          `json:"runtime_version"`
+	Event                 string          `json:"event"`
+	SessionID             string          `json:"session_id"`
+	EventID               string          `json:"event_id"`
+	InstanceID            string          `json:"instance_id"`
+	RunID                 string          `json:"run_id"`
+	ToolID                string          `json:"tool_id"`
+	ToolName              string          `json:"tool_name"`
+	ToolStatus            string          `json:"tool_status"`
+	Aborted               *bool           `json:"aborted"`
+	HookEventName         string          `json:"hook_event_name"`
+	TurnID                string          `json:"turn_id"`
+	ToolUseID             string          `json:"tool_use_id"`
+	NotificationType      string          `json:"notification_type"`
+	Type                  string          `json:"type"`
+	Thread                string          `json:"thread-id"`
+	Turn                  string          `json:"turn-id"`
+	ToolInput             json.RawMessage `json:"tool_input"`
+	NativeForm            json.RawMessage `json:"native_form,omitempty"`
+	PendingPermissions    json.RawMessage `json:"pending_permissions,omitempty"`
 }
 
 func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Activity, activityInput, error) {
@@ -46,6 +54,9 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 	}
 	valid := func(v string) bool { return v != "" && len(v) <= 256 && strings.IndexFunc(v, unicode.IsControl) < 0 }
 	if source == "codex" && p.Type == "agent-turn-complete" {
+		if p.SessionID != "" && p.SessionID != p.Thread || p.TurnID != "" && p.TurnID != p.Turn {
+			return a, p, errors.New("conflicting_codex_identity")
+		}
 		p.SessionID = p.Thread
 		p.TurnID = p.Turn
 		p.HookEventName = "NotifyComplete"
@@ -56,6 +67,18 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 	a.Session = p.SessionID
 	a.Run = p.TurnID
 	a.Instance = p.SessionID
+	if (source == "codex" || source == "claude") && p.AgentID != "" {
+		if !valid(p.AgentID) {
+			return a, p, errors.New("invalid_agent_identity")
+		}
+		// Child user interactions remain available, but cannot mutate the root run.
+		childInteraction := p.HookEventName == "PermissionRequest" || p.HookEventName == "Elicitation" || (p.HookEventName == "PreToolUse" || p.HookEventName == "PostToolUse") && (p.ToolName == "request_user_input" || p.ToolName == "request_user_input_async" || p.ToolName == "AskUserQuestion" || p.ToolName == "ExitPlanMode") || p.HookEventName == "Notification" && (p.NotificationType == "permission_prompt" || p.NotificationType == "elicitation_dialog")
+		if !childInteraction {
+			return a, p, nil
+		}
+		a.Session = p.AgentID
+		a.Instance = digest(p.SessionID + "\x00child\x00" + p.AgentID)
+	}
 	if source == "opencode" || source == "pi" {
 		decoder := json.NewDecoder(bytes.NewReader(raw))
 		decoder.DisallowUnknownFields()
@@ -66,6 +89,7 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 		if !ok || p.AdapterRevision != 2 || policy.evaluate(policy.prefix+p.RuntimeVersion+policy.suffix) != "" || !valid(p.EventID) || !valid(p.InstanceID) || !valid(p.RunID) {
 			return a, p, errors.New("invalid_native_activity")
 		}
+		a.Summary = cleanMessageSummary(p.Summary)
 		a.Run = p.RunID
 		a.Instance = p.InstanceID
 		a.Occurrence = digest(source + "\x00" + p.Event + "\x00" + p.SessionID + "\x00" + p.EventID + "\x00" + p.InstanceID)
@@ -173,12 +197,13 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 			a.Reminder = "interrupted"
 		}
 	case "NotifyComplete":
+		a.Summary = cleanMessageSummary(p.CodexAssistantMessage)
 		a.State = "turn_completed"
 		a.Reminder = "turn_completed"
 		a.Occurrence = digest("codex\x00" + p.SessionID + "\x00" + p.TurnID)
 	case "Notification":
 		if source == "claude" && p.NotificationType == "idle_prompt" {
-			cycle, stopped, e := claudeActivityCycle(ctx, s, p.SessionID, false)
+			cycle, stopped, summary, e := claudeCycleEvent(ctx, s, p.SessionID, "read", "", p.PromptID)
 			if e != nil {
 				return a, p, e
 			}
@@ -186,6 +211,11 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 				return a, p, nil
 			}
 			a.Run = cycle
+			a.Summary = summary
+			a.State = "turn_completed"
+			a.Reminder = "turn_completed"
+			a.Occurrence = digest("claude\x00" + digest(p.SessionID) + "\x00" + cycle + "\x00completed")
+			break
 		}
 		kind, id, err := parseEvent(ctx, s, source, raw)
 		if err != nil {
@@ -199,7 +229,10 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 			a.State = "waiting_input"
 		}
 	case "Stop":
-		_, _, err := claudeActivityCycle(ctx, s, p.SessionID, true)
+		if source != "claude" {
+			return a, p, nil
+		}
+		_, _, _, err := claudeCycleEvent(ctx, s, p.SessionID, "stop", cleanMessageSummary(p.LastAssistantMessage), p.PromptID)
 		return a, p, err // Only idle after this cycle's Stop can confirm completion.
 	default:
 		return a, p, nil
@@ -209,7 +242,12 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 			return a, p, err
 		}
 	}
-	if source == "claude" {
+	if source == "claude" && p.AgentID == "" && a.Reminder != "turn_completed" {
+		if p.HookEventName == "PreToolUse" || p.HookEventName == "PostToolUse" || p.HookEventName == "PostToolUseFailure" {
+			if _, _, _, err := claudeCycleEvent(ctx, s, p.SessionID, "resume", "", p.PromptID); err != nil {
+				return a, p, err
+			}
+		}
 		cycle, _, err := claudeActivityCycle(ctx, s, p.SessionID, false)
 		if err != nil {
 			return a, p, err
@@ -246,36 +284,62 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 }
 
 func claudeActivityCycle(ctx context.Context, s Store, session string, stop bool) (string, bool, error) {
+	action := "read"
+	if stop {
+		action = "stop"
+	}
+	cycle, stopped, _, err := claudeCycleEvent(ctx, s, session, action, "", "")
+	return cycle, stopped, err
+}
+func claudeCycleEvent(ctx context.Context, s Store, session, action, summary, promptID string) (string, bool, string, error) {
 	unlock, err := s.lock(ctx)
 	if err != nil {
-		return "", false, err
+		return "", false, "", err
 	}
 	defer unlock()
 	cycles := map[string]claudeCycle{}
-	err = s.readJSON("claude-cycles.json", &cycles)
-	if errors.Is(err, os.ErrNotExist) {
-		err = nil
+	if err = s.readJSON("claude-cycles.json", &cycles); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", false, "", err
 	}
-	if err != nil {
-		return "", false, err
+	key := digest(session)
+	cycle := cycles[key]
+	if cycle.Cycle == "" || cycle.Updated < time.Now().Unix()-86400 {
+		return "", false, "", nil
 	}
-	cycle := cycles[digest(session)]
 	stops := map[string]string{}
-	err = s.readJSON("claude-stops-v2.json", &stops)
-	if errors.Is(err, os.ErrNotExist) {
-		err = nil
+	if err = s.readJSON("claude-stops-v2.json", &stops); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", false, "", err
 	}
-	if err != nil {
-		return "", false, err
+	if cycle.PromptID != "" && promptID != "" && cycle.PromptID != promptID {
+		return cycle.Cycle, false, "", nil
 	}
-	if stop && cycle.Cycle != "" {
+	switch action {
+	case "stop":
 		if len(stops) > 256 {
 			stops = map[string]string{}
 		}
-		stops[digest(session)] = cycle.Cycle
-		err = s.writeJSON("claude-stops-v2.json", stops)
+		stops[key] = cycle.Cycle
+		cycle.Summary = cleanMessageSummary(summary)
+		cycle.SummaryCycle = cycle.Cycle
+	case "resume":
+		delete(stops, key)
+		cycle.Summary = ""
+		cycle.SummaryCycle = ""
 	}
-	return cycle.Cycle, cycle.Cycle != "" && stops[digest(session)] == cycle.Cycle, err
+	if action != "read" {
+		cycles[key] = cycle
+		if err = s.writeJSON("claude-cycles.json", cycles); err != nil {
+			return "", false, "", err
+		}
+		if err = s.writeJSON("claude-stops-v2.json", stops); err != nil {
+			return "", false, "", err
+		}
+	}
+	stopped := stops[key] == cycle.Cycle
+	if !stopped || cycle.SummaryCycle != cycle.Cycle {
+		return cycle.Cycle, stopped, "", nil
+	}
+	return cycle.Cycle, stopped, cycle.Summary, nil
 }
 func observe(ctx context.Context, s Store, api API, source string, raw []byte) (any, error) {
 	var dispatch activityInput
@@ -287,7 +351,11 @@ func observe(ctx context.Context, s Store, api API, source string, raw []byte) (
 			Answers json.RawMessage `json:"answers"`
 		}
 		if json.Unmarshal(dispatch.ToolInput, &input) == nil && len(input.Answers) > 0 {
-			_ = interactionConfirmClaude(s, dispatch.SessionID, dispatch.ToolUseID, input.Answers)
+			session := dispatch.SessionID
+			if dispatch.AgentID != "" {
+				session = dispatch.AgentID
+			}
+			_ = interactionConfirmClaude(s, session, dispatch.ToolUseID, input.Answers)
 		}
 	}
 	a, input, err := parseActivity(ctx, s, source, raw)
@@ -305,6 +373,13 @@ func observe(ctx context.Context, s Store, api API, source string, raw []byte) (
 	if source == "opencode" || source == "pi" {
 		a.Occurrence = nativeTargetIdentity(a.Occurrence, l)
 	}
+	if source == "codex" {
+		allowed, e := admitCodexActivity(ctx, s, l, &a, input)
+		if e != nil || !allowed {
+			return nil, e
+		}
+	}
+
 	if source == "pi" && input.Event == "ui_prompt_start" {
 		return nil, interactionUnavailable(ctx, s, api, l, a, InteractionSpec{Kind: "question", Title: "Pi extension input", AgentVersion: input.RuntimeVersion, Scope: "This third-party UI event exposes no native request ID, complete fields or response resolver. Answer in the original Pi terminal."}, "pi_third_party_ui_has_no_resolver")
 	}

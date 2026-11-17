@@ -305,6 +305,9 @@ func (s Store) migrateOutbox() error {
 	return err
 }
 func enqueueDelivery(ctx context.Context, s Store, p Pair, kind, identity string, l Locator, agent string, nativeSource ...string) (delivery, error) {
+	return enqueueDeliverySummary(ctx, s, p, kind, identity, l, agent, "", nativeSource...)
+}
+func enqueueDeliverySummary(ctx context.Context, s Store, p Pair, kind, identity string, l Locator, agent, summary string, nativeSource ...string) (delivery, error) {
 	unlock, err := s.lock(ctx)
 	if err != nil {
 		return delivery{}, err
@@ -372,7 +375,7 @@ func enqueueDelivery(ctx context.Context, s Store, p Pair, kind, identity string
 	if err != nil {
 		return delivery{}, err
 	}
-	e, err := sealAgent(keyBytes, Envelope{V: 1, PairID: p.PairID, EventID: eventID, Kind: kind, ExpiresAt: now + 3600}, l, nil, agent)
+	e, err := sealAgentSummary(keyBytes, Envelope{V: 1, PairID: p.PairID, EventID: eventID, Kind: kind, ExpiresAt: now + 3600}, l, nil, agent, summary)
 	if err != nil {
 		return delivery{}, err
 	}

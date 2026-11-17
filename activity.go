@@ -83,6 +83,8 @@ type PendingRequest struct {
 }
 
 type Activity struct {
+	Summary        string
+	CodexRoot      bool
 	Interaction    *InteractionHint
 	RequestID      string
 	ResolveRequest bool
@@ -99,6 +101,8 @@ type Activity struct {
 	Approval       *ApprovalHint
 }
 type StoredRun struct {
+	Summary         string                    `json:"summary,omitempty"`
+	CodexRoot       bool                      `json:"codex_root_verified,omitempty"`
 	Interaction     *InteractionHint          `json:"interaction,omitempty"`
 	FirstOccurrence string                    `json:"first_occurrence,omitempty"`
 	Requests        map[string]PendingRequest `json:"requests,omitempty"`
@@ -304,6 +308,8 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 			return key, r, false, nil
 		}
 	}
+	r.CodexRoot = r.CodexRoot || a.CodexRoot
+	r.Summary = cleanMessageSummary(a.Summary)
 	r.Revision++
 	r.Updated = now
 	r.State = a.State
@@ -422,9 +428,11 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 		if kind != "state" {
 			// A reminder belongs to the event that produced it, never the
 			// run's currently selected pending request.
+			payload.Summary = cleanMessageSummary(a.Summary)
 			payload.Approval = a.Approval
 			payload.Interaction = a.Interaction
 		}
+		payload = fitRunDisplayBudget(payload)
 		db.Intents[ik] = RunIntent{PairID: pid, Key: key, Occurrence: a.Occurrence, Kind: kind, Payload: payload, ExpiresAt: now + 3600}
 		if kind != "state" {
 			delete(db.Intents, digest(pid+"\x00state\x00"+key))
@@ -452,12 +460,24 @@ func payloadForRun(r StoredRun, stream string) RunPayload {
 			active++
 		}
 	}
-	p := RunPayload{V: 2, Locator: r.Locator, Agent: r.Agent, SessionID: r.Session, RunID: r.Run, StreamID: stream, Revision: r.Revision, State: r.State, OccurredAt: r.Updated, Tools: tools, Approval: r.Approval, Interaction: r.Interaction, ActiveToolCount: active}
-	// Safe summaries may omit rows; the active invocation count never becomes the
-	// subset size. Keep room for AEAD and every possible APNs slash escape.
+	p := RunPayload{Summary: r.Summary, V: 2, Locator: r.Locator, Agent: r.Agent, SessionID: r.Session, RunID: r.Run, StreamID: stream, Revision: r.Revision, State: r.State, OccurredAt: r.Updated, Tools: tools, Approval: r.Approval, Interaction: r.Interaction, ActiveToolCount: active}
+	return fitRunDisplayBudget(p)
+}
+
+// Reserve room before the intent is durably frozen. Final encryption also
+// checks ciphertext and the exact APNs serialization; required IDs are never cut.
+func fitRunDisplayBudget(p RunPayload) RunPayload {
+	p.Summary = cleanMessageSummary(p.Summary)
 	for {
 		raw, _ := json.Marshal(p)
-		if len(raw) <= 1500 || len(p.Tools) == 0 {
+		if len(raw) <= 1500 {
+			break
+		}
+		if p.Summary != "" {
+			p.Summary = truncateMessageSummary(p.Summary, len([]rune(p.Summary))/2, 512)
+			continue
+		}
+		if len(p.Tools) == 0 {
 			break
 		}
 		p.Tools = p.Tools[:len(p.Tools)-1]
@@ -662,7 +682,7 @@ func flushRunIntents(ctx context.Context, s Store, api API, states bool) error {
 			}
 			if !c.Enabled || !c.States || !c.Inbox {
 				if intent.Kind == "turn_completed" || intent.Kind == "needs_input" {
-					d, e := enqueueDelivery(ctx, s, p, intent.Kind, intent.Occurrence, intent.Payload.Locator, intent.Payload.Agent)
+					d, e := enqueueDeliverySummary(ctx, s, p, intent.Kind, intent.Occurrence, intent.Payload.Locator, intent.Payload.Agent, intent.Payload.Summary)
 					if e != nil {
 						last = e
 						continue

@@ -23,6 +23,7 @@ func TestRichNotifyRecoversDurableOutbox(t *testing.T) {
 			jsonHooks := strings.HasPrefix(failure, "json_")
 			failure = strings.TrimPrefix(failure, "json_")
 			claudeNotifyEnvironment(t)
+			codexMetadataFixture(t, "s", nil)
 			s := testStore(t)
 			id, _ := s.installation()
 			p := testPair(id, "")

@@ -1,0 +1,18 @@
+{
+  "fixture_version": 2,
+  "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "plaintext": "{\"summary\":\"已修复会话归属。Tests passed; awaiting review. 🔒\",\"active_tool_count\":0,\"tools_truncated\":false,\"v\":2,\"locator\":{\"v\":1,\"installation_id\":\"install_fixture_0000000000000001\",\"backend\":\"tmux\",\"namespace\":\"/tmp/tmux-1000/default\",\"server_identity\":\"1234:1700000000:1700000001\",\"workspace_id\":\"$1\",\"view_id\":\"@2\",\"pane_id\":\"%3\"},\"agent\":\"codex\",\"session_id\":\"session_fixture\",\"run_id\":\"run_fixture\",\"stream_id\":\"stream_summary_fixture_0000001\",\"revision\":7,\"state\":\"turn_completed\",\"occurred_at\":1999999900,\"tools\":[]}",
+  "aad": "mobterm/2\nreminder\npair_fixture_000000000000000001\nevent_summary_fixture_00000001\nturn_completed\nstream_summary_fixture_0000001\n7\n1\n2000000000",
+  "envelope": {
+    "v": 2,
+    "pair_id": "pair_fixture_000000000000000001",
+    "event_id": "event_summary_fixture_00000001",
+    "kind": "turn_completed",
+    "expires_at": 2000000000,
+    "nonce": "YGFiY2RlZmdoaWpr",
+    "ciphertext": "kfnoINYt4h0FNMMJlzpzp5nbbC0JgI5DSw4dicFgErkserh68G5m0kgBm5RtoPjOvgjJyEgUhqAI8ZwPgRLkNc0/KTaF7ojbxlA6hNh6l2h5ywKPLdchkmUBfgmhTVZkEALzbKU5Fr/zxOzZR7iS60SFLStssxnxoPN9KYN5vapZUIdawP/qYosYO+fV/0pPLxoZixnK96sapjFPECR1hN6u1UaFnWhCouDZKbYioyG3wFgJvSgAX2xK7Nj5hNK3P9HabMH82VID4Bm5hkR9lCOXRZYzpCWN/pcaB5TfDch/hsBJ/WMwcUEQwnRqFAUXqFaEjxW+93F5IYu3dXJZpxQTWrnr0npoHHIygPxJQ6Phg2SJ/7w4p70ZVUdSlVhX6UdVGM/yzk3MzZecaXluPoyaa3JziGsvMYQrTUSK1TNklbtwpU6+DCrfvNfAcbu4mk42jOa0RVoBQjVUG8rKbFrq3o8eFmCAS+aCLq7bGGv2VKh2TDYPSfn6nD+hvMj6U9o9+wCGuU4XaaztCP3Bw3Kc/99DQ4z5IWO67CWdjvFM7ZCUmJ0aCBgRoA/2W5UbV78GB0BbtJy2tbOJaAaLmFOFtxwxHVf2vOXmcbON+pWsXmww/4VUrmI83mB9+FpwB8srEGqs8GkOLXHhSqb3qps80+HCpZ/2hus9LyGlu7/t7p0EVICHOmbkRiT9S5lBtk+/1G3r+l3cdBI7vd5eXF8I+wwmqMKi",
+    "stream_id": "stream_summary_fixture_0000001",
+    "revision": 7,
+    "capability_generation": 1
+  }
+}

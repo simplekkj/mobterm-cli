@@ -588,7 +588,7 @@ func interactionObserve(ctx context.Context, s Store, api API, source string, ra
 			err = errors.New("invalid_native_answer_evidence")
 		} else {
 			answers, _ := json.Marshal(result.Hook.Input.Answers)
-			err = interactionSetExpected(s, decision.RequestID, p.SessionID, p.ToolUseID, digest(string(answers)))
+			err = interactionSetExpected(s, decision.RequestID, a.Session, p.ToolUseID, digest(string(answers)))
 		}
 	}
 	if err != nil {

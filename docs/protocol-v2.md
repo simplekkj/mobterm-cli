@@ -87,7 +87,7 @@ purposes get independent nonces. A reminder itself supplies the recoverable
 latest snapshot, so the CLI does not send another snapshot at that revision.
 
 Plaintext is `{v:2,locator,agent,session_id,run_id,stream_id,revision,state,
-occurred_at,tools,active_tool_count,tools_truncated,approval?}`. `locator` is the
+occurred_at,tools,active_tool_count,tools_truncated,approval?,interaction?,summary?}`. `locator` is the
 existing strong locator. Agent is codex/claude/opencode/pi. State is starting,
 running, tool_pending, tool_running, waiting_input, waiting_approval,
 turn_completed, failed or interrupted. `occurred_at` is Unix seconds. Session,
@@ -335,3 +335,35 @@ reference from its own event; aggregate run state cannot retarget an earlier
 request. The optional hint contains no question/answer body. Legacy clients may
 ignore it. Envelope/AAD/ciphertext/APNs limits do not change. Old approval and new
 interaction hints must not create two actionable authorities for one request.
+
+## Attributed response summaries
+
+The optional top-level `summary` belongs to this authenticated activity/reminder,
+not `locator`, and follows the [v1 text/privacy bounds](protocol-v1.md#optional-encrypted-message-summary).
+The [v2 summary vector](../testdata/protocol-v2-summary.json) adds coverage without
+changing original golden vectors, envelope versions or AAD. Swift maps the wire
+field to `messageSummary`, separate from its existing structural summary.
+
+Codex uses this notify's `last-assistant-message` only after root-source admission.
+Claude uses the current prompt cycle's cleaned Stop `last_assistant_message`,
+confirmed by legal idle; tools resuming the cycle invalidate it. OpenCode reads
+only the exact current root/run step's `assistantMessageID` from its official TUI
+message cache. Pi caches this round's last assistant text until final non-aborted
+settled. Missing fields/native text produce no excerpt. Raw request/approval
+parameters are never serialized as notification summaries.
+
+Run candidates, durable intent payloads and outboxes retain existing locks,
+permissions and bounded cleanup. A later run or callback cannot replace a frozen
+reminder. Before persisting an intent the sender reserves display budget, dropping
+summary and then optional tool rows while retaining active counts. Encryption
+checks 2400 ciphertext/tag bytes and actual whole APNs/Foundation serialization
+with maximum badge; a revised plaintext receives a new nonce. Required identities,
+state and request hints are never truncated, and an unfit core remains a capacity
+error. There is no extra API interface, plaintext column or server summarizer.
+
+App list, detail and permitted system preview show event status plus this
+message's plain-text excerpt. Latest reported run state remains a separate detail;
+completion means “this response ended”. System summary consent is independent,
+local and default off, including when loading an old snapshot. Marker revision 2
+records only actually displayed details, so consent withdrawal can retract the
+matching delivered notification without changing history, unread state or grants.

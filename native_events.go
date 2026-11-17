@@ -12,6 +12,7 @@ import (
 // This is a local adapter protocol, never a public notification envelope.
 // Runtime version comes from the loading host, not another executable on PATH.
 type nativeEvent struct {
+	Summary         string `json:"summary,omitempty"`
 	AdapterRevision int    `json:"adapter_revision"`
 	RuntimeVersion  string `json:"runtime_version"`
 	Event           string `json:"event"`

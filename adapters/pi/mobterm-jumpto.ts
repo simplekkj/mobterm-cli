@@ -16,6 +16,39 @@ const stableVersion = (value, minimum) => {
     (parts[0] === minimum[0] && (parts[1] > minimum[1] || (parts[1] === minimum[1] && parts[2] >= minimum[2]))));
 };
 
+// Bounded prose only. The CLI applies the same final wire limits before storage.
+const messageSummary = (content) => {
+  if (!Array.isArray(content)) return;
+  for (const part of content.slice(0, 128)) {
+    if (part?.type !== "text" || typeof part.text !== "string") continue;
+    const clean = part.text.slice(0, 16384)
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)/g, "")
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "");
+    if (/^(?:[\[{]|<(?:think|thinking|analysis|reasoning)(?:\s|>))/i.test(clean.trimStart())) continue;
+    let fence, paragraph = [];
+    for (const line of clean.split("\n")) {
+      const trimmed = line.trim();
+      const marker = /^(\x60{3,}|~{3,})/.exec(trimmed)?.[0]?.[0];
+      if (marker) { if (paragraph.length) break; fence = fence === marker ? undefined : fence ?? marker; continue; }
+      if (fence) continue;
+      if (!trimmed) { if (paragraph.length) break; continue; }
+      if (/^(?:[\[{]|!\[)/.test(trimmed) || /^(?: {4}|\t)/.test(line)) { if (paragraph.length) break; continue; }
+      paragraph.push(trimmed);
+    }
+    const text = paragraph.join(" ").replace(/\s+/gu, " ").trim();
+    if (!text) continue;
+    let result = "", scalars = 0, bytes = 0;
+    for (const {segment} of new Intl.Segmenter(undefined, {granularity:"grapheme"}).segment(text)) {
+      const count = [...segment].length, size = Buffer.byteLength(segment);
+      if (scalars + count > 120 || bytes + size > 512) break;
+      result += segment; scalars += count; bytes += size;
+    }
+    return result.trim() || undefined;
+  }
+};
+
 // One child and at most eight queued jobs; callbacks never await remote HTTP.
 function bridge(source, warn) {
   let stopped = false, active, warned = false;
@@ -26,7 +59,10 @@ function bridge(source, warn) {
     const job = queue.shift();
     try {
       if (!job.valid()) { queueMicrotask(drain); return; }
-      const body = JSON.stringify(job.payload);
+      let body = JSON.stringify(job.payload);
+      if (Buffer.byteLength(body) > 4096 && job.payload.summary) {
+        const {summary, ...required} = job.payload; body = JSON.stringify(required);
+      }
       if (Buffer.byteLength(body) > 4096) { diagnostic(); queueMicrotask(drain); return; }
       const child = spawn(executable, ["notify", "--source", source], {
         env: { ...process.env, MOBTERM_CONFIG_DIR: store },
@@ -169,7 +205,20 @@ export default function mobtermJumpTo(pi) {
     // undefined deliberately permits the next extension gate to decide.
     return undefined;
   });
+  const clearSummary = (ctx) => {
+    if (round && round.epoch === epoch && session(ctx) === round.session) round.summary = undefined;
+  };
+  pi.on("message_start", (event, ctx) => {
+    if (["assistant", "user"].includes(event.message?.role)) clearSummary(ctx);
+  });
+  pi.on("message_end", (event, ctx) => {
+    const current = round;
+    if (!alive || ctx.mode !== "tui" || !current || current.sent ||
+        current.epoch !== epoch || session(ctx) !== current.session || event.message?.role !== "assistant") return;
+    current.summary = messageSummary(event.message.content);
+  });
   pi.on("tool_execution_start", (event, ctx) => {
+    clearSummary(ctx);
     if (validID(event.toolCallId) && typeof event.toolName === "string")
       send("tool_execution_start", ctx, {tool_id:event.toolCallId,tool_name:event.toolName});
   });
@@ -188,7 +237,8 @@ export default function mobtermJumpTo(pi) {
         current.epoch !== epoch || session(ctx) !== current.session) return;
     current.sent = true;
     transport.enqueue({ adapter_revision: 2, runtime_version: VERSION, event: "agent_settled",
-      session_id: current.session, run_id: current.id, event_id: current.id, instance_id: instance, aborted: event.aborted },
+      session_id: current.session, run_id: current.id, event_id: current.id, instance_id: instance, aborted: event.aborted,
+      ...(!event.aborted && current.summary ? {summary:current.summary} : {}) },
       () => alive && ctx.mode === "tui" && epoch === current.epoch && session(ctx) === current.session);
   });
 }
