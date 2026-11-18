@@ -30,6 +30,15 @@ Ordinary waits still obey generic needs-input. A disallowed reminder becomes a
 state snapshot before encryption. v1 needs-input remains governed only by its
 original policy.
 
+For reminder delivery, the independent Pair gate `notifications_enabled` takes
+precedence over every event kind, including tests, failed/interrupted events and
+needs-input events permitted by an approval or interaction grant. An old sender
+can use the existing envelope. API admission, delivery leases and retries enforce
+the gate. Reopening preserves existing advanced preferences and grants. Neither
+v2 protocol negotiation (`enabled`) nor the separate interaction capabilities
+contract changes. State snapshots and inbox history keep their own semantics.
+See the [Pair policy and mixed-version contract](protocol-v1.md#pair-notification-switch).
+
 A run has an explicit native turn identity when available. Claude uses a durable
 session-scoped random prompt cycle; a new prompt invalidates the prior cycle's
 Stop/idle association. OpenCode/Pi adapter instances and run identities are scoped

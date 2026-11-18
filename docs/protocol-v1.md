@@ -234,14 +234,14 @@ own pair; installation/pair IDs alone grant no authority. Requests are at most
 | Request | Body / result |
 | --- | --- |
 | `POST /v1/pairs/{pair}/claim` | `{installation_id,claim_id}`; returns active pair |
-| `GET /v1/pairs/{pair}` | `{pair_id,installation_id,status,policy,expires_at}` |
+| `GET /v1/pairs/{pair}` | `{pair_id,installation_id,status,policy,policy_generation,notifications_enabled,expires_at}` |
 | `POST /v1/pairs/{pair}/events` | encrypted envelope; `{event_id,state,retry_after?,error?}` |
 | `GET /v1/pairs/{pair}/events/{event}` | limited status of that pair's event |
 
 Claim retries use the original pair ID as claim ID. The identical accepted claim
 is idempotent; another claim ID after use conflicts, expired pending claims fail.
 Pair states: `pending`, `active`, `revoked`, `expired`. Policy contains booleans
-`turn_completed` and `needs_input`; `test` bypasses those two event policy switches.
+`turn_completed` and `needs_input`. A test ignores these subtype preferences but requires the independent Pair delivery gate to be open.
 
 Event states are `accepted`, `sending`, `apns_accepted`, `retryable_failed`,
 `permanent_failed`, and `revoked`. HTTP 200 `apns_accepted` confirms only APNs
@@ -262,7 +262,7 @@ routes below. Management requests use the same ID grammar and JSON conventions:
 | `POST /v1/devices/{device}/pairs` | `{pair_id,installation_id,send_token_hash,policy}`; pending claim expires after 600 seconds; same binding/credential retry returns current state |
 | `DELETE /v1/devices/{device}/pairs/{pair}` | Device-authenticated exact cancellation; `{device_id,pair_id,status:"revoked"}`, including an admitted never-created Pair |
 | `DELETE /v1/pairs/{pair}` | Returns `{pair_id,status:"revoked"}` for this owner's pair |
-| `PATCH /v1/pairs/{pair}/policy` | `{turn_completed:boolean,needs_input:boolean,policy_generation?:integer}`; conditional policy commit, including same-value commits; disables subsequent authorization for disabled event types |
+| `PATCH /v1/pairs/{pair}/policy` | `{turn_completed:boolean,needs_input:boolean,notifications_enabled?:boolean,policy_generation?:integer}`; conditional policy commit, including same-value commits; disables subsequent authorization for disabled event types |
 
 Token PUT requires a nonnegative safe integer `token_generation` from the device
 POST/GET response (new devices start at 1). A stale generation returns HTTP 409
@@ -401,6 +401,32 @@ guarantees. New App/old API retains unconfirmed local disabled intent when versi
 capability is absent. Deploy migration, compatible API, CLI/user update, then App;
 rollback must retain terminals and generation gates and cannot use an old API
 that ignores them. This order is a plan, not release/deployment authorization.
+
+#### Pair notification switch
+
+Pair creation, claim, GET and policy receipts expose the top-level boolean
+`notifications_enabled`. The incremental schema defaults existing Pairs to true.
+Sending the field in a v1 policy PATCH requires an expected `policy_generation`.
+Omitting it preserves the current gate, including for writes from older Apps.
+The new App commits both base event types as true and retains independent grants
+and abnormal-end preferences. A connection with several matching Pairs has one
+local switch and a separate conditional receipt for each Pair.
+
+Before SSH claim, the new App conditionally sets the desired gate on the pending
+Pair and verifies its identity, status, expiry, generation and all three booleans.
+A replacement inheriting off is therefore closed at its first active instant.
+The setup frame and claim request stay unchanged. With an older API, an enabled
+first pairing may proceed with both base types enabled and migration pending.
+An off replacement cannot be claimed without proof of the gate. A matching GET
+alone cannot acknowledge a pending local write.
+
+Closing rejects new reminders with `policy_disabled` and retires unfinished
+deliveries for this Pair in the same transaction. Requests already outbound,
+notifications accepted by APNs and alerts already displayed cannot be recalled.
+Existing history and unread counts remain available. Deploy the additive schema
+and gate-enforcing Worker before enabling the new App. Existing CLI versions
+can continue sending their original envelopes. Rolling back to a Worker that
+ignores the gate requires stopping delivery first.
 
 The 10,000 device capacity limits **unrevoked live devices**, not the total table.
 Permanent tombstones consume real storage and are counted separately; they cannot
