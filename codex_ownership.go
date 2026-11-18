@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -70,7 +71,7 @@ func codexCompletionOrigin(ctx context.Context, thread string) codexOrigin {
 					return
 				}
 				name := entry.Name()
-				candidate := strings.HasPrefix(name, "rollout-") && (strings.HasSuffix(name, "-"+thread+".jsonl") || strings.Contains(name, "-"+thread+"-"))
+				candidate := codexRolloutForThread(name, thread)
 				if candidate && depth != 0 && depth != 3 {
 					failed = true
 					return
@@ -170,6 +171,29 @@ func codexCompletionOrigin(ctx context.Context, thread string) codexOrigin {
 	}
 	return origin
 }
+
+var codexRolloutUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+func codexRolloutForThread(name, thread string) bool {
+	const layout = "2006-01-02T15-04-05"
+	core, ok := strings.CutPrefix(name, "rollout-")
+	if !ok {
+		return false
+	}
+	core, ok = strings.CutSuffix(core, ".jsonl")
+	if !ok || len(core) <= len(layout) || core[len(layout)] != '-' {
+		return false
+	}
+	// A revert adds a distinct rollout ID after the stable thread ID.
+	// Only the thread component selects candidates for metadata verification.
+	threadID, rolloutID, reverted := strings.Cut(core[len(layout)+1:], "_")
+	if threadID != thread || reverted && !(codexRolloutUUID.MatchString(threadID) && codexRolloutUUID.MatchString(rolloutID)) {
+		return false
+	}
+	_, err := time.Parse(layout, core[:len(layout)])
+	return err == nil
+}
+
 func metadataDatePart(name string, depth int) bool {
 	length := 2
 	if depth == 0 {

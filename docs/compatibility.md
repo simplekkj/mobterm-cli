@@ -570,8 +570,10 @@ perform no metadata scan and remain local/durable.
 Without exact persisted proof, the CLI resolves `CODEX_HOME` (or the normal
 `~/.codex` root) and reads only the first canonical `session_meta` record. Supported
 layouts are `sessions/YYYY/MM/DD`, legacy `sessions/`, and `archived_sessions/`.
-Rollout and revert filenames only locate candidates: metadata ID must exactly
-match. Explicit source `cli`, `vscode`, `exec` or `mcp` with missing or `user`
+`rollout-TIMESTAMP-THREAD_ID.jsonl` identifies an ordinary candidate. After
+a revert, Codex uses `rollout-TIMESTAMP-THREAD_ID_ROLLOUT_ID.jsonl`. The
+notification thread must match the thread component and the ID in the first
+metadata record. Explicit source `cli`, `vscode`, `exec` or `mcp` with missing or `user`
 thread_source and no parent is root evidence. Explicit subagent/internal sources
 are non-root; source/parent/thread_source contradictions, absent/unknown sources,
 wrong ID, conflicting candidates and malformed/duplicate-key headers are unknown.
@@ -599,6 +601,15 @@ The original third-party Codex notify argv/JSON/output/exit remains unchanged.
 | Pi 1.3.0 (also isolated load 1.5.0) | TUI current round final non-aborted settled and assistant text | Other modes, reload half-round, unknown text or aborted runs do not inherit excerpts |
 
 Claude `agent_type` alone is not a child flag: user `--agent` roots remain valid.
+For a Claude child question, Pre and Post identify the same wait by the root
+and child sessions, native tool name and invocation ID, parent process identity,
+and captured target. A response receipt and a matching native answer are
+separate evidence. A tool result resolves only its own wait, including a
+question answered locally or a read-only plan. A child Stop can close that
+child's outstanding waits. When a callback is missing, normal flushes retire
+expired waits and preserve pending delivery. None of these paths sends a
+root completion or changes the root Stop excerpt.
+
 When both the recorded prompt and a subsequent event provide native `prompt_id`,
 conflicting IDs reject delayed old Stop/idle. Missing optional IDs retain the
 existing prompt-cycle and (rich path) Stop gate;

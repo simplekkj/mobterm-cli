@@ -1900,3 +1900,28 @@ handoff after push; local results are not a claim that CI passed.
 P0 已延期，纯 hooks 及旧配置迁移尚未实施；按唯一一次静态 Review 后修复的约定直接关闭。
 This closing rule applies only after R1, required checks, push and final-SHA CI
 verification succeed. No second ChatGPT Review or acceptance prompt is required.
+
+## Claude child waits and Codex reverted rollouts (2026-11-18)
+
+Tested on the repair tree based on `c9b8bf62d944b185668300ae83d49f2467f2c673`
+with Go 1.27.1 darwin/amd64, macOS 15.8.1 and tmux 3.7c.
+
+- Two child sessions used the same tool ID. A matching Post cleared the original
+  wait after reopening the store. Wrong root, owner or target, duplicate and
+  late callbacks left other requests intact. Coverage includes failure, cancellation,
+  missing Post, expiry, capacity retry, outstanding delivery, disabled questions
+  and read-only plans.
+- During verification the held interaction sender exhausted the synchronous
+  600 ms budget before a notification was delivered. A controlled 700 ms
+  capabilities response now exercises its existing five-second asynchronous
+  deadline through delivery and native confirmation.
+- The earlier hyphenated fixture did not exercise Codex's reverted filename.
+  Independent rich and legacy fixtures now resolve a thread whose only file
+  ends in `THREAD_ID_ROLLOUT_ID.jsonl`, replay the callback, and decrypt the
+  single reminder to check its original bounded excerpt.
+- With `MOBTERM_REQUIRE_TMUX=1`, 72 focused tests/subtests passed (82.540 s).
+  `go test -count=1 -json -timeout=30m ./...` and
+  `go test -race -count=1 -json -timeout=30m ./...` each passed 809
+  tests/subtests (488.007 s and 609.190 s), with zero skips. Repository gofmt,
+  `go vet ./...` and `git diff --check` passed. Native events and HTTP were
+  local fixtures. Real model sessions, APNs and device display were not exercised.

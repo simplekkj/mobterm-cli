@@ -73,11 +73,14 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 		}
 		// Child user interactions remain available, but cannot mutate the root run.
 		childInteraction := p.HookEventName == "PermissionRequest" || p.HookEventName == "Elicitation" || (p.HookEventName == "PreToolUse" || p.HookEventName == "PostToolUse") && (p.ToolName == "request_user_input" || p.ToolName == "request_user_input_async" || p.ToolName == "AskUserQuestion" || p.ToolName == "ExitPlanMode") || p.HookEventName == "Notification" && (p.NotificationType == "permission_prompt" || p.NotificationType == "elicitation_dialog")
-		if !childInteraction {
-			return a, p, nil
+		if source == "claude" && p.HookEventName == "PostToolUseFailure" && (p.ToolName == "AskUserQuestion" || p.ToolName == "ExitPlanMode") {
+			childInteraction = true
 		}
 		a.Session = p.AgentID
 		a.Instance = digest(p.SessionID + "\x00child\x00" + p.AgentID)
+		if !childInteraction {
+			return a, p, nil
+		}
 	}
 	if source == "opencode" || source == "pi" {
 		decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -346,20 +349,9 @@ func observe(ctx context.Context, s Store, api API, source string, raw []byte) (
 	if source == "claude" && json.Unmarshal(raw, &dispatch) == nil && (dispatch.HookEventName == "Elicitation" || dispatch.HookEventName == "PreToolUse" && (dispatch.ToolName == "AskUserQuestion" || dispatch.ToolName == "ExitPlanMode")) {
 		return interactionObserve(ctx, s, api, source, raw)
 	}
-	if source == "claude" && dispatch.HookEventName == "PostToolUse" && dispatch.ToolName == "AskUserQuestion" {
-		var input struct {
-			Answers json.RawMessage `json:"answers"`
-		}
-		if json.Unmarshal(dispatch.ToolInput, &input) == nil && len(input.Answers) > 0 {
-			session := dispatch.SessionID
-			if dispatch.AgentID != "" {
-				session = dispatch.AgentID
-			}
-			_ = interactionConfirmClaude(s, session, dispatch.ToolUseID, input.Answers)
-		}
-	}
 	a, input, err := parseActivity(ctx, s, source, raw)
-	if err != nil || a.State == "" {
+	childEnd := source == "claude" && input.AgentID != "" && (input.HookEventName == "Stop" || input.HookEventName == "SubagentStop")
+	if err != nil || a.State == "" && !childEnd {
 		return nil, err
 	}
 	id, err := s.installation()
@@ -369,6 +361,29 @@ func observe(ctx context.Context, s Store, api API, source string, raw []byte) (
 	l, err := captureTarget(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if source == "claude" && input.AgentID != "" {
+		if err := bindClaudeChildWait(&a, input, l); err != nil {
+			return nil, err
+		}
+		if childEnd {
+			return nil, finishClaudeChildWaits(ctx, s, &a, l)
+		}
+		if input.HookEventName == "PostToolUse" || input.HookEventName == "PostToolUseFailure" {
+			if err := finishClaudeChildTool(ctx, s, l, a, input); err != nil {
+				return nil, err
+			}
+			return nil, flushRunSnapshots(ctx, s, api)
+		}
+	} else if source == "claude" && input.HookEventName == "PostToolUse" && input.ToolName == "AskUserQuestion" {
+		var tool struct {
+			Answers json.RawMessage `json:"answers"`
+		}
+		if json.Unmarshal(input.ToolInput, &tool) == nil && len(tool.Answers) > 0 {
+			if err := interactionConfirmClaude(s, a.Session, input.ToolUseID, tool.Answers, l); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if source == "opencode" || source == "pi" {
 		a.Occurrence = nativeTargetIdentity(a.Occurrence, l)

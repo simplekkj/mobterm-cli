@@ -410,6 +410,15 @@ func interactionObserve(ctx context.Context, s Store, api API, source string, ra
 	if err != nil {
 		return nil, err
 	}
+	if source == "claude" && p.AgentID != "" {
+		if p.HookEventName == "Elicitation" {
+			p.RequestID = ""
+			_ = json.Unmarshal(object["elicitation_id"], &p.RequestID)
+		}
+		if err := bindClaudeChildWait(&a, p, l); err != nil {
+			return nil, err
+		}
+	}
 	spec := InteractionSpec{NativeID: p.ToolUseID, Cwd: p.Cwd, TurnID: p.TurnID, AdapterVersion: 1, ToolName: p.ToolName, ToolInput: p.ToolInput, TTL: 120 * time.Second}
 	if source == "claude" {
 		switch {
@@ -547,7 +556,9 @@ func interactionObserve(ctx context.Context, s Store, api API, source string, ra
 		a.State = "waiting_approval"
 	}
 	a.Reminder = "needs_input"
-	a.RequestID = spec.NativeID
+	if spec.NativeID != "" || a.ChildWait == nil {
+		a.RequestID = spec.NativeID
+	}
 	decision, err := interactionNativeWait(ctx, s, api, l, a, spec)
 	if err != nil || decision == nil {
 		if source == "pi" {

@@ -451,14 +451,14 @@ func TestInteractionNativeEvidenceCannotInventConsumption(t *testing.T) {
 	if e := interactionSetExpected(s, r.RequestID, "session", "native/call", digest(expected)); e != nil {
 		t.Fatal(e)
 	}
-	if e := interactionConfirmClaude(s, "other-session", "native/call", json.RawMessage(expected)); e != nil {
+	if e := interactionConfirmClaude(s, "other-session", "native/call", json.RawMessage(expected), r.Locator); e != nil {
 		t.Fatal(e)
 	}
 	saved, _ := interactionRead(s, r.RequestID)
 	if saved.State != "dispatching" {
 		t.Fatal("wrong session confirmed")
 	}
-	if e := interactionConfirmClaude(s, "session", "native/call", json.RawMessage(expected)); e != nil {
+	if e := interactionConfirmClaude(s, "session", "native/call", json.RawMessage(expected), r.Locator); e != nil {
 		t.Fatal(e)
 	}
 	if e := interactionComplete(s, r.RequestID, "response_written"); e != nil {

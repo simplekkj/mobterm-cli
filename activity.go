@@ -83,6 +83,7 @@ type PendingRequest struct {
 }
 
 type Activity struct {
+	ChildWait      *claudeChildWait
 	Summary        string
 	CodexRoot      bool
 	Interaction    *InteractionHint
@@ -101,6 +102,7 @@ type Activity struct {
 	Approval       *ApprovalHint
 }
 type StoredRun struct {
+	ChildWait       *claudeChildWait          `json:"claude_child_wait,omitempty"`
 	Summary         string                    `json:"summary,omitempty"`
 	CodexRoot       bool                      `json:"codex_root_verified,omitempty"`
 	Interaction     *InteractionHint          `json:"interaction,omitempty"`
@@ -201,7 +203,8 @@ func reclaimRuns(db *RunStore, now int64, needSlot bool) {
 	}
 	keys := []string{}
 	for key, run := range db.Runs {
-		if !busy[key] && terminalRun(run.State) && (run.Approval == nil || run.Approval.ExpiresAt <= now) {
+		childDone := run.ChildWait != nil && len(run.Requests) == 0
+		if !busy[key] && (terminalRun(run.State) || childDone) && (run.Approval == nil || run.Approval.ExpiresAt <= now) {
 			keys = append(keys, key)
 		}
 	}
@@ -292,14 +295,14 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 		if len(db.Runs) >= 128 && a.Reminder == "" || len(db.Runs) >= 512 {
 			return "", r, false, errors.New("run_capacity_retry_after_flush")
 		}
-		r = StoredRun{FirstOccurrence: a.Occurrence, Agent: a.Agent, Session: a.Session, Run: a.Run, Instance: a.Instance, Locator: l, Tools: map[string]RunTool{}, Streams: map[string]string{}, Pending: map[string]Envelope{}}
+		r = StoredRun{ChildWait: a.ChildWait, FirstOccurrence: a.Occurrence, Agent: a.Agent, Session: a.Session, Run: a.Run, Instance: a.Instance, Locator: l, Tools: map[string]RunTool{}, Streams: map[string]string{}, Pending: map[string]Envelope{}}
 	}
 	for _, id := range r.Seen {
 		if id == a.Occurrence {
 			return key, r, false, nil
 		}
 	}
-	if terminalRun(r.State) {
+	if terminalRun(r.State) || exists && r.ChildWait != nil && (!a.ResolveRequest || len(r.Requests) == 0) {
 		return key, r, false, nil
 	}
 	if a.Approval != nil {
@@ -307,6 +310,9 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 		if readErr != nil || request.State != "pending" || request.ExpiresAt <= now || !approvalAlive(request) || request.Digest != a.Approval.Digest || request.Locator != l || request.Session != "" && (request.Agent != a.Agent || request.Session != a.Session || request.Run != a.Run || request.Instance != a.Instance || request.RequestID != a.RequestID) {
 			return key, r, false, nil
 		}
+	}
+	if a.ChildWait != nil && r.ChildWait == nil {
+		r.ChildWait = a.ChildWait
 	}
 	r.CodexRoot = r.CodexRoot || a.CodexRoot
 	r.Summary = cleanMessageSummary(a.Summary)
@@ -486,18 +492,22 @@ func fitRunDisplayBudget(p RunPayload) RunPayload {
 	return p
 }
 func publishActivity(ctx context.Context, s Store, api API, l Locator, a Activity) error {
+	return publishActivityWithBudget(ctx, s, api, l, a, 0)
+}
+
+func publishActivityWithBudget(ctx context.Context, s Store, api API, l Locator, a Activity, budget time.Duration) error {
 	if _, _, _, err := applyActivity(ctx, s, l, a); err != nil {
 		if err.Error() != "run_capacity_retry_after_flush" && err.Error() != "activity_pending_capacity" && err.Error() != "run_store_capacity" {
 			return err
 		}
 		// Capacity is recoverable: hand off pending responsibility before one retry.
 		// Failure leaves the prior readable store and outbox untouched.
-		_ = flushRunSnapshots(ctx, s, api)
+		_ = flushRunSnapshotsWithBudget(ctx, s, api, budget)
 		if _, _, _, retryErr := applyActivity(ctx, s, l, a); retryErr != nil {
 			return retryErr
 		}
 	}
-	return flushRunSnapshots(ctx, s, api)
+	return flushRunSnapshotsWithBudget(ctx, s, api, budget)
 }
 func removeRunIntent(ctx context.Context, s Store, key, occurrence string) error {
 	unlock, err := s.lock(ctx)
@@ -575,17 +585,19 @@ func enqueueRunReminder(ctx context.Context, s Store, intent RunIntent) (deliver
 	return d, s.saveShard(idx, key, old, sh)
 }
 func flushRunSnapshots(ctx context.Context, s Store, api API) error {
-	// Fresh business first, due durable reminders next, coalesced observations
-	// last. Network commands allow capability negotiation and a full send;
-	// synchronous observation hooks retain their short caller deadline.
-	budget := networkCommandTimeout
-	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 5*time.Second {
-		budget = 600 * time.Millisecond
-	}
-	return flushRunSnapshotsWithBudget(ctx, s, api, budget)
+	return flushRunSnapshotsWithBudget(ctx, s, api, 0)
 }
 
 func flushRunSnapshotsWithBudget(ctx context.Context, s Store, api API, budget time.Duration) error {
+	// Fresh business first, due durable reminders next, coalesced observations
+	// last. Network commands allow capability negotiation and a full send;
+	// synchronous observation hooks retain their short caller deadline.
+	if budget == 0 {
+		budget = networkCommandTimeout
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 5*time.Second {
+			budget = 600 * time.Millisecond
+		}
+	}
 	fresh, cancel := context.WithTimeout(ctx, budget)
 	first := flushRunIntents(fresh, s, api, false)
 	cancel()
@@ -769,6 +781,15 @@ func flushRunIntents(ctx context.Context, s Store, api API, states bool) error {
 			continue
 		}
 		last = removeRunIntent(ctx, s, key, intent.Occurrence)
+	}
+	if states && last == nil {
+		// Check the already-loaded index. An expired child wait can enqueue
+		// its closing snapshot only after existing intents got their send turn.
+		for _, run := range db.Runs {
+			if run.ChildWait != nil && run.ChildWait.Until <= time.Now().Unix() && len(run.Requests) > 0 {
+				return finishClaudeChildWaits(ctx, s, nil, Locator{})
+			}
+		}
 	}
 	return last
 }

@@ -55,6 +55,7 @@ type InteractionOutput struct {
 	RequestID string
 }
 type InteractionRecord struct {
+	ChildRunKey          string            `json:"claude_child_run_key,omitempty"`
 	ExpectedNativeID     string            `json:"expected_native_id,omitempty"`
 	ExpectedSession      string            `json:"expected_session,omitempty"`
 	ExpectedAnswerDigest string            `json:"expected_answer_digest,omitempty"`
@@ -323,7 +324,7 @@ func interactionConfigure(ctx context.Context, s Store, api API, in io.Reader) (
 						r.Frame.ResponseJSON = ""
 					}
 				}
-				if e = s.writeJSON(entry.Name(), r); e != nil {
+				if e = saveInteractionTransitionLocked(s, r); e != nil {
 					return nil, e
 				}
 			}
@@ -433,7 +434,9 @@ func interactionCommand(ctx context.Context, s Store, api API, command string, i
 	if time.Now().Unix() >= r.ExpiresAt || !interactionAlive(r) {
 		r.State = "expired"
 		r.RequestJSON = ""
-		_ = s.writeJSON("interaction-"+r.RequestID+".json", r)
+		if e := saveInteractionTransitionLocked(s, r); e != nil {
+			return nil, e
+		}
 		return nil, errors.New("interaction_expired")
 	}
 	// Recheck local cancellation after network checks and before durable CAS.
@@ -458,7 +461,7 @@ func interactionCommand(ctx context.Context, s Store, api API, command string, i
 		r.RequestJSON = ""
 		r.Frame.ResponseJSON = ""
 	}
-	e = s.writeJSON("interaction-"+r.RequestID+".json", r)
+	e = saveInteractionTransitionLocked(s, r)
 	return interactionResult(r, f.PairID, false), e
 }
 func interactionFileID(name string) (string, bool) {
@@ -495,7 +498,7 @@ func interactionComplete(s Store, id, state string) error {
 	if r.Frame != nil {
 		r.Frame.ResponseJSON = ""
 	}
-	return s.writeJSON("interaction-"+id+".json", r)
+	return saveInteractionTransitionLocked(s, r)
 }
 func interactionReceipt(ctx context.Context, s Store, in io.Reader) (any, error) {
 	var f struct {
@@ -548,6 +551,11 @@ type interactionSendersKey struct{}
 func withInteractionSenders(ctx context.Context) (context.Context, func()) {
 	var senders sync.WaitGroup
 	return context.WithValue(ctx, interactionSendersKey{}, &senders), senders.Wait
+}
+
+func nativeInteractionIdentity(a Activity, id string, l Locator, owner string) string {
+	identity, _ := json.Marshal([]string{a.Agent, a.Session, a.Run, a.Instance, id, l.InstallationID, l.OccupantID, owner})
+	return digest(string(identity))
 }
 
 func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a Activity, spec InteractionSpec) (*InteractionDecision, error) {
@@ -637,11 +645,14 @@ func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a A
 		return nil, interactionUnavailable(ctx, s, api, l, a, spec, "interaction_request_too_large")
 	}
 	r := InteractionRecord{V: 1, RequestID: spec.RequestID, Digest: digest(string(raw)), Kind: spec.Kind, Agent: a.Agent, RequestJSON: string(raw), Locator: l, PID: os.Getpid(), Birth: birth, ParentPID: parentPID, ParentBirth: parent, CreatedAt: now, ExpiresAt: expires, Revision: 1, State: "pending", Pairs: map[string]int64{}, OwnerToken: randomID()}
+	if a.ChildWait != nil {
+		r.ChildRunKey = childRunKey(a, l)
+		a.ChildWait.Until = expires
+	}
 	// Native IDs belong to the live runtime, not to a phone. An absent native ID
 	// represents a distinct held Hook invocation and must never merge by content.
 	if spec.NativeID != "" {
-		identity, _ := json.Marshal([]string{a.Agent, a.Session, a.Run, a.Instance, spec.NativeID, l.InstallationID, l.OccupantID, parent})
-		r.NativeIdentity = digest(string(identity))
+		r.NativeIdentity = nativeInteractionIdentity(a, spec.NativeID, l, parent)
 	}
 	pairs, e := s.pairs()
 	if e != nil {
@@ -710,7 +721,7 @@ func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a A
 						if old.Frame != nil {
 							old.Frame.ResponseJSON = ""
 						}
-						if err = s.writeJSON(entry.Name(), old); err != nil {
+						if err = saveInteractionTransitionLocked(s, old); err != nil {
 							e = err
 							break
 						}
@@ -722,14 +733,6 @@ func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a A
 	if e == nil && (active >= 8 || records >= 1024) {
 		e = errors.New("interaction_capacity")
 	}
-	if e == nil {
-		e = s.writeJSON("interaction-"+r.RequestID+".json", r)
-	}
-	unlock()
-	if e != nil {
-		return nil, e
-	}
-	defer func() { _ = interactionComplete(s, r.RequestID, "native_cancelled") }()
 	a.Interaction = &InteractionHint{V: 1, RequestID: r.RequestID, Digest: r.Digest, Kind: r.Kind, ExpiresAt: r.ExpiresAt}
 	a.Approval = nil
 	a.Occurrence = digest("interaction\x00" + r.RequestID)
@@ -741,6 +744,18 @@ func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a A
 	if spec.Kind == "approval" {
 		a.State = "waiting_approval"
 	}
+	if e == nil {
+		var accepted bool
+		accepted, e = registerInteractionWaitLocked(s, r, a)
+		if e == nil && !accepted {
+			e = errors.New("interaction_already_registered")
+		}
+	}
+	unlock()
+	if e != nil {
+		return nil, e
+	}
+	defer func() { _ = interactionComplete(s, r.RequestID, "native_cancelled") }()
 	senders, _ := ctx.Value(interactionSendersKey{}).(*sync.WaitGroup)
 	if senders != nil {
 		senders.Add(1)
@@ -751,7 +766,14 @@ func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a A
 		}
 		sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		_ = publishActivity(sendCtx, s, api, l, a)
+		// This sender already runs independently of the native callback.
+		// Its 5s context covers delivery; the shorter synchronous hook
+		// budget would also count the local store's durable writes.
+		if a.ChildWait != nil {
+			_ = flushRunSnapshotsWithBudget(sendCtx, s, api, 5*time.Second)
+		} else {
+			_ = publishActivityWithBudget(sendCtx, s, api, l, a, 5*time.Second)
+		}
 	}()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -925,6 +947,9 @@ func interactionUnavailable(ctx context.Context, s Store, api API, l Locator, a 
 		}
 	}
 	r := InteractionRecord{V: 1, RequestID: spec.RequestID, Digest: digest(string(raw)), Kind: spec.Kind, Agent: a.Agent, RequestJSON: string(raw), Locator: l, CreatedAt: now, ExpiresAt: spec.ExpiresAt, Revision: 1, State: "unavailable", Pairs: map[string]int64{}, UnavailableReason: reason}
+	if a.ChildWait != nil {
+		r.ChildRunKey = childRunKey(a, l)
+	}
 	pairs, e := s.pairs()
 	if e != nil {
 		return e
@@ -983,13 +1008,6 @@ func interactionUnavailable(ctx context.Context, s Store, api API, l Locator, a 
 			e = errors.New("interaction_capacity")
 		}
 	}
-	if e == nil {
-		e = s.writeJSON("interaction-"+r.RequestID+".json", r)
-	}
-	unlock()
-	if e != nil {
-		return e
-	}
 	a.Interaction = &InteractionHint{V: 1, RequestID: r.RequestID, Digest: r.Digest, Kind: r.Kind, ExpiresAt: r.ExpiresAt, UnavailableReason: reason}
 	a.Approval = nil
 	a.Occurrence = digest("unavailable\x00" + r.RequestID)
@@ -997,7 +1015,47 @@ func interactionUnavailable(ctx context.Context, s Store, api API, l Locator, a 
 		a.State = "waiting_input"
 	}
 	a.Reminder = "needs_input"
+	var accepted bool
+	if e == nil {
+		accepted, e = registerInteractionWaitLocked(s, r, a)
+	}
+	unlock()
+	if e != nil || !accepted {
+		return e
+	}
+	if a.ChildWait != nil {
+		return flushRunSnapshots(ctx, s, api)
+	}
 	return publishActivity(ctx, s, api, l, a)
+}
+
+// Persist a scoped child request and its waiting run under the same lock.
+func registerInteractionWaitLocked(s Store, r InteractionRecord, a Activity) (bool, error) {
+	path := "interaction-" + r.RequestID + ".json"
+	if err := s.writeJSON(path, r); err != nil {
+		return false, err
+	}
+	if a.ChildWait == nil {
+		return true, nil
+	}
+	_, _, changed, err := applyActivityLocked(s, r.Locator, a)
+	if err == nil && changed {
+		return true, nil
+	}
+	if err != nil {
+		// An atomic rename may have succeeded before directory fsync failed.
+		// Keep the associated record if the run already references it.
+		db, readErr := loadRuns(s)
+		if readErr != nil {
+			return false, errors.Join(err, readErr)
+		}
+		if hint := db.Runs[r.ChildRunKey].Requests[a.RequestID].Interaction; hint != nil && hint.RequestID == r.RequestID {
+			return false, err
+		}
+	}
+	// No waiter, sender or persisted run owns this registration. Roll it
+	// back before unlocking so a capacity retry can register normally.
+	return false, errors.Join(err, os.Remove(filepath.Join(s.Dir, path)))
 }
 
 func interactionSetExpected(s Store, id, session, nativeID, answerDigest string) error {
@@ -1020,16 +1078,33 @@ func interactionSetExpected(s Store, id, session, nativeID, answerDigest string)
 	r.ExpectedAnswerDigest = answerDigest
 	return s.writeJSON("interaction-"+id+".json", r)
 }
-func interactionConfirmClaude(s Store, session, toolID string, answersJSON json.RawMessage) error {
+func confirmClaudeAnswers(s Store, r *InteractionRecord, answersJSON json.RawMessage) error {
+	if r.ExpectedAnswerDigest == "" || r.State != "dispatching" && r.State != "response_written" || len(answersJSON) == 0 {
+		return nil
+	}
 	var answers map[string]any
-	if interactionJSON(answersJSON, &answers) != nil {
-		return errors.New("invalid_interaction_evidence")
+	if interactionJSON(answersJSON, &answers) != nil || answers == nil {
+		return nil // Tool return is independent of optional answer evidence.
 	}
 	canonical, e := json.Marshal(answers)
 	if e != nil {
 		return e
 	}
 	answerDigest := digest(string(canonical))
+	r.State = "superseded"
+	r.Evidence = "question_answer_differs"
+	if r.ExpectedAnswerDigest == answerDigest {
+		r.State = "native_confirmed"
+		r.Evidence = "question_answer_match"
+	}
+	r.RequestJSON = ""
+	if r.Frame != nil {
+		r.Frame.ResponseJSON = ""
+	}
+	return s.writeJSON("interaction-"+r.RequestID+".json", r)
+}
+
+func interactionConfirmClaude(s Store, session, toolID string, answersJSON json.RawMessage, l Locator) error {
 	birth, e := processIdentity(os.Getppid())
 	if e != nil {
 		return e
@@ -1051,20 +1126,10 @@ func interactionConfirmClaude(s Store, session, toolID string, answersJSON json.
 			if e != nil {
 				return e
 			}
-			if r.Agent != "claude" || r.Kind != "question" || r.ExpectedSession != session || r.ExpectedNativeID != toolID || r.ParentPID != os.Getppid() || r.ParentBirth != birth || r.ExpectedAnswerDigest == "" || r.State != "dispatching" && r.State != "response_written" {
+			if r.ChildRunKey != "" || r.Locator != l || r.Agent != "claude" || r.Kind != "question" || r.ExpectedSession != session || r.ExpectedNativeID != toolID || r.ParentPID != os.Getppid() || r.ParentBirth != birth || r.ExpectedAnswerDigest == "" || r.State != "dispatching" && r.State != "response_written" {
 				continue
 			}
-			r.State = "superseded"
-			r.Evidence = "question_answer_differs"
-			if r.ExpectedAnswerDigest == answerDigest {
-				r.State = "native_confirmed"
-				r.Evidence = "question_answer_match"
-			}
-			r.RequestJSON = ""
-			if r.Frame != nil {
-				r.Frame.ResponseJSON = ""
-			}
-			if e = s.writeJSON(entry.Name(), r); e != nil {
+			if e := confirmClaudeAnswers(s, &r, answersJSON); e != nil {
 				return e
 			}
 		}
@@ -1106,7 +1171,7 @@ func interactionCleanup(ctx context.Context, s Store) error {
 			if r.Frame != nil {
 				r.Frame.ResponseJSON = ""
 			}
-			if e = s.writeJSON(entry.Name(), r); e != nil {
+			if e = saveInteractionTransitionLocked(s, r); e != nil {
 				return e
 			}
 		}

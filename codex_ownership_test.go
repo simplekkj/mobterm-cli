@@ -15,6 +15,11 @@ import (
 	"time"
 )
 
+const (
+	revertedThread  = "019ab332-57c1-7223-8700-b7e55d40a880"
+	revertRolloutID = "019ab33b-4802-70cb-a556-18a9d3b0fe69"
+)
+
 func codexMetadataFixture(t *testing.T, thread string, fields map[string]any) string {
 	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
@@ -119,9 +124,9 @@ func TestCodexMetadataBoundaries(t *testing.T) {
 			}
 		})
 	}
-	for _, name := range []string{"wrong-id", "duplicate-key", "oversize", "conflicting-candidates", "symlink-file", "symlink-directory", "symlink-root", "symlink-ancestor", "unknown-layout", "body-not-read", "revert", "canceled", "candidate-budget", "directory-budget"} {
+	for _, name := range []string{"wrong-id", "duplicate-key", "oversize", "conflicting-candidates", "symlink-file", "symlink-directory", "symlink-root", "symlink-ancestor", "unknown-layout", "body-not-read", "canceled", "candidate-budget", "directory-budget"} {
 		t.Run(name, func(t *testing.T) {
-			path := codexMetadataFixture(t, "thread", nil)
+			path := codexMetadataFixture(t, revertedThread, nil)
 			root := os.Getenv("CODEX_HOME")
 			want := codexOriginUnknown
 			ctx := context.Background()
@@ -129,11 +134,14 @@ func TestCodexMetadataBoundaries(t *testing.T) {
 			case "wrong-id":
 				os.WriteFile(path, []byte(`{"type":"session_meta","payload":{"id":"other","source":"cli"}}`), 0600)
 			case "duplicate-key":
-				os.WriteFile(path, []byte(`{"type":"session_meta","payload":{"id":"thread","source":{"subagent":"review"},"source":"cli"}}`), 0600)
+				os.WriteFile(path, []byte(`{"type":"session_meta","payload":{"id":"`+revertedThread+`","source":{"subagent":"review"},"source":"cli"}}`), 0600)
 			case "oversize":
 				os.WriteFile(path, []byte(strings.Repeat(" ", codexMetadataLineBytes+1)), 0600)
 			case "conflicting-candidates":
-				os.WriteFile(filepath.Join(filepath.Dir(path), "rollout-revert-thread-other.jsonl"), []byte(`{"type":"session_meta","payload":{"id":"thread","source":{"subagent":"review"}}}`), 0600)
+				err := os.WriteFile(strings.TrimSuffix(path, ".jsonl")+"_"+revertRolloutID+".jsonl", []byte(`{"type":"session_meta","payload":{"id":"`+revertedThread+`","source":{"subagent":"review"}}}`), 0600)
+				if err != nil {
+					t.Fatal(err)
+				}
 			case "symlink-file":
 				os.Remove(path)
 				os.Symlink(filepath.Join(root, "outside"), path)
@@ -149,14 +157,13 @@ func TestCodexMetadataBoundaries(t *testing.T) {
 				os.Rename(filepath.Join(root, "sessions"), filepath.Join(root, "outside"))
 				os.Symlink(filepath.Join(root, "outside"), filepath.Join(root, "sessions"))
 			case "unknown-layout":
-				os.Rename(path, filepath.Join(root, "sessions", "2026", "rollout-thread.jsonl"))
+				if err := os.Rename(path, filepath.Join(root, "sessions", "2026", filepath.Base(path))); err != nil {
+					t.Fatal(err)
+				}
 			case "body-not-read":
 				f, _ := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0600)
 				f.WriteString(strings.Repeat("PRIVATE_BODY", 20000))
 				f.Close()
-				want = codexOriginRoot
-			case "revert":
-				os.Rename(path, filepath.Join(filepath.Dir(path), "rollout-revert-thread-other-rollout-id.jsonl"))
 				want = codexOriginRoot
 			case "canceled":
 				var cancel context.CancelFunc
@@ -165,15 +172,52 @@ func TestCodexMetadataBoundaries(t *testing.T) {
 			case "candidate-budget":
 				raw, _ := os.ReadFile(path)
 				for i := 0; i < codexMetadataCandidates; i++ {
-					os.WriteFile(filepath.Join(filepath.Dir(path), fmt.Sprintf("rollout-revert-thread-%d.jsonl", i)), raw, 0600)
+					name := fmt.Sprintf("rollout-2026-11-17T12-01-%02d-%s.jsonl", i, revertedThread)
+					if err := os.WriteFile(filepath.Join(filepath.Dir(path), name), raw, 0600); err != nil {
+						t.Fatal(err)
+					}
 				}
 			case "directory-budget":
 				for i := 0; i < codexMetadataEntries; i++ {
 					os.WriteFile(filepath.Join(root, "sessions", fmt.Sprintf("unrelated-%d", i)), nil, 0600)
 				}
 			}
-			if got := codexCompletionOrigin(ctx, "thread"); got != want {
+			if got := codexCompletionOrigin(ctx, revertedThread); got != want {
 				t.Fatal(got, want)
+			}
+		})
+	}
+}
+
+func TestCodexRevertFilenameIdentifiesOnlyTheThread(t *testing.T) {
+	nearThread := revertedThread[:35] + "1"
+	for _, tc := range []struct {
+		name, layout, ids string
+		want              codexOrigin
+	}{
+		{"dated", "sessions/2026/11/17", revertedThread + "_" + revertRolloutID, codexOriginRoot},
+		{"legacy", "sessions", revertedThread + "_" + revertRolloutID, codexOriginRoot},
+		{"archived", "archived_sessions", revertedThread + "_" + revertRolloutID, codexOriginRoot},
+		{"rollout-id-only", "sessions", revertRolloutID + "_" + revertedThread, codexOriginUnknown},
+		{"near-thread", "sessions", nearThread + "_" + revertRolloutID, codexOriginUnknown},
+		{"wrong-thread", "sessions", revertRolloutID, codexOriginUnknown},
+		{"hyphen-instead-of-underscore", "sessions", revertedThread + "-" + revertRolloutID, codexOriginUnknown},
+		{"missing-rollout-id", "sessions", revertedThread + "_", codexOriginUnknown},
+		{"malformed-rollout-id", "sessions", revertedThread + "_not-a-uuid", codexOriginUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Even a header claiming the queried thread cannot turn a different
+			// thread's filename into an eligible source.
+			path := codexMetadataFixture(t, revertedThread, nil)
+			dir := filepath.Join(os.Getenv("CODEX_HOME"), tc.layout)
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(path, filepath.Join(dir, "rollout-2026-11-17T12-00-00-"+tc.ids+".jsonl")); err != nil {
+				t.Fatal(err)
+			}
+			if got := codexCompletionOrigin(context.Background(), revertedThread); got != tc.want {
+				t.Fatalf("origin = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -320,8 +364,23 @@ func TestCodexOwnershipThroughDurableNotification(t *testing.T) {
 			if len(events) != 2 || events[0].EventID == events[1].EventID || summaryPlaintext(t, pair, events[1])["summary"] != "Second root reply" {
 				t.Fatal("short turns merged or inherited summary", len(events))
 			}
+			// This independent thread has never emitted a start Hook. Its sole
+			// source of ownership evidence is the canonical reverted rollout.
+			path := writeCodexMetadata(t, os.Getenv("CODEX_HOME"), revertedThread, nil)
+			if err := os.Rename(path, strings.TrimSuffix(path, ".jsonl")+"_"+revertRolloutID+".jsonl"); err != nil {
+				t.Fatal(err)
+			}
+			if err := complete(revertedThread, "after-revert", strings.Repeat("文", 130)); err != nil {
+				t.Fatal(err)
+			}
+			if err := complete(revertedThread, "after-revert", "Duplicate"); err != nil {
+				t.Fatal(err)
+			}
+			if len(events) != 3 || summaryPlaintext(t, pair, events[2])["summary"] != strings.Repeat("文", 120) {
+				t.Fatal("revert-only completion count or summary", len(events))
+			}
 			records, err := outboxRecords(ctx, s, "", false)
-			if err != nil || len(records) != 2 {
+			if err != nil || len(records) != 3 {
 				t.Fatal("durable completion count", len(records), err)
 			}
 		})
@@ -409,11 +468,17 @@ func TestClaudeChildQuestionKeepsNativeConfirmation(t *testing.T) {
 	raw := []byte(`{"session_id":"root","agent_id":"child","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_use_id":"call","tool_input":{"questions":[{"question":"Choice?","header":"Choice","options":[{"label":"A"},{"label":"B"}]}]}}`)
 	done := make(chan error, 1)
 	go func() {
+		defer close(done)
 		value, err := observe(ctx, s, api, "claude", raw)
 		if err == nil {
 			err = writeInteractionOutput(io.Discard, s, value)
 		}
 		done <- err
+	}()
+	defer func() {
+		cancel()
+		for range done {
+		}
 	}()
 	notice := reviewNotice(t, notices, done)
 	if notice.SessionID != "child" {
@@ -434,6 +499,20 @@ func TestClaudeChildQuestionKeepsNativeConfirmation(t *testing.T) {
 	record, err = interactionRead(s, notice.Interaction.RequestID)
 	if err != nil || record.State != "native_confirmed" {
 		t.Fatal("child native answer not confirmed", record.State, err)
+	}
+	db, err := loadRuns(Store{Dir: s.Dir})
+	if err != nil || len(db.Runs) != 1 {
+		t.Fatal("child Post must reuse the persisted run", len(db.Runs), err)
+	}
+	for _, run := range db.Runs {
+		if run.Run != notice.RunID || run.Session != "child" || len(run.Requests) != 0 || run.State != "running" || run.Tools["call"].Status != "returned" {
+			t.Fatal("original question still waiting after native confirmation", run.State, len(run.Requests))
+		}
+	}
+	for _, intent := range db.Intents {
+		if intent.Kind == "turn_completed" {
+			t.Fatal("child created completion reminder")
+		}
 	}
 	cycle, stopped, err := claudeActivityCycle(ctx, s, "root", false)
 	if err != nil || cycle != rootCycle || stopped {
