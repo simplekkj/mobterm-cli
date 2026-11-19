@@ -46,8 +46,155 @@ async function adapter(file, dependencies) {
   return import("data:text/javascript;base64," + Buffer.from(code).toString("base64") + "#" + Math.random());
 }
 
+async function claudeFixture(change) {
+  const hooks = new Map(), receipts = [], sent = [], waiters = [];
+  const host = {session:"S", prompt:"P", surfaces:["terminal"]};
+  const mod = await adapter("claude/register.js", {});
+  mod.register((name, f) => hooks.set(name, f));
+  const $ = {
+    clock:{now:async () => Date.now()},
+    session:{id:async () => host.session, info:async () => ({promptId:host.prompt}),
+      version:async () => ({version:"2.1.328"}), surfaces:async () => host.surfaces},
+    process:{
+      hookEnv:async () => ({CLAUDE_CODE_SESSION_ID:host.envSession ?? host.session}),
+      spawn(req) {
+        // Allow a buffered decision to arrive even after cancellation.
+        const data = Promise.withResolvers();
+        const stream = (async function*(){
+          yield {stream:"stdout", text:JSON.stringify(await data.promise)};
+        })();
+        stream.result = Promise.resolve({code:0});
+        waiters.push({request:JSON.parse(req.input), answer:(decision=answer) => data.resolve(decision)});
+        return stream;
+      },
+      async run(cmd, init) {
+        const buf = Buffer.from(init.stdin);
+        assert.equal(buf.readUInt32BE(), buf.length - 4);
+        const tuple = JSON.parse(buf.subarray(4));
+        if (cmd[2] === "receipt") receipts.push(tuple);
+        if (cmd[2] === "authorize") await host.authorize?.(tuple);
+        return {exitCode:0, stdout:'{"allowed":true}'};
+      }
+    },
+    prompt:{submit:async arg => {
+      sent.push(arg);
+      host.submittedAt = [host.session, host.prompt];
+      return change === "drop" ? {drop:"stopped"} : {text:arg.text};
+    }}
+  };
+  const emit = (name, data={}) => hooks.get(name)($, data, x => x);
+  const complete = () => emit("turn.complete", {turnId:host.prompt, reason:"answer", isAborted:false});
+  const rootTurn = async () => {
+    await emit("prompt.submit");
+    await emit("turn.start", {turnId:host.prompt});
+    await complete();
+  };
+  return {emit, waiters, receipts, sent, host, rootTurn, complete};
+}
+
+async function testClaudeConversationChange() {
+  for (const phase of ["wait", "authorize"]) {
+    for (const afterNewTurn of [false, true]) {
+      const {emit, waiters, receipts, sent, host, rootTurn, complete} = await claudeFixture();
+      await emit("session.start", {surface:"terminal", isInteractive:true});
+      await rootTurn();
+      assert.equal(waiters.length, 1);
+      let finishOld = waiters[0].answer;
+      if (phase === "authorize") {
+        const entered = Promise.withResolvers(), release = Promise.withResolvers();
+        host.authorize = () => { entered.resolve(); return release.promise; };
+        waiters[0].answer();
+        await entered.promise;
+        finishOld = release.resolve;
+      }
+      await emit("session.end", {reason:"clear", sessionId:host.session});
+      if (!afterNewTurn) { finishOld(); await turn(); }
+      host.session = "S2";
+      host.prompt = "P2";
+      await rootTurn();
+      await complete();
+      assert.equal(waiters.length, 2, "new conversation gets exactly one waiter after clear");
+      const fresh = waiters[1];
+      assert.notEqual(fresh.request.instance_id, waiters[0].request.instance_id);
+      assert.deepEqual([fresh.request.session_id, fresh.request.event_id], ["S2","P2"]);
+      if (afterNewTurn) { finishOld(); await turn(); }
+      assert.equal(sent.length, 0);
+      assert.deepEqual(receipts, [{v:1, source_id:answer.source_id, decision_id:answer.decision_id,
+        owner_token:answer.owner_token, state:"not_dispatched"}]);
+      fresh.answer({...answer, source_id:"fresh-source", decision_id:"fresh-decision", owner_token:"fresh-owner"});
+      await turn();
+      assert.deepEqual(sent, [{text:answer.text, asUser:true}]);
+      assert.deepEqual(host.submittedAt, ["S2","P2"]);
+      assert.deepEqual(receipts.at(-1), {v:1, source_id:"fresh-source", decision_id:"fresh-decision",
+        owner_token:"fresh-owner", state:"native_accepted"});
+    }
+  }
+  for (const scenario of ["clear", "resume", "ended-session", "env-mismatch", "no-terminal",
+      "noninteractive", "exit", "unknown-end", "child"]) {
+    const {emit, waiters, host, rootTurn, complete} = await claudeFixture();
+    await emit("session.start", {surface:"terminal", isInteractive:scenario !== "noninteractive"});
+    const reason = {resume:"resume", exit:"prompt_input_exit", "unknown-end":"other"}[scenario] ?? "clear";
+    await emit("session.end", {reason, sessionId:host.session});
+    host.session = scenario === "ended-session" ? "S" : "S2";
+    host.prompt = "P2";
+    if (scenario === "env-mismatch") host.envSession = "S";
+    if (scenario === "no-terminal") host.surfaces = [];
+    if (scenario === "child") {
+      await emit("turn.start", {turnId:"P2", agentId:"child"});
+      await complete();
+    } else {
+      await rootTurn();
+    }
+    assert.equal(waiters.length, ["clear", "resume"].includes(scenario) ? 1 : 0, scenario);
+  }
+}
+
+async function testPiInputBeforeSettlement() {
+  const fixture = cli(), handlers = new Map(), submitted = [];
+  const plugin = await adapter("pi/mobterm-jumpto.ts", {spawn:fixture.spawn, VERSION:"1.5.2"});
+  const state = {mode:"tui", sessionManager:{getSessionId:() => "S"}, isIdle:() => true, hasPendingMessages:() => false};
+  plugin.default({on:(name,f) => handlers.set(name,f), sendUserMessage:(...args) => submitted.push(args)});
+  const emit = (name,data={}) => handlers.get(name)(data,state);
+  emit("session_start");
+  emit("agent_start");
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  // Pi awaits input handlers in registration order before it starts the next run.
+  const preflight = (async () => {
+    await emit("input");
+    entered.resolve();
+    await release.promise;
+    emit("agent_start");
+  })();
+  await entered.promise;
+  emit("agent_settled",{aborted:false});
+  emit("agent_settled",{aborted:false});
+  await turn();
+  const completions = () => fixture.calls.filter(call => call.input.event === "agent_settled");
+  assert.equal(completions().length, 1);
+  assert.equal(fixture.waiters.length, 0, "observed input invalidates the round before a waiter exists");
+  assert.ok(!fixture.calls.some(call => call.args[1] === "authorize"));
+  assert.equal(submitted.length, 0);
+  release.resolve();
+  await preflight;
+  emit("agent_settled",{aborted:false});
+  await turn();
+  assert.equal(completions().length, 2);
+  assert.equal(fixture.waiters.length, 1);
+  const fresh = fixture.waiters[0].input;
+  assert.equal(fresh.run_id, completions()[1].input.run_id);
+  assert.notEqual(fresh.run_id, completions()[0].input.run_id);
+  assert.equal(fresh.instance_id, completions()[0].input.instance_id);
+  fixture.waiters[0].answer();
+  await turn();
+  assert.deepEqual(submitted, [[answer.text,{expandPromptTemplates:false}]]);
+  assert.equal(fixture.receipts[0].state, "delivery_unknown");
+  emit("session_shutdown");
+}
+
 export async function testNativeReply() {
-  for (const change of ["unknown-pending","question-before","compact-before","send","limit","busy","switch","tree","question","late-authorize"]) {
+  await testPiInputBeforeSettlement();
+  await testClaudeConversationChange();
+  for (const change of ["unknown-pending","question-before","compact-before","send","limit","busy","switch","tree","question","input","reload","late-authorize"]) {
     const fixture = cli(), handlers=new Map(), submitted=[];
     const originalText=answer.text;
     if (change==="limit") answer.text="\u0001".repeat(16*1024);
@@ -72,10 +219,27 @@ export async function testNativeReply() {
     if(change==="switch")emit("session_before_switch");
     if(change==="tree")emit("session_before_tree");
     if(change==="question")emit("ui_prompt_start",{kind:"custom",reason:"ui_prompt"});
-    if(change==="late-authorize") fixture.setBeforeAuthorize(()=>emit("input"));
+    if(change==="input") emit("input");
+    if(change==="reload"){ emit("session_shutdown"); emit("session_start"); }
+    if(change==="late-authorize") fixture.setBeforeAuthorize(() => {
+      emit("input");
+      emit("agent_start");
+      emit("agent_settled",{aborted:false});
+    });
     fixture.waiters[0].answer();await turn();
     assert.deepEqual(submitted,["send","limit"].includes(change)?[[answer.text,{expandPromptTemplates:false}]]:[]);
     if (["send","limit"].includes(change)) assert.equal(fixture.receipts[0].state,"delivery_unknown");
+    if (change==="late-authorize") {
+      assert.equal(fixture.waiters.length, 2);
+      assert.equal(fixture.receipts[0].source_id, answer.source_id);
+      assert.equal(fixture.receipts[0].state, "not_dispatched");
+      fixture.setBeforeAuthorize(() => {});
+      fixture.waiters[1].answer({...answer, source_id:"next-source", decision_id:"next-decision"});
+      await turn();
+      assert.deepEqual(submitted, [[answer.text,{expandPromptTemplates:false}]]);
+      assert.equal(fixture.receipts[1].source_id, "next-source");
+      assert.equal(fixture.receipts[1].state, "delivery_unknown");
+    }
     emit("session_shutdown"); answer.text=originalText;
   }
 
@@ -138,23 +302,7 @@ export async function testNativeReply() {
   }
 
   for (const change of ["send","drop","clear","stop","new-prompt","child","reload","missing-native-fields"]) {
-    const hooks=new Map(), receipts=[],sent=[],waiters=[];
-    const mod=await adapter("claude/register.js",{});
-    mod.register((name,f)=>hooks.set(name,f));
-    let session="S",prompt="P";
-    const $={clock:{now:async()=>Date.now()},session:{id:async()=>session,info:async()=>({promptId:prompt}),
-      version:async()=>({version:"2.1.328"}),surfaces:async()=>["terminal"]},
-      process:{hookEnv:async()=>({CLAUDE_CODE_SESSION_ID:session}),spawn:req=>{
-        let done;const result=new Promise(r=>{done=r;});
-        let output;const data=new Promise(r=>{output=r;});
-        const stream=(async function*(){const val=await data;yield {stream:"stdout",text:JSON.stringify(val)};done({code:0});})();
-        stream.result=result;waiters.push({request:JSON.parse(req.input),answer:()=>output(answer)});return stream;
-      },run:async (cmd,init)=>{
-        const buf=Buffer.from(init.stdin);assert.equal(buf.readUInt32BE(), buf.length-4);
-        if(cmd[2]==="receipt")receipts.push(JSON.parse(buf.subarray(4)));
-        return {exitCode:0,stdout:'{"allowed":true}'};
-      }},prompt:{submit:async arg=>{sent.push(arg);return change==="drop"?{drop:"stopped"}:{text:arg.text};}}};
-    const emit=(name,data={})=>hooks.get(name)($,data,x=>x);
+    const {emit,waiters,receipts,sent,host} = await claudeFixture(change);
     await emit("session.start",{surface:"terminal",isInteractive:true});
     if(change==="missing-native-fields")await emit("turn.complete",{reason:"answer"});
     await emit("turn.start",{turnId:"T"});
@@ -165,9 +313,9 @@ export async function testNativeReply() {
     await emit("turn.complete",{turnId:"T",reason:"answer",isAborted:false,...(change==="child"?{agentId:"child"}:{})});await turn();
     if(change==="child"){assert.equal(waiters.length,0);continue;}
     assert.equal(waiters.length,1);assert.equal(waiters[0].request.event_id,"P");
-    if(change==="clear"){await emit("session.end");session="new";}
+    if(change==="clear"){await emit("session.end",{reason:"clear",sessionId:host.session});host.session="new";}
     if(change==="stop")await emit("session.stop");
-    if(change==="new-prompt"){await emit("prompt.submit");prompt="new";}
+    if(change==="new-prompt"){await emit("prompt.submit");host.prompt="new";}
     if(change==="reload")await emit("session.start",{surface:"terminal",isInteractive:true});
     waiters[0].answer();await turn();await turn();
     assert.deepEqual(sent,["send","drop"].includes(change)?[{text:answer.text,asUser:true}]:[],change);

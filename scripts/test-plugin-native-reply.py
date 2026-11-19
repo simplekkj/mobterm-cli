@@ -25,7 +25,9 @@ assert agent in ("pi", "opencode")
 binary, cli = [pathlib.Path(p).resolve() for p in sys.argv[2:]]
 text = "  回复 🧪\n{{keep}} /literal  "
 seed = "mobterm seed"
+next_prompt = "mobterm input during first turn"
 calls = []
+release_first_response = threading.Event()
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
@@ -37,6 +39,10 @@ class Provider(http.server.BaseHTTPRequestHandler):
         users = [msg["content"] for msg in request["messages"] if msg["role"] == "user"]
         users = [msg if isinstance(msg, str) else "".join(part.get("text", "") for part in msg) for msg in users]
         calls.append(users)
+        if agent == "pi" and len(calls) == 1:
+            if not release_first_response.wait(timeout=45):
+                self.send_error(408)
+                return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
@@ -79,15 +85,25 @@ with tempfile.TemporaryDirectory(prefix="mobterm-"+agent+"-reply-") as tmp:
         argv=[binary,"--standalone","--prompt",seed]
     helper = root / "decision-fixture"
     helper.write_text(f"""#!{sys.executable}
-import sys,json,pathlib
+import sys,json,pathlib,os
 root=pathlib.Path({str(root)!r})
-args=sys.argv[1:];raw=sys.stdin.buffer.read()
+args=sys.argv[1:]
+if {agent!r}=="pi" and args[0]=="notify" and os.getenv("MOBTERM_NATIVE_COMPLETION")=="1":
+    print("mobterm/message-body/1",flush=True)
+raw=sys.stdin.buffer.read()
 if args[:2]==["reply","wait"]:
-    session=json.loads(raw)["session_id"]
+    source=json.loads(raw)
+    session=source["session_id"]
+    if {agent!r}=="pi":
+        with (root/"waits").open("a") as out: print(source["run_id"],file=out)
     try:
         with (root/"first-source").open("x") as out: out.write(session)
     except FileExistsError: sys.exit(0)
     print(json.dumps({{"v":1,"source_id":"source","decision_id":"decision","owner_token":"owner","text":{text!r}}}))
+elif args[0]=="notify" and {agent!r}=="pi":
+    event=json.loads(raw)
+    if event["event"]=="agent_settled":
+        with (root/"settled").open("a") as out: print(event["run_id"],file=out)
 elif args[:2]==["reply","authorize"]:
     assert int.from_bytes(raw[:4],"big")==len(raw)-4
     print('{{"v":1,"allowed":true}}')
@@ -105,12 +121,25 @@ elif args[:2]==["reply","receipt"]:
         witness = config / "extensions" / "witness.ts"
         witness.write_text("""import {appendFileSync} from 'node:fs';
 export default function(pi) {
+  let releaseInput;
+  pi.on("input", async e => {
+    if(e.text===NEXT_INPUT) {
+      await new Promise(resolve => {
+        releaseInput=resolve;
+        appendFileSync(ENTERED,"input");
+      });
+    }
+  });
+  pi.on("agent_settled", () => {
+    if(releaseInput) { setImmediate(releaseInput); releaseInput=undefined; }
+  });
   pi.on("message_start", (e,ctx) => {
     if(e.message?.role==="user") appendFileSync(FILENAME,JSON.stringify({
         session:ctx.sessionManager.getSessionId(),mode:ctx.mode,
         matches:e.message.content.some(p=>p.type==="text" && p.text===EXPECTED)})+"\\n");
   });
-}""".replace("FILENAME", json.dumps(str(root / "witness"))).replace("EXPECTED",json.dumps(text)))
+}""".replace("FILENAME", json.dumps(str(root / "witness"))).replace("EXPECTED",json.dumps(text))
+            .replace("NEXT_INPUT",json.dumps(next_prompt)).replace("ENTERED",json.dumps(str(root/"entered"))))
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 36, 120, 0, 0))
     process = subprocess.Popen(argv, cwd=root, env=env,
@@ -118,9 +147,18 @@ export default function(pi) {
     os.close(slave)
     try:
         deadline = time.monotonic()+90
+        entered_next = False
         while time.monotonic() < deadline and process.poll() is None:
+            if agent == "pi" and calls and not entered_next:
+                os.write(master,next_prompt.encode())
+                time.sleep(.2)
+                os.write(master,b"\r")
+                entered_next = True
+            if (root/"entered").exists():
+                release_first_response.set()
             states=(root/"receipt").read_text().splitlines() if (root/"receipt").exists() else []
-            if ("delivery_unknown" if agent=="pi" else "native_consumed") in states and any(text in history for history in calls):
+            notifications_ready = agent!="pi" or ((root/"settled").exists() and len((root/"settled").read_text().splitlines())>=2)
+            if notifications_ready and ("delivery_unknown" if agent=="pi" else "native_consumed") in states and any(text in history for history in calls):
                 break
             if select.select([master], [], [], 0.2)[0]:
                 try: os.read(master, 65536)
@@ -130,13 +168,18 @@ export default function(pi) {
         assert any(seed in history and text in history for history in calls), f"original provider history mismatch; receipt states {states}"
         if agent=="pi":
             assert states==["delivery_unknown"]
+            assert any(history==[seed,next_prompt,text] for history in calls)
+            settled=(root/"settled").read_text().splitlines()
+            waits=(root/"waits").read_text().splitlines()
+            assert len(settled)>=2 and settled[0] not in waits and waits[0]==settled[1]
             messages=[json.loads(line) for line in (root/"witness").read_text().splitlines()]
-            assert len(messages)==2 and all(row["mode"]=="tui" and row["session"]==(root/"first-source").read_text() for row in messages)
-            assert [row["matches"] for row in messages]==[False,True]
+            assert len(messages)==3 and all(row["mode"]=="tui" and row["session"]==(root/"first-source").read_text() for row in messages)
+            assert [row["matches"] for row in messages]==[False,False,True]
         else:
             assert "native_consumed" in states and "native_accepted" in states
         print(f"PASS original {agent} TUI consumed unmodified ordinary reply; same session included both user messages in loopback synthetic provider input; receipt states: {states}")
     finally:
+        release_first_response.set()
         if process.poll() is None: os.killpg(process.pid, signal.SIGTERM)
         try: process.wait(timeout=5)
         except subprocess.TimeoutExpired: os.killpg(process.pid, signal.SIGKILL); process.wait()

@@ -70,14 +70,23 @@ async function waitForDecision($, candidate) {
 }
 
 export function register(on) {
-  let instance;
+  let instance, endedSession;
   on("session.start", ($, e, next) => {
     invalidate();
+    endedSession = undefined;
     interactive = e.isInteractive === true && e.surface === "terminal";
     instance = crypto.randomUUID();
     return next(e);
   });
-  on("session.end", ($, e, next) => { interactive = false; invalidate(); instance = crypto.randomUUID(); return next(e); });
+  on("session.end", ($, e, next) => {
+    invalidate();
+    endedSession = e.sessionId;
+    // clear and resume replace the conversation inside the same interactive host.
+    interactive = interactive && (e.reason === "clear" || e.reason === "resume") &&
+      typeof endedSession === "string" && endedSession.length > 0;
+    instance = crypto.randomUUID();
+    return next(e);
+  });
   on("session.stop", ($, e, next) => { invalidate(); return next(e); });
   on("prompt.submit", ($, e, next) => { invalidate(); return next(e); });
   on("tool.call", ($, e, next) => { if (turn?.complete) invalidate(); return next(e); });
@@ -90,7 +99,9 @@ export function register(on) {
         const info = await $.session.info();
         const version = (await $.session.version()).version;
         const env = await $.process.hookEnv();
-        if (generation === captured && info.promptId && e.turnId && session &&
+        const surfaces = await $.session.surfaces();
+        if (generation === captured && info.promptId && e.turnId && session && session !== endedSession &&
+            Array.isArray(surfaces) && surfaces.includes("terminal") &&
             env.CLAUDE_CODE_SESSION_ID === session && atLeast(version,minimums.reply.claude)) {
           turn = {generation:captured, instance, session, version, prompt:info.promptId, native:e.turnId,
             env:{...env,MOBTERM_CONFIG_DIR:store}, complete:false};
@@ -106,8 +117,9 @@ export function register(on) {
       candidate.complete = true;
       try {
         const info = await $.session.info();
+        const session = await $.session.id();
         const now = await $.clock.now();
-        if (turn === candidate && info.promptId === candidate.prompt) {
+        if (turn === candidate && session === candidate.session && info.promptId === candidate.prompt) {
           candidate.expires = Math.floor(now / 1000) + 300;
           void waitForDecision($, candidate).catch(() => {});
         }

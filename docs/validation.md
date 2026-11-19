@@ -2041,3 +2041,29 @@ seven-day outbox fixture. Superseded concurrent runs were stopped. An earlier
 ordinary suite passed in 617.951 s before the last Pi/OpenCode adapter changes.
 The final runs above include those changes and used a 45-minute package-level
 test timeout.
+
+### Claude conversation changes and Pi input before settlement
+
+On macOS 15.8.1 x86_64, `node scripts/test-native-adapters.mjs` reproduced
+both regressions against their original adapters at
+`d4d83953fb580a95c65f85f5a1e2a734f1561b34`. Claude opened only the old
+waiter across a clear. Pi opened a waiter for a round after observing new
+input. With the fixes, both cases and their new-source recovery checks passed.
+The controlled callbacks also exercised late authorization, source-specific
+receipts, Claude resume, and Pi idle with no pending messages during preflight.
+
+Two isolated official TUI runs exercised the assets installed by the built CLI:
+
+- `python3 scripts/test-claude-native-reply.py "$CLAUDE_BINARY" "$CLI"`
+  passed on 2.1.328. Across a real `/clear`, the same process registered
+  one Mod start and distinct session, prompt and instance IDs. The new
+  conversation received the exact reply and produced `native_accepted`.
+- `python3 scripts/test-plugin-native-reply.py pi "$PI_BINARY" "$CLI"`
+  passed on 1.5.2. A second extension held the next input while the first
+  run settled. Its completion reached the notification helper. Only the
+  new run opened a reply opportunity during that transition. The original
+  session consumed the exact reply and the adapter reported `delivery_unknown`.
+
+These runs used a local synthetic model and a fixture authorization decision.
+An isolated reinstall from the Review binary verified both rendered asset
+fingerprints, repeat installation, and preservation of locally edited assets.

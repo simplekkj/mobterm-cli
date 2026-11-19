@@ -26,6 +26,9 @@ settings alone. `health.claude.reply_adapter=installed_load_unverified` describe
 the files. Only a live source-bound opportunity proves that the Mod loaded for
 this message. It captures the classic prompt ID at main turn start, requires
 the same native turn at completion, and calls `$.prompt.submit({text,asUser:true})`.
+After `/clear` or an in-process resume, the Mod cancels the old opportunity.
+The next root turn in a different session can open its own opportunity after
+the Mod verifies the terminal surface and matches the session to its hook environment.
 Classic Question and Elicitation check the executable image of the running Claude ancestor. A PATH upgrade alone cannot enable its native schema. A drop is a native rejection. The Mod never repeats a dropped submission.
 
 OpenCode specifies a stable input ID and `delivery:"queue"` on the original
@@ -33,6 +36,10 @@ host's `session.prompt`. Its matching admission result and
 `session.inbox.delivered` event carry distinct receipt states. Pi uses
 `pi.sendUserMessage(text,{expandPromptTemplates:false})`; the API has no
 caller-supplied correlation ID, so returning from it leaves delivery unknown.
+Pi marks the current run ineligible as soon as it observes new input, even
+before a reply helper exists.
+That run can still emit its completion notification. The next real `agent_start`
+begins a new run with its own eligibility.
 All three paths invalidate their captured source on input, native requests
 or owner change. Native final checks and submission have a race with other
 inputs on hosts that lack an expected-source precondition.

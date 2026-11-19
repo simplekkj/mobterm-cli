@@ -22,7 +22,8 @@ import threading
 import time
 
 binary, cli = [pathlib.Path(p).resolve() for p in sys.argv[1:]]
-seed = "mobterm fixture first turn"
+before_clear = "mobterm fixture before clear"
+seed = "mobterm fixture after clear"
 reply = "Claude fixture reply 中文 🧪\n{{literal}}"
 native_users = []
 
@@ -45,7 +46,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
                 continue
             parts = msg["content"]
             users.extend([parts] if isinstance(parts, str) else [p.get("text", "") for p in parts])
-        native_users.append([u for u in users if u in (seed, reply)])
+        native_users.append([u for u in users if u in (before_clear, seed, reply)])
         message = {"id": "msg_fixture_"+str(len(native_users)), "model": request.get("model", "fixture"),
                    "type": "message", "role": "assistant", "content": [],
                    "usage": {"input_tokens": 10, "output_tokens": 1}, "stop_reason": None}
@@ -93,10 +94,16 @@ if args[0]=='classic':
     event=json.loads(data);owner['prompt']=event.get('prompt_id');owner['event']=event['hook_event_name']
     with (root/'classic').open('a') as f:print(json.dumps(owner),file=f)
 elif args[0]=='startup':
-    (root/'startup').write_text(json.dumps(owner))
+    with (root/'startup').open('a') as f: print(json.dumps(owner),file=f)
 elif args[:2]==['reply','wait']:
     source=json.loads(data);owner['prompt']=source['event_id'];owner['runtime']=source['runtime_version']
     assert source['event_id']==source['run_id'] and source['session_id']==owner['session']
+    owner['instance']=source['instance_id']
+    try:
+        with (root/'old-wait').open('x') as f: print(json.dumps(owner),file=f)
+        sys.exit(0)
+    except FileExistsError:pass
+    if json.loads((root/'old-wait').read_text())['session']==owner['session']: sys.exit(0)
     try:
         with (root/'wait').open('x') as f:print(json.dumps(owner),file=f)
     except FileExistsError:sys.exit(0)
@@ -129,15 +136,27 @@ elif args[:2]==['reply','receipt']:
         stdin=slave,stdout=slave,stderr=slave,start_new_session=True)
     os.close(slave)
     try:
-        deadline=time.monotonic()+120;startup=None;submitted=False;screen=b"";key_at=time.monotonic()+4
+        def enter(value):
+            os.write(master,value.encode())
+            time.sleep(.3)
+            os.write(master,b"\r")
+
+        deadline=time.monotonic()+120;startup=None;stage="initial";screen=b"";key_at=time.monotonic()+4
         while time.monotonic()<deadline and proc.poll() is None:
             if select.select([master],[],[],.2)[0]:
                 try:screen=(screen+os.read(master,65536))[-16000:]
                 except OSError:break
             if (root/"startup").exists():
                 if startup is None:startup=time.monotonic()
-                if not submitted and time.monotonic()>startup+3:
-                    os.write(master,seed.encode());time.sleep(.3);os.write(master,b"\r");submitted=True
+                if stage=="initial" and time.monotonic()>startup+3:
+                    enter(before_clear);stage="old-turn"
+                elif stage=="old-turn" and (root/"old-wait").exists():
+                    enter("/clear");stage="clearing"
+                elif stage=="clearing":
+                    old=json.loads((root/"old-wait").read_text())
+                    rows=(root/"classic").read_text().splitlines()
+                    if any(r["event"]=="SessionStart" and r["session"]!=old["session"] for r in map(json.loads,rows)):
+                        enter(seed);stage="new-turn"
             elif time.monotonic()>key_at:
                 key_at=time.monotonic()+4
                 if b"trust" in screen.lower() and b"folder" in screen.lower():
@@ -148,12 +167,15 @@ elif args[:2]==['reply','receipt']:
         classic=[json.loads(row) for row in (root/"classic").read_text().splitlines()]
         assert (root/"wait").exists(),f"Claude produced no reply opportunity; classic events: {[r['event'] for r in classic]}; provider calls: {len(native_users)}"
         source=json.loads((root/"wait").read_text())
-        assert source["host"]==str(proc.pid) and source["parent"]==proc.pid
+        old=json.loads((root/"old-wait").read_text())
+        assert len((root/"startup").read_text().splitlines())==1
+        assert old["host"]==source["host"]==str(proc.pid) and old["parent"]==source["parent"]==proc.pid
+        assert all(old[field]!=source[field] for field in ("session","prompt","instance"))
         assert any(r["event"]=="UserPromptSubmit" and r["prompt"]==source["prompt"] and r["session"]==source["session"]
                    and r["host"]==source["host"] for r in classic)
         assert (root/"receipt").read_text()=="native_accepted"
-        assert any(seed in history and reply in history for history in native_users),"original provider history missing correlated user input"
-        print("PASS Claude",source["runtime"],"official TUI Mod/classic prompt and owner rendezvous; original native session started a second turn with exact reply; loopback synthetic provider and decision fixture.")
+        assert any(seed in history and reply in history and before_clear not in history for history in native_users),"original provider history missing correlated user input"
+        print("PASS Claude",source["runtime"],"official TUI Mod/classic prompt and owner rendezvous; /clear rotated session, prompt and instance without a second Mod start; exact reply consumed in new conversation; loopback synthetic provider and decision fixture.")
     finally:
         if proc.poll() is None:os.killpg(proc.pid,signal.SIGTERM)
         try:proc.wait(timeout=5)

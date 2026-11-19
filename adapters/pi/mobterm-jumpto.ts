@@ -176,13 +176,12 @@ export default function mobtermJumpTo(pi) {
   const reset = (ctx) => { invalidateReply(); openPrompts.clear(); context = ctx; epoch++; round = undefined; transport.cancel(); settleGates(); };
   pi.on("session_start", (_event, ctx) => { alive = true; reset(ctx); });
   pi.on("session_shutdown", (_event, ctx) => { alive = false; reset(ctx); });
-  for (const event of ["session_before_switch", "session_before_fork", "session_before_tree", "session_before_compact"]) {
+  for (const event of ["input", "session_before_switch", "session_before_fork", "session_before_tree", "session_before_compact"]) {
     pi.on(event, () => {
       invalidateReply();
       if (round) round.replyInvalidated = true;
     });
   }
-  pi.on("input", () => { invalidateReply(); });
   pi.on("agent_start", (_event, ctx) => {
     invalidateReply();
     context = ctx;
