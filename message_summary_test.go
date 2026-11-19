@@ -47,7 +47,7 @@ func TestMessageSummaryNativeNegotiationAndRetry(t *testing.T) {
 			var mu sync.Mutex
 			var posted []Envelope
 			fail := true
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasSuffix(r.URL.Path, "capabilities") {
 					if v == 1 {
 						w.WriteHeader(404)
@@ -83,7 +83,7 @@ func TestMessageSummaryNativeNegotiationAndRetry(t *testing.T) {
 				t.Fatal(err)
 			}
 			input := func(run, summary string) []byte {
-				raw, _ := json.Marshal(map[string]any{"adapter_revision": 2, "runtime_version": "1.3.0", "event": "agent_settled", "session_id": "session", "run_id": run, "event_id": run, "instance_id": "instance", "aborted": false, "summary": summary})
+				raw, _ := json.Marshal(map[string]any{"adapter_revision": 2, "runtime_version": "1.3.0", "event": "agent_settled", "session_id": "session", "run_id": run, "event_id": run, "instance_id": "instance", "aborted": false, "summary": summary, "completion_body_base64": base64.StdEncoding.EncodeToString([]byte(summary + "\n\n  🐱"))})
 				return raw
 			}
 			api := API{server.Client()}
@@ -121,6 +121,7 @@ func TestMessageSummaryNativeNegotiationAndRetry(t *testing.T) {
 			if len(copies) != 2 || copies[0] != copies[1] {
 				t.Fatal("recovery changed ciphertext or double-sent", len(copies))
 			}
+			checkTestBody(t, Store{s.Dir}, pair, first, "本次回复摘要\n\n  🐱")
 			if _, err = observe(ctx, s, api, "pi", input("second", "")); err != nil {
 				t.Fatal(err)
 			}

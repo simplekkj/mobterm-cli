@@ -1925,3 +1925,47 @@ with Go 1.27.1 darwin/amd64, macOS 15.8.1 and tmux 3.7c.
   tests/subtests (488.007 s and 609.190 s), with zero skips. Repository gofmt,
   `go vet ./...` and `git diff --check` passed. Native events and HTTP were
   local fixtures. Real model sessions, APNs and device display were not exercised.
+
+## Historical reply protocol and archive
+
+Run `go test ./... -run 'TestMessageBody|TestMessageSummaryNativeNegotiationAndRetry|TestCodexOwnershipThroughDurableNotification'`
+for framed proof/vector, retention, capacity, actual private files, write failure,
+revocation and frozen v1/v2 delivery coverage. The native harness
+`node scripts/test-native-adapters.mjs` exercises exact assistant-part selection,
+OpenCode route/message ownership, Pi round/settled correlation, and the same-child
+capability handshake including rollback. Use the official isolated host loader
+separately to check registration. Neither harness performs live model turns or
+establishes APNs delivery, phone rendering or physical credential behavior.
+
+### First implementation, 2026-11-19
+
+Tested the working tree based on
+`aae20e523e1d3dcbab9e3d69e19ea4b2ac55145b` on macOS 15.8.1 (24H32),
+Intel x86_64, Go 1.27.1, Node 22.22.2 and tmux 3.7c.
+
+| Check | Observed result |
+| --- | --- |
+| `test -z "$(gofmt -l .)"`, `go vet ./...`, `git diff --check` | PASS |
+| `go test -json -count=1 -timeout 20m ./...` | PASS, 501.526 s. 817 test/subtest PASS, zero failures or skips |
+| `go test -race -json -count=1 -timeout 20m ./...` | PASS, 686.133 s. 817 test/subtest PASS, zero failures, skips or race reports |
+| `node scripts/test-native-adapters.mjs` | PASS, including text-part attribution, bounded extension, rollback to base packet and Pi length-limited reply |
+| `python3 scripts/test-native-adapters-host.py` with official OpenCode 2.1.0 and Pi 1.5.0, isolated generated assets | PASS. OpenCode TUI setup and restart registered 15 listeners each. Pi's official loader imported the extension and its TUI session registered 11 listeners |
+
+The ordinary full suite started before a final `api.go` correction to the
+classification of a successful pair-status response. The ordinary targeted
+`TestPairStatus|TestRemoteRetirementDisables` check on that change passed in
+5.986 s. The race suite compiled the complete final Go source.
+
+Running the full suites concurrently initially exhausted the asdf fixture's
+five-second original-launcher preflight and the default Go package timeout.
+The ordinary and race preflight cases passed separately (2.939 s and 6.124 s);
+the full runs above then ran serially with the original launcher/check deadlines.
+
+The cross-version pipe check used binaries built from the starting SHA and
+the implementation, empty private stores, a disposable local tmux socket,
+and a synthetic Pi completion. The old executable accepted the base packet
+after capability timeout, the new executable accepted its negotiated extension,
+and both accepted the unchanged old adapter packet. Each accepted occurrence
+was read back from local run state. The Node harness separately exercised the
+shipped adapters. The host registration checks used temporary HOME/config;
+they did not run a live model conversation or send real APNs notifications.

@@ -814,6 +814,23 @@ Target commands on failure return nonzero with
 identity), and `target_query_unavailable` (query, permission or unavailable birth
 proof). Temporary inability to query does not prove the terminal was replaced.
 
+Foreground availability clients negotiate `read_only_target_protocols: [1]`
+using `status --installation-json --read-only`, then send
+`target resolve --stdin-frame --read-only` to the same executable. Both only
+inspect an existing private installation. An empty/unreadable store or an old
+CLI rejecting the flags leaves availability unconfirmed. The caller never
+retries through an initializing status/resolve command. Explicit setup and
+legacy installation status retain their initialization behavior.
+
+A complete snapshot without the expected target, a confirmed absent/replaced
+socket, a changed process birth or the disappearance of the original tmux
+server PID provide definitive evidence. Failure to execute tmux, permission,
+malformed or unsupported snapshots, refused connections, cancellation and
+transient identity reads cannot establish that a terminal ended. A move within
+the strong target’s permitted scope is resolved to its current location. If
+it moves again before strict verification, verify fails and the caller may retry.
+Preflight performs no select, attach, terminal creation, API lookup or cleanup.
+
 ## Remote interactions
 
 [Interaction wire v1](interaction-v1.md) defines the independent 64 KiB SSH
@@ -851,3 +868,50 @@ Codex attribution protection. No API runtime change, migration or deployment is
 needed for this optional ciphertext extension. Upgrade affected owned adapters
 alongside CLI; old strict adapters/CLI combinations and activation requirements
 are documented in [compatibility](compatibility.md).
+
+## Local SSH message body protocol 1
+
+A capable installation advertises `message_body_protocols: [1]` in
+`status --installation-json --read-only`. Clients check the actual installation
+and CLI path before issuing `message read --stdin-frame` on a separate
+authenticated non-PTY SSH stream. Unknown command/flag means unsupported; use
+the authenticated summary. The request uses the existing four-byte big-endian
+length and 16 KiB maximum. There is no path, command, transcript or latest lookup.
+
+The request is an object containing version `v:1`, `api_url` (exact paired
+HTTPS origin without trailing slash), `installation_id`, `pair_id`, `event_id`,
+`envelope_digest`, `nonce` (fresh opaque ID), `expires_at` (Unix seconds, strictly
+after server time and at most 60 seconds ahead) and `proof`. Compute lower-case
+hex SHA-256 of the UTF-8 LF-joined original envelope AAD, envelope nonce and
+ciphertext (the last two as their original standard Base64 strings) for
+`envelope_digest`. Both original envelope versions keep their existing AAD.
+Derive a 32-byte key with HKDF-SHA256 from the pair encryption key, UTF-8 pair
+ID as salt and UTF-8 `mobterm/message-body/1` as info. Sign the UTF-8 LF-join
+of these literal values, in order, with no trailing LF:
+
+```text
+mobterm/message-body/1
+api_url
+installation_id
+pair_id
+event_id
+envelope_digest
+nonce
+expires_at
+```
+
+Use unpadded decimal for seconds and standard padded Base64 for the HMAC-SHA256
+proof. Fields are restricted to the existing HTTPS origin or ASCII IDs, digest,
+and integer formats. See the [interoperability vector](../testdata/message-body-v1.json).
+
+Success responses echo v, api_url, installation_id, pair_id, event_id,
+envelope_digest and nonce. Status is `available`, `missing` (no retained
+verified original, including failed save or eviction), `too_large`, `denied`
+(binding/proof mismatch) or `unavailable` (local read temporarily failed).
+Malformed requests fail the command. Only available carries `body_base64`,
+`byte_count`, lower-case hex SHA-256 `digest` and `expires_at` (original archive
+expiry). Limit stdout to 768 KiB including JSON before decoding. Match every
+echoed identity and nonce, enforce a 512 KiB decoded limit, validate UTF-8,
+length and digest. The digest checks integrity; SSH and the pair proof
+authorize the original read. A new archive entry is never inferred from a
+matching session or summary.

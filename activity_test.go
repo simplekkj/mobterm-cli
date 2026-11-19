@@ -110,7 +110,7 @@ func TestMalformedCapabilitiesNeverDowngrade(t *testing.T) {
 	}))
 	defer server.Close()
 	p.APIURL = server.URL
-	if _, err := runCapabilities(context.Background(), API{server.Client()}, p); err == nil {
+	if _, err := runCapabilities(context.Background(), testStore(t), API{server.Client()}, p); err == nil {
 		t.Fatal("malformed receipt treated as legacy")
 	}
 }

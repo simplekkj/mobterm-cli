@@ -171,6 +171,16 @@ func TestLiveTmuxMoveRespawnAndProcessProof(t *testing.T) {
 	}); err == nil {
 		t.Fatal("same PID with changed birth accepted")
 	}
+	calls = 0
+	if _, _, err := captureTmuxProcess(ctx, id, socket, pane, func(pid int) (string, error) {
+		calls++
+		if calls == 2 {
+			return "", errors.New("temporary birth lookup failure")
+		}
+		return original.OccupantID, nil
+	}); err == nil || targetErrorCode(err) != "target_query_unavailable" {
+		t.Fatal("temporary second birth lookup was treated as replacement", err)
+	}
 	if !strongTmuxOccupant.MatchString(original.OccupantID) {
 		t.Fatal("missing strong occupant")
 	}
@@ -233,12 +243,90 @@ func TestHerdrTerminalMoveAndDuplicate(t *testing.T) {
 	}
 }
 
-func TestTargetStructuredFailureClassification(t *testing.T) {
-	for message, want := range map[string]string{"target_upgrade_required": "target_upgrade_required", "installation replaced": "installation_replaced", "terminal target replaced": "target_invalid", "tmux pane missing or has ambiguous membership": "target_invalid", "Herdr target missing or ambiguous": "target_invalid", "process_birth_unavailable": "target_query_unavailable", "target query failed": "target_query_unavailable"} {
-		if got := targetErrorCode(errors.New(message)); got != want {
-			t.Fatal(message, got)
+func TestReadOnlyQueriesNeverInitialize(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "absent")
+	t.Setenv("MOBTERM_CONFIG_DIR", dir)
+	l := fixtureLocator()
+	l.OccupantID = "tmux-proc-v1:" + strings.Repeat("a", 64)
+	for _, args := range [][]string{{"status", "--installation-json", "--read-only"}, {"target", "resolve", "--stdin-frame", "--read-only"}, {"status", "--read-only", "--json"}, {"status", "--installation-json", "--read-only=false"}} {
+		var out, diag bytes.Buffer
+		if run(args, bytes.NewReader(framed(l)), &out, &diag) == 0 {
+			t.Fatal(args, "accepted missing store")
+		}
+		if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(args, "created store")
 		}
 	}
+	id, err := (Store{dir}).installation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, diag bytes.Buffer
+	if run([]string{"status", "--installation-json", "--read-only"}, nil, &out, &diag) != 0 ||
+		!strings.Contains(out.String(), id) || !strings.Contains(out.String(), `"read_only_target_protocols":[1]`) {
+		t.Fatal("invalid read-only capability receipt", out.String())
+	}
+}
+
+func TestReadOnlyTargetServerExitAndTemporaryFailures(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "mt-target-exit-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(dir, "tmux.sock")
+	binary, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := testStore(t)
+	id, err := s.installation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pane, err := exec.CommandContext(ctx, binary, "-S", socket, "new-session", "-d", "-P", "-F", "#{pane_id}").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer exec.Command(binary, "-S", socket, "kill-server").Run()
+	loc, err := captureTmux(ctx, id, socket, strings.TrimSpace(string(pane)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = exec.CommandContext(ctx, binary, "-S", socket, "kill-session", "-t", loc.WorkspaceID).Run(); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(time.Second); ; {
+		_, err = checkTarget(ctx, s.existingInstallation, bytes.NewReader(framed(loc)), true)
+		if err != nil && targetErrorCode(err) == "target_invalid" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("last tmux server disappearance unconfirmed", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Setenv("PATH", dir)
+	_, err = checkTarget(ctx, s.existingInstallation, bytes.NewReader(framed(loc)), true)
+	if err == nil || targetErrorCode(err) != "target_query_unavailable" {
+		t.Fatal("missing tmux classified as an ended target", err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	_, err = captureHerdr(ctx, id, "fixture", "p")
+	if err == nil || targetErrorCode(err) != "target_invalid" {
+		t.Fatal("missing namespace not recognized", err)
+	}
+}
+
+func TestTargetStructuredFailureClassification(t *testing.T) {
+	for err, want := range map[error]string{targetFailure{"target_upgrade_required", "target_upgrade_required"}: "target_upgrade_required", targetFailure{"installation_replaced", "installation replaced"}: "installation_replaced", invalidTarget("pane missing"): "target_invalid", errors.New("terminal target replaced"): "target_query_unavailable", errors.New("target query failed"): "target_query_unavailable"} {
+		if got := targetErrorCode(err); got != want {
+			t.Fatal(err, got)
+		}
+	}
+
 	s := testStore(t)
 	id, _ := s.installation()
 	t.Setenv("MOBTERM_CONFIG_DIR", s.Dir)

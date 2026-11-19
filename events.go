@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 type hookInput struct {
@@ -26,11 +27,14 @@ type hookInput struct {
 	NotificationType     string `json:"notification_type"`
 }
 type claudeCycle struct {
-	PromptID     string `json:"prompt_id,omitempty"`
-	Summary      string `json:"summary,omitempty"`
-	SummaryCycle string `json:"summary_cycle,omitempty"`
-	Cycle        string `json:"cycle"`
-	Updated      int64  `json:"updated"`
+	StopID       string              `json:"stop_id,omitempty"`
+	BodyTarget   string              `json:"body_target,omitempty"`
+	Bodies       map[string]*bodyRef `json:"bodies,omitempty"`
+	PromptID     string              `json:"prompt_id,omitempty"`
+	Summary      string              `json:"summary,omitempty"`
+	SummaryCycle string              `json:"summary_cycle,omitempty"`
+	Cycle        string              `json:"cycle"`
+	Updated      int64               `json:"updated"`
 }
 
 func parseEvent(ctx context.Context, s Store, source string, payload []byte) (kind, identity string, err error) {
@@ -117,7 +121,7 @@ func parseEvent(ctx context.Context, s Store, source string, payload []byte) (ki
 			}
 			cycle = claudeCycle{Cycle: randomID(), Updated: now, PromptID: p.PromptID}
 			sessions[key] = cycle
-			return "", "", s.writeJSON("claude-cycles.json", sessions)
+			return "", "", saveClaudeCycles(s, sessions)
 		case "Notification":
 			if cycle.Cycle == "" || cycle.PromptID != "" && p.PromptID != "" && cycle.PromptID != p.PromptID {
 				return "", "", nil
@@ -200,11 +204,17 @@ func notify(ctx context.Context, s Store, a API, source string, payload []byte, 
 		return nil, err
 	}
 	summary := ""
+	var body *assistantBody
 	if kind == "turn_completed" {
 		var input hookInput
 		_ = json.Unmarshal(payload, &input)
 		if source == "codex" {
 			summary = cleanMessageSummary(input.LastAssistantMessage)
+			current := assistantBody{}
+			if utf8.Valid(payload) {
+				current = newAssistantBody(input.LastAssistantMessage)
+			}
+			body = &current
 		}
 		if source == "claude" {
 			cycle, _, candidate, e := claudeCycleEvent(ctx, s, input.SessionID, "read", "", input.PromptID)
@@ -236,7 +246,7 @@ func notify(ctx context.Context, s Store, a API, source string, payload []byte, 
 			continue
 		}
 
-		d, e := enqueueDeliverySummary(ctx, s, p, kind, identity, l, source, summary, nativeSource)
+		d, e := enqueueBodyDelivery(ctx, s, p, kind, identity, l, source, summary, nil, body, nativeSource)
 		if e != nil {
 			lastErr = e
 			results = append(results, map[string]any{"v": 1, "pair_id": pid, "state": "not_saved", "error": safeCode(e.Error())})

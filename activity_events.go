@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,9 +11,12 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 type activityInput struct {
+	CompletionBody        string          `json:"completion_body_base64,omitempty"`
+	CompletionTooLarge    bool            `json:"completion_body_too_large,omitempty"`
 	AgentID               string          `json:"agent_id,omitempty"`
 	AgentType             string          `json:"agent_type,omitempty"`
 	TranscriptPath        string          `json:"transcript_path,omitempty"`
@@ -144,6 +148,21 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 		default:
 			return a, p, nil
 		}
+		if p.CompletionBody != "" || p.CompletionTooLarge {
+			if a.Reminder != "turn_completed" || source == "opencode" && p.Event != "session.execution.succeeded" || source == "pi" && p.Event != "agent_settled" {
+				return a, p, errors.New("invalid_native_completion")
+			}
+			if p.CompletionTooLarge {
+				a.Body.TooLarge = true
+			} else if len(p.CompletionBody) <= base64.StdEncoding.EncodedLen(bodyLimit) {
+				data, decodeErr := base64.StdEncoding.Strict().DecodeString(p.CompletionBody)
+				if decodeErr == nil && base64.StdEncoding.EncodeToString(data) == p.CompletionBody {
+					a.Body = newAssistantBody(string(data))
+				}
+			} else {
+				a.Body.TooLarge = true
+			}
+		}
 		if p.RequestID != "" && !valid(p.RequestID) {
 			return a, p, errors.New("invalid_request_identity")
 		}
@@ -201,12 +220,17 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 		}
 	case "NotifyComplete":
 		a.Summary = cleanMessageSummary(p.CodexAssistantMessage)
+		if source == "codex" && p.Type == "agent-turn-complete" && p.AgentID == "" && utf8.Valid(raw) {
+			a.Body = newAssistantBody(p.CodexAssistantMessage)
+		}
 		a.State = "turn_completed"
 		a.Reminder = "turn_completed"
 		a.Occurrence = digest("codex\x00" + p.SessionID + "\x00" + p.TurnID)
 	case "Notification":
 		if source == "claude" && p.NotificationType == "idle_prompt" {
-			cycle, stopped, summary, e := claudeCycleEvent(ctx, s, p.SessionID, "read", "", p.PromptID)
+			var stop claudeBodyCapture
+			cycle, stopped, summary, e := claudeCycleEvent(ctx, s, p.SessionID, "read", "", p.PromptID, &stop)
+			a.ClaudeStop = stop.id
 			if e != nil {
 				return a, p, e
 			}
@@ -235,7 +259,20 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 		if source != "claude" {
 			return a, p, nil
 		}
-		_, _, _, err := claudeCycleEvent(ctx, s, p.SessionID, "stop", cleanMessageSummary(p.LastAssistantMessage), p.PromptID)
+		var capture claudeBodyCapture
+		if p.LastAssistantMessage != "" && utf8.Valid(raw) {
+			if id, e := s.existingInstallation(); e == nil {
+				// A slow optional probe must leave time to record the base Stop.
+				probe, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
+				l, probeErr := captureTarget(probe, id)
+				cancel()
+				if probeErr == nil && l.OccupantID != "" && l.validate() == nil {
+					capture.locator = l
+					capture.body = newAssistantBody(p.LastAssistantMessage)
+				}
+			}
+		}
+		_, _, _, err := claudeCycleEvent(ctx, s, p.SessionID, "stop", cleanMessageSummary(p.LastAssistantMessage), p.PromptID, &capture)
 		return a, p, err // Only idle after this cycle's Stop can confirm completion.
 	default:
 		return a, p, nil
@@ -294,7 +331,7 @@ func claudeActivityCycle(ctx context.Context, s Store, session string, stop bool
 	cycle, stopped, _, err := claudeCycleEvent(ctx, s, session, action, "", "")
 	return cycle, stopped, err
 }
-func claudeCycleEvent(ctx context.Context, s Store, session, action, summary, promptID string) (string, bool, string, error) {
+func claudeCycleEvent(ctx context.Context, s Store, session, action, summary, promptID string, capture ...*claudeBodyCapture) (string, bool, string, error) {
 	unlock, err := s.lock(ctx)
 	if err != nil {
 		return "", false, "", err
@@ -318,20 +355,44 @@ func claudeCycleEvent(ctx context.Context, s Store, session, action, summary, pr
 	}
 	switch action {
 	case "stop":
+		// A duplicate Stop in the same still-stopped cycle has no new
+		// ownership. Only an intervening resume starts a new candidate.
+		if cycle.StopID != "" && stops[key] == cycle.Cycle {
+			return cycle.Cycle, true, cycle.Summary, nil
+		}
 		if len(stops) > 256 {
 			stops = map[string]string{}
 		}
 		stops[key] = cycle.Cycle
+		cycle.StopID = randomID()
+		cycle.BodyTarget = ""
+		cycle.Bodies = nil
+		if len(capture) > 0 && capture[0].locator.OccupantID != "" && cycle.PromptID == promptID {
+			c := capture[0]
+			cycle.BodyTarget = nativeTargetIdentity("", c.locator)
+			cycle.Bodies = map[string]*bodyRef{}
+			pairs, readErr := s.pairs()
+			if readErr == nil {
+				for id, pair := range pairs {
+					if pair.Status == "active" && pair.InstallationID == c.locator.InstallationID {
+						cycle.Bodies[id] = s.freezeBody(pair, c.body, time.Now().Unix())
+					}
+				}
+			}
+		}
 		cycle.Summary = cleanMessageSummary(summary)
 		cycle.SummaryCycle = cycle.Cycle
 	case "resume":
 		delete(stops, key)
+		cycle.StopID = ""
+		cycle.BodyTarget = ""
+		cycle.Bodies = nil
 		cycle.Summary = ""
 		cycle.SummaryCycle = ""
 	}
 	if action != "read" {
 		cycles[key] = cycle
-		if err = s.writeJSON("claude-cycles.json", cycles); err != nil {
+		if err = saveClaudeCycles(s, cycles); err != nil {
 			return "", false, "", err
 		}
 		if err = s.writeJSON("claude-stops-v2.json", stops); err != nil {
@@ -341,6 +402,9 @@ func claudeCycleEvent(ctx context.Context, s Store, session, action, summary, pr
 	stopped := stops[key] == cycle.Cycle
 	if !stopped || cycle.SummaryCycle != cycle.Cycle {
 		return cycle.Cycle, stopped, "", nil
+	}
+	if len(capture) > 0 && cycle.PromptID == promptID {
+		capture[0].id = cycle.StopID
 	}
 	return cycle.Cycle, stopped, cycle.Summary, nil
 }
@@ -443,4 +507,42 @@ func observe(ctx context.Context, s Store, api API, source string, raw []byte) (
 		return nil, receiveActivity(ctx, s, l, a)
 	}
 	return nil, publishActivity(ctx, s, api, l, a)
+}
+
+type claudeBodyCapture struct {
+	id      string
+	locator Locator
+	body    assistantBody
+}
+
+// Called while accepting the idle occurrence under the Store lock. A stop
+// replaced after parsing idle cannot supply text to that earlier observation.
+func (s Store) claudeBodies(a Activity, l Locator) map[string]*bodyRef {
+	var cycles map[string]claudeCycle
+	var stops map[string]string
+	key := digest(a.Session)
+	if s.readJSON("claude-cycles.json", &cycles) != nil || s.readJSON("claude-stops-v2.json", &stops) != nil {
+		return nil
+	}
+	c := cycles[key]
+	if a.ClaudeStop == "" || c.StopID != a.ClaudeStop || c.Cycle != a.Run || stops[key] != a.Run || c.BodyTarget != nativeTargetIdentity("", l) || c.Updated+86400 <= time.Now().Unix() {
+		return nil
+	}
+	return c.Bodies
+}
+
+// Optional archive references cannot consume the configuration budget reserved
+// for the native stop/idle state. Omitted references have no read authority.
+func saveClaudeCycles(s Store, cycles map[string]claudeCycle) error {
+	err := s.writeJSON("claude-cycles.json", cycles)
+	if err == nil || err.Error() != "configuration exceeds size limit" {
+		return err
+	}
+	for key, c := range cycles {
+		c.Bodies = nil
+		c.BodyTarget = ""
+		c.StopID = ""
+		cycles[key] = c
+	}
+	return s.writeJSON("claude-cycles.json", cycles)
 }

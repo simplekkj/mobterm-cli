@@ -46,7 +46,10 @@ func (s Store) retirePairIfCurrent(ctx context.Context, id, reason string, pendi
 		return err
 	}
 	delete(pairs, id)
-	return s.writeJSON("pairs.json", pairs)
+	if err = s.writeJSON("pairs.json", pairs); err != nil {
+		return err
+	}
+	return s.pruneBodies("", digest(strings.TrimSuffix(p.APIURL, "/")+"\n"+id), time.Now().Unix(), 0, 0)
 }
 func reconcilePairs(ctx context.Context, s Store, a API, id string) (map[string]any, error) {
 	pairs, err := s.pairs()
@@ -165,6 +168,9 @@ func retireLocalPair(ctx context.Context, s Store, in io.Reader) (map[string]any
 		if err = s.writeJSON("pairs.json", pairs); err != nil {
 			return nil, err
 		}
+	}
+	if err = s.pruneBodies("", digest(strings.TrimSuffix(p.APIURL, "/")+"\n"+p.PairID), time.Now().Unix(), 0, 0); err != nil {
+		return nil, err
 	}
 	persisted, err := s.pairs()
 	if err != nil {

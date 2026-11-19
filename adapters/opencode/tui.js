@@ -46,6 +46,26 @@ const messageSummary = (content) => {
   }
 };
 
+// This optional extension belongs to the current completed assistant message.
+// Reject oversized input before joining/encoding it. Preserve text-part order.
+const completionBody = (parts) => {
+  try {
+    if (!Array.isArray(parts)) return;
+    const chunks = [];
+    let size = 0;
+    for (const part of parts) {
+      if (part?.type !== "text") continue;
+      if (typeof part.text !== "string" || !part.text.isWellFormed()) return;
+      if (!part.text.length) continue;
+      if (/^<(?:think|thinking|analysis|reasoning)(?:\s|>)/i.test(part.text.trimStart())) return;
+      size += Buffer.byteLength(part.text);
+      if (size > 512 * 1024) return { completion_body_too_large: true };
+      chunks.push(part.text);
+    }
+    if (size) return { completion_body_base64: Buffer.from(chunks.join("")).toString("base64") };
+  } catch { /* The base event remains deliverable without the extension. */ }
+};
+
 // One child and at most eight queued jobs; callbacks never await remote HTTP.
 function bridge(source, warn) {
   let stopped = false, active, warned = false;
@@ -62,16 +82,16 @@ function bridge(source, warn) {
       }
       if (Buffer.byteLength(body) > 4096) { diagnostic(); queueMicrotask(drain); return; }
       const child = spawn(executable, ["notify", "--source", source], {
-        env: { ...process.env, MOBTERM_CONFIG_DIR: store },
-        stdio: ["pipe", "ignore", "ignore"], shell: false,
+        env: { ...process.env, MOBTERM_CONFIG_DIR: store, MOBTERM_NATIVE_COMPLETION: job.extension ? "1" : "0" },
+        stdio: ["pipe", job.extension ? "pipe" : "ignore", "ignore"], shell: false,
       });
       const running = { child, cancelled: false };
       active = running;
       const timer = running.timer = setTimeout(() => { diagnostic(); child.kill("SIGKILL"); }, 10000);
-      let finished = false;
+      let finished = false, handshake;
       const finish = (failed) => {
         if (finished) return;
-        finished = true; clearTimeout(timer);
+        finished = true; clearTimeout(timer); clearTimeout(handshake);
         if (failed && !running.cancelled) diagnostic();
         if (active === running) active = undefined;
         queueMicrotask(drain);
@@ -79,11 +99,36 @@ function bridge(source, warn) {
       child.once("error", () => finish(true));
       child.once("close", (code) => finish(code !== 0));
       child.stdin.on("error", () => { if (!running.cancelled) diagnostic(); child.kill("SIGKILL"); });
-      child.stdin.end(body);
+      if (!job.extension) {
+        child.stdin.end(body);
+      } else {
+        // Negotiate with this exact child. A binary replaced between events
+        // cannot receive fields its strict parser rejects. Write stdin once.
+        let sent = false, reply = "";
+        const send = (extended) => {
+          if (sent || finished || running.cancelled) return;
+          sent = true;
+          clearTimeout(handshake);
+          if (!job.valid()) { running.cancelled = true; child.kill("SIGKILL"); return; }
+          if (extended) {
+            try {
+              const candidate = JSON.stringify({...JSON.parse(body), ...job.extension});
+              if (Buffer.byteLength(candidate) <= 1024 * 1024) body = candidate;
+            } catch { /* Keep the bounded old-shape event. */ }
+          }
+          child.stdin.end(body);
+        };
+        handshake = setTimeout(() => send(false), 500);
+        child.stdout.on("data", chunk => {
+          if (sent || chunk.length + reply.length > 64) { send(false); return; }
+          reply += chunk.toString("ascii");
+          if (reply.includes("\n")) send(reply === "mobterm/message-body/1\n");
+        });
+      }
     } catch { active = undefined; diagnostic(); queueMicrotask(drain); }
   };
   return {
-    enqueue(payload, valid) {
+    enqueue(payload, valid, extension) {
       if (stopped) return;
       const critical = ["session.execution.succeeded","session.execution.failed","session.execution.interrupted","permission.asked","form.created","agent_settled","ui_prompt_start","permission.replied","form.replied","form.cancelled"].includes(payload.event);
       // A resolved/invalidated pending request must not occupy the bounded
@@ -93,7 +138,7 @@ function bridge(source, warn) {
         const replace=queue.findIndex(job=>!job.critical);
         if(critical&&replace>=0)queue.splice(replace,1);else{diagnostic();return;}
       }
-      const job={payload,valid,critical};
+      const job={payload,valid,critical,extension};
       // Keep chronological events in a run; reserve capacity by dropping only
       // intermediate observations, never preempt a pending business reminder.
       queue.push(job); queueMicrotask(drain);
@@ -182,7 +227,7 @@ export default Plugin.define({
       if (!current?.run || current.terminal) return;
       const epoch = routeEpoch, location = locationKey(context.data.session.get(sessionID)?.location);
       if (event.location && locationKey(event.location) !== location) return;
-      current.summary = undefined; current.messageID = undefined;
+      current.summary = undefined; current.body = undefined; current.messageID = undefined;
       transport.enqueue({adapter_revision:2,runtime_version:version,event:name,session_id:sessionID,
         run_id:current.run,event_id:event.id,instance_id:memory.instance,...extra},
         () => alive && epoch === routeEpoch && root(route()) === sessionID && locationKey(context.data.session.get(sessionID)?.location) === location);
@@ -194,15 +239,17 @@ export default Plugin.define({
           !validID(event.data.assistantMessageID)) return;
       const location = locationKey(context.data.session.get(sessionID)?.location);
       if (event.location && locationKey(event.location) !== location) return;
-      current.summary = undefined;
+      current.summary = undefined; current.body = undefined;
       if (!ended) { current.messageID = event.data.assistantMessageID; current.summaryLocation = location; return; }
       if (current.messageID !== event.data.assistantMessageID || current.summaryLocation !== location) return;
       // Read exactly this step's assistant from the official synchronous cache.
       // Missing cache entries degrade to status; never sync/scan old messages.
       try {
         const message = context.data.session.message?.get(sessionID, current.messageID);
-        if (message?.id === current.messageID && message.type === "assistant")
+        if (message?.id === current.messageID && message.type === "assistant") {
           current.summary = messageSummary(message.content);
+          current.body = completionBody(message.content);
+        }
       } catch { /* Optional content cannot interrupt completion. */ }
     };
     const stableJSON = value => {
@@ -357,8 +404,8 @@ export default Plugin.define({
           pendingObservations.set(requestKey,{payload,valid:validResolved,location});
         }
         if (nativeType === "permission.asked" || nativeType === "form.created") void startInteraction(payload,requestID,eventLocation,valid,nativeType === "form.created");
-        else transport.enqueue(payload, valid);
-        if (completion) { if (generation) generation.terminal=true; forgetRequests(sessionID); }
+        else transport.enqueue(payload, valid, completion && generation && generation.summaryLocation === location ? generation.body : undefined);
+        if (completion) { if (generation) { generation.terminal = true; generation.body = undefined; } forgetRequests(sessionID); }
       } catch { /* A changed upstream schema must never interrupt the TUI. */ }
     };
     const dispose = [];
@@ -378,7 +425,7 @@ export default Plugin.define({
         disposeRoute = release;
         createEffect(() => {
           const current = route();
-          if (current !== previousRoute) { previousRoute = current; routeEpoch++; transport.cancel(); pendingObservations.clear(); for (const current of lifecycles.values()) {current.summary=undefined;current.messageID=undefined;} for(const child of approvalChildren.values())child.kill("SIGTERM"); approvalChildren.clear(); }
+          if (current !== previousRoute) { previousRoute = current; routeEpoch++; transport.cancel(); pendingObservations.clear(); for (const current of lifecycles.values()) {current.summary=undefined;current.body=undefined;current.messageID=undefined;} for(const child of approvalChildren.values())child.kill("SIGTERM"); approvalChildren.clear(); }
         });
       });
       for (const [type, handler] of [

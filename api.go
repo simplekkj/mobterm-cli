@@ -120,6 +120,40 @@ func (a API) request(ctx context.Context, p Pair, method, path string, body any)
 	}
 	return v, nil
 }
+
+// Pair-scoped reads can be the first place this installation learns that
+// archived replies have lost their authority. Commit the same retirement
+// marker used by delivery/reconcile before returning the observed result.
+func (a API) pairQuery(ctx context.Context, s Store, p Pair, method, path string, body any) (map[string]any, error) {
+	result, err := a.request(ctx, p, method, path, body)
+	reason := ""
+	var remote *APIError
+	if errors.As(err, &remote) && remote.Status == 410 && (remote.Code == "pair_revoked" || remote.Code == "pair_expired") {
+		reason = strings.TrimPrefix(remote.Code, "pair_")
+	} else if err == nil && result["pair_id"] == p.PairID {
+		installation, _ := result["installation_id"].(string)
+		if opaqueID.MatchString(installation) && installation != p.InstallationID {
+			reason = "installation_replaced"
+		} else if installation == p.InstallationID && path == "/v1/pairs/"+p.PairID {
+			state, _ := result["status"].(string)
+			if state == "revoked" || state == "expired" {
+				reason = state
+			}
+		}
+	}
+	if reason != "" {
+		if saveErr := s.retirePairIfCurrent(ctx, p.PairID, reason, false, &p); saveErr != nil {
+			return result, errors.Join(err, saveErr)
+		}
+		// The status command consumes its authenticated document to distinguish
+		// revoked, expired and installation_changed from a network failure.
+		if err == nil && path != "/v1/pairs/"+p.PairID {
+			err = errors.New("pair identity retired")
+		}
+	}
+	return result, err
+}
+
 func (a API) send(ctx context.Context, p Pair, e Envelope) (map[string]any, error) {
 	var v map[string]any
 	var err error

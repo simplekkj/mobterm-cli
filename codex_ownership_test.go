@@ -276,7 +276,7 @@ func TestCodexOwnershipThroughDurableNotification(t *testing.T) {
 			id, _ := s.installation()
 			pair := testPair(id, "")
 			var events []Envelope
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasSuffix(r.URL.Path, "capabilities") {
 					printJSON(w, activityCaps(pair))
 					return
@@ -355,6 +355,7 @@ func TestCodexOwnershipThroughDurableNotification(t *testing.T) {
 			if len(events) != 1 || summaryPlaintext(t, pair, events[0])["summary"] != "First root reply" {
 				t.Fatal("root notification lost/frozen content replaced", len(events))
 			}
+			checkTestBody(t, s, pair, events[0], "First root reply")
 			// A resume/fork-style completion without starting Hooks is independently
 			// admitted from root metadata, even immediately after another short turn.
 			writeCodexMetadata(t, os.Getenv("CODEX_HOME"), "root", map[string]any{"source": "cli", "forked_from_id": "prior"})

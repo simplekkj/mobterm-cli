@@ -197,26 +197,38 @@ func (s Store) writeJSON(name string, v any) error {
 	}
 	return atomicWrite(filepath.Join(s.Dir, name), append(b, '\n'), 0600)
 }
+
+type storedInstallation struct {
+	V  int    `json:"v"`
+	ID string `json:"installation_id"`
+}
+
+// Automatic queries may inspect an existing private store, never bootstrap one.
+func (s Store) existingInstallation() (string, error) {
+	i, err := os.Lstat(s.Dir)
+	if err != nil {
+		return "", err
+	}
+	if !i.IsDir() || i.Mode().Perm()&0077 != 0 {
+		return "", errors.New("invalid private store")
+	}
+	var v storedInstallation
+	if err := s.readJSON("installation.json", &v); err != nil {
+		return "", err
+	}
+	if v.V != 1 || !opaqueID.MatchString(v.ID) {
+		return "", errors.New("invalid installation identity")
+	}
+	return v.ID, nil
+}
+
 func (s Store) installation() (string, error) {
 	if err := ensureDir(s.Dir, true); err != nil {
 		return "", err
 	}
-	var v struct {
-		V  int    `json:"v"`
-		ID string `json:"installation_id"`
-	}
-	read := func() (string, error) {
-		if err := s.readJSON("installation.json", &v); err != nil {
-			return "", err
-		}
-		if v.V != 1 || !opaqueID.MatchString(v.ID) {
-			return "", errors.New("invalid installation identity")
-		}
-		return v.ID, nil
-	}
 	// Existing identity is immutable and written atomically. A read must not
 	// queue behind run/outbox fsyncs before every high-frequency tool Hook.
-	if id, err := read(); !errors.Is(err, os.ErrNotExist) {
+	if id, err := s.existingInstallation(); !errors.Is(err, os.ErrNotExist) {
 		return id, err
 	}
 	ctx, c := context.WithTimeout(context.Background(), 2*time.Second)
@@ -227,11 +239,15 @@ func (s Store) installation() (string, error) {
 	}
 	defer unlock()
 	// Concurrent first use still chooses exactly one identity under Store.lock.
-	if id, err := read(); !errors.Is(err, os.ErrNotExist) {
+	if id, err := s.existingInstallation(); !errors.Is(err, os.ErrNotExist) {
 		return id, err
 	}
-	v.V = 1
-	v.ID = randomID()
+	v := storedInstallation{V: 1, ID: randomID()}
+	// With no installation identity on disk, reads are already blocked. Reclaim
+	// the previous installation's private bodies before publishing a new ID.
+	if err := s.pruneBodies(v.ID, "", time.Now().Unix(), 0, 0); err != nil {
+		return "", err
+	}
 	return v.ID, s.writeJSON("installation.json", v)
 }
 func (s Store) pairs() (map[string]Pair, error) {

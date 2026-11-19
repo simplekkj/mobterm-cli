@@ -88,7 +88,7 @@ func claudeNotifyEnvironment(t *testing.T) {
 	dir := t.TempDir()
 	for name, script := range map[string]string{
 		"claude": "#!/bin/sh\n[ \"$1\" = --version ] || exit 1\nprintf '%s\\n' \"$FIXTURE_CLAUDE_VERSION\"\n",
-		"tmux":   "#!/bin/sh\n[ \"$1\" = -S ] && [ \"$2\" = /fixture/tmux.sock ] && [ \"$3\" = list-panes ] || exit 1\nprintf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' /fixture/tmux.sock 123:456:789 '$1' '@2' '%3' \"$FIXTURE_PANE_PID\"\n",
+		"tmux":   "#!/bin/sh\n[ \"$1\" = -u ] && [ \"$2\" = -S ] && [ \"$3\" = /fixture/tmux.sock ] && [ \"$4\" = list-panes ] || exit 1\nprintf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' /fixture/tmux.sock 123:456:789 '$1' '@2' '%3' \"$FIXTURE_PANE_PID\"\n",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0700); err != nil {
 			t.Fatal(err)

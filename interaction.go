@@ -138,9 +138,9 @@ func readInteractionFrame(ctx context.Context, in io.Reader, v any) error {
 		return errors.New("interaction_frame_cancelled")
 	}
 }
-func interactionCapabilities(ctx context.Context, api API, p Pair) (InteractionCapabilities, error) {
+func interactionCapabilities(ctx context.Context, s Store, api API, p Pair) (InteractionCapabilities, error) {
 	var c InteractionCapabilities
-	m, e := api.request(ctx, p, "GET", "/v2/pairs/"+p.PairID+"/interaction-capabilities", nil)
+	m, e := api.pairQuery(ctx, s, p, "GET", "/v2/pairs/"+p.PairID+"/interaction-capabilities", nil)
 	if e != nil {
 		return c, e
 	}
@@ -207,7 +207,7 @@ func interactionEligible(ctx context.Context, s Store, api API, p Pair, r Intera
 	if e != nil || m[p.PairID][r.Agent][r.Kind] <= 0 {
 		return errors.New("interaction_disabled")
 	}
-	c, e := interactionCapabilities(ctx, api, p)
+	c, e := interactionCapabilities(ctx, s, api, p)
 	if e != nil {
 		return e
 	}
@@ -269,7 +269,7 @@ func interactionConfigure(ctx context.Context, s Store, api API, in io.Reader) (
 		return nil, errors.New("pair_not_active")
 	}
 	if f.Enabled {
-		c, e := interactionCapabilities(ctx, api, p)
+		c, e := interactionCapabilities(ctx, s, api, p)
 		if e != nil {
 			return nil, e
 		}
@@ -377,7 +377,7 @@ func interactionCommand(ctx context.Context, s Store, api API, command string, i
 	// Status remains readable after the target exits or a policy is switched off,
 	// but only by an original participant with a currently active remote pairing.
 	if command == "status" || command == "inspect" && r.State != "pending" {
-		if _, e = interactionCapabilities(ctx, api, p); e != nil {
+		if _, e = interactionCapabilities(ctx, s, api, p); e != nil {
 			return nil, e
 		}
 		return interactionResult(r, f.PairID, command == "inspect"), nil
@@ -397,7 +397,7 @@ func interactionCommand(ctx context.Context, s Store, api API, command string, i
 		}
 		if r.Frame != nil {
 			if r.Frame.DecisionID == f.DecisionID && r.Frame.PairID == f.PairID && r.Frame.Action == f.Action && r.Frame.ResponseDigest == f.ResponseDigest {
-				if _, e = interactionCapabilities(ctx, api, p); e != nil {
+				if _, e = interactionCapabilities(ctx, s, api, p); e != nil {
 					return nil, e
 				}
 				return interactionResult(r, f.PairID, false), nil
@@ -663,7 +663,7 @@ func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a A
 			continue
 		}
 		check, cancel := context.WithTimeout(ctx, 2*time.Second)
-		c, err := interactionCapabilities(check, api, p)
+		c, err := interactionCapabilities(check, s, api, p)
 		cancel()
 		if err == nil && c.Enabled && c.Interactions[a.Agent][spec.Kind] {
 			r.Pairs[id] = c.PolicyGeneration
@@ -969,7 +969,7 @@ func interactionUnavailable(ctx context.Context, s Store, api API, l Locator, a 
 			}
 			if configured[id][a.Agent][spec.Kind] > 0 {
 				check, cancel := context.WithTimeout(ctx, 2*time.Second)
-				grant, err := interactionCapabilities(check, api, p)
+				grant, err := interactionCapabilities(check, s, api, p)
 				cancel()
 				if err == nil && grant.Enabled && grant.Interactions[a.Agent][spec.Kind] {
 					r.Pairs[id] = grant.PolicyGeneration

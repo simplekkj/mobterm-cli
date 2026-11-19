@@ -24,6 +24,10 @@ func flags(name string, args []string, defs func(*flag.FlagSet)) (*flag.FlagSet,
 	defs(f)
 	return f, f.Parse(args)
 }
+func installationStatus(id string) map[string]any {
+	return map[string]any{"v": 1, "installation_id": id, "version": version, "commit": commit, "interaction_protocols": []int{1}, "message_body_protocols": []int{1}, "read_only_target_protocols": []int{1}}
+}
+
 func status(ctx context.Context, s Store, a API, pairID string, installationOnly bool) (result map[string]any, err error) {
 	if pairID != "" && !opaqueID.MatchString(pairID) {
 		return nil, pairingFailure("pair_status", "pair_status_failed", errors.New("invalid pair identity"))
@@ -32,7 +36,7 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 	if err != nil {
 		return nil, pairingFailure("installation", "local_config_failed", err)
 	}
-	result = map[string]any{"v": 1, "installation_id": id, "version": version, "commit": commit, "interaction_protocols": []int{1}}
+	result = installationStatus(id)
 	if installationOnly {
 		return result, nil
 	}
@@ -72,7 +76,7 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 		if p.InstallationID != id || p.PairID != pairID {
 			return result, pairingFailure("pair_status", "installation_changed", errors.New("local pair identity changed"))
 		}
-		remote, err := a.request(ctx, p, "GET", "/v1/pairs/"+pairID, nil)
+		remote, err := a.pairQuery(ctx, s, p, "GET", "/v1/pairs/"+pairID, nil)
 		if remote != nil {
 			for k, v := range remote {
 				result[k] = v
@@ -104,7 +108,7 @@ func status(ctx context.Context, s Store, a API, pairID string, installationOnly
 	list := []map[string]any{}
 	var firstErr error
 	for id, p := range pairs {
-		v, e := a.request(ctx, p, "GET", "/v1/pairs/"+id, nil)
+		v, e := a.pairQuery(ctx, s, p, "GET", "/v1/pairs/"+id, nil)
 		if e != nil {
 			if firstErr == nil {
 				firstErr = e
@@ -167,6 +171,7 @@ func commandTimeout(args []string) time.Duration {
 		var installation, agents bool
 		f, err := flags("status", args[1:], func(f *flag.FlagSet) {
 			f.BoolVar(&installation, "installation-json", false, "")
+			f.Bool("read-only", false, "")
 			f.BoolVar(&agents, "agents-json", false, "")
 			f.Bool("json", false, "")
 			f.String("pair", "", "")
@@ -192,7 +197,7 @@ func commandTimeout(args []string) time.Duration {
 
 func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "mobterm-cli setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | pairs retire --stdin-frame --json | upgrade --version vX.Y.Z | version")
+		fmt.Fprintln(out, "mobterm-cli setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | message read --stdin-frame | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | pairs retire --stdin-frame --json | upgrade --version vX.Y.Z | version")
 		return 0
 	}
 	if args[0] == "version" || args[0] == "--version" {
@@ -288,6 +293,12 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 			}
 			value = nil
 		}
+	case "message":
+		if len(args) != 3 || args[1] != "read" || args[2] != "--stdin-frame" {
+			err = errors.New("message read requires --stdin-frame")
+		} else {
+			value, err = readMessageBody(ctx, s, in)
+		}
 	case "setup":
 		var framed bool
 		f, e := flags("setup", args[1:], func(f *flag.FlagSet) { f.BoolVar(&framed, "stdin-frame", false, "") })
@@ -297,7 +308,9 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 			value, err = setup(ctx, s, a, in)
 		}
 	case "target":
-		if len(args) != 3 || (args[1] != "verify" && args[1] != "resolve") || args[2] != "--stdin-frame" {
+		if len(args) == 4 && args[1] == "resolve" && args[2] == "--stdin-frame" && args[3] == "--read-only" {
+			value, err = checkTarget(ctx, s.existingInstallation, in, true)
+		} else if len(args) != 3 || (args[1] != "verify" && args[1] != "resolve") || args[2] != "--stdin-frame" {
 			err = errors.New("target verify requires --stdin-frame")
 		} else {
 			if args[1] == "resolve" {
@@ -308,10 +321,11 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		}
 	case "status":
 		var pair string
-		var j, installation, agents bool
+		var j, installation, agents, readOnly bool
 		f, e := flags("status", args[1:], func(f *flag.FlagSet) {
 			f.StringVar(&pair, "pair", "", "")
 			f.BoolVar(&j, "json", false, "")
+			f.BoolVar(&readOnly, "read-only", false, "")
 			f.BoolVar(&installation, "installation-json", false, "")
 			f.BoolVar(&agents, "agents-json", false, "")
 		})
@@ -321,14 +335,23 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		invalid := false
 		for _, argument := range args[1:] {
 			name, _, _ := strings.Cut(strings.TrimLeft(argument, "-"), "=")
-			if strings.HasPrefix(argument, "-") && (name == "agents-json" || name == "installation-json" || name == "json" || name == "pair") {
+			if strings.HasPrefix(argument, "-") && (name == "read-only" || name == "agents-json" || name == "installation-json" || name == "json" || name == "pair") {
 				invalid = invalid || seen[name]
 				seen[name] = true
 			}
 		}
 		invalid = invalid || seen["agents-json"] && (!agents || seen["installation-json"] || seen["json"] || seen["pair"])
+		invalid = invalid || seen["read-only"] && (!readOnly || !installation || seen["json"] || seen["pair"] || seen["agents-json"])
 		if e != nil || f.NArg() != 0 || invalid {
 			err = errors.New("invalid status arguments")
+		} else if readOnly {
+			var id string
+			id, err = s.existingInstallation()
+			if err != nil {
+				err = pairingFailure("installation", "local_config_failed", err)
+			} else {
+				value = installationStatus(id)
+			}
 		} else if agents {
 			value, err = discoverAgents(ctx, s)
 		} else {
@@ -347,7 +370,15 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		} else if args[1] == "status" {
 			value, err = outboxSummary(ctx, s, pair)
 		} else {
+			unlock, cleanupErr := s.lock(ctx)
+			if cleanupErr == nil {
+				cleanupErr = s.pruneBodies("", "", time.Now().Unix(), 0, 0)
+				unlock()
+			}
 			value, err = flushOutbox(ctx, s, a, pair, args[1] == "refresh")
+			if err == nil {
+				err = cleanupErr
+			}
 			if pair == "" {
 				if activityErr := flushRunSnapshots(ctx, s, a); err == nil {
 					err = activityErr
@@ -437,6 +468,9 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		} else if source == "codex" && f.NArg() == 1 {
 			payload = []byte(f.Arg(0))
 		} else if (source == "claude" || source == "opencode" || source == "pi") && f.NArg() == 0 {
+			if (source == "pi" || source == "opencode") && os.Getenv("MOBTERM_NATIVE_COMPLETION") == "1" {
+				fmt.Fprintln(out, bodyPurpose)
+			}
 			payload, err = readHook(in)
 		} else {
 			err = errors.New("invalid hook invocation")

@@ -41,7 +41,7 @@ func cachedRunCapabilities(ctx context.Context, s Store, api API, p Pair) (RunCa
 		}
 		return entry.Value, nil
 	}
-	c, err := runCapabilities(ctx, api, p)
+	c, err := runCapabilities(ctx, s, api, p)
 	if err != nil {
 		var ae *APIError
 		if errors.As(err, &ae) && ae.Status == 429 && len(cache) < 128 {

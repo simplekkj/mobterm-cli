@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -22,6 +23,25 @@ var tmuxPane = regexp.MustCompile(`^%[0-9]+$`)
 var tmuxSession = regexp.MustCompile(`^\$[0-9]+$`)
 var tmuxWindow = regexp.MustCompile(`^@[0-9]+$`)
 var herdrSession = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+
+type targetFailure struct{ code, reason string }
+
+func (e targetFailure) Error() string   { return e.reason }
+func invalidTarget(reason string) error { return targetFailure{"target_invalid", reason} }
+
+func targetSocketInfo(path string) (os.FileInfo, error) {
+	i, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, invalidTarget("terminal socket missing")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if i.Mode()&os.ModeSocket == 0 {
+		return nil, invalidTarget("terminal socket replaced")
+	}
+	return i, nil
+}
 
 type limitBuffer struct {
 	bytes.Buffer
@@ -34,13 +54,20 @@ func (b *limitBuffer) Write(p []byte) (int, error) {
 	}
 	return b.Buffer.Write(p)
 }
+
+var errTmuxQuery = errors.New("target query failed")
+
 func commandOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
 	c := exec.CommandContext(ctx, name, args...)
 	out := &limitBuffer{limit: 2 * 1024 * 1024}
 	c.Stdout = out
 	c.Stderr = io.Discard
 	if err := c.Run(); err != nil {
-		return nil, errors.New("target query failed")
+		var exited *exec.ExitError
+		if ctx.Err() == nil && errors.As(err, &exited) {
+			return nil, errTmuxQuery
+		}
+		return nil, errors.New("could not execute target query")
 	}
 	return out.Bytes(), nil
 }
@@ -89,8 +116,13 @@ func captureTmuxProcess(ctx context.Context, id, socket, pane string, birth func
 		return Locator{}, 0, errors.New("invalid tmux environment")
 	}
 	query := func() (Locator, int, error) {
-		out, err := commandOutput(ctx, "tmux", "-S", socket, "list-panes", "-a", "-F", "#{socket_path}\t#{pid}:#{start_time}:#{session_created}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}")
+		out, err := commandOutput(ctx, "tmux", "-u", "-S", socket, "list-panes", "-a", "-F", "#{socket_path}\t#{pid}:#{start_time}:#{session_created}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}")
 		if err != nil {
+			if errors.Is(err, errTmuxQuery) {
+				if _, socketErr := targetSocketInfo(socket); socketErr != nil {
+					return Locator{}, 0, socketErr
+				}
+			}
 			return Locator{}, 0, err
 		}
 		var lines []string
@@ -124,8 +156,13 @@ func captureTmuxProcess(ctx context.Context, id, socket, pane string, birth func
 		return Locator{}, 0, err
 	}
 	nextProof, err := birth(nextPID)
-	if err != nil || before != after || pid != nextPID || proof != nextProof {
-		return Locator{}, 0, errors.New("terminal_target_changed")
+	if err != nil {
+		return Locator{}, 0, err
+	}
+	// A pane may move between windows while its identity is sampled.
+	before.ViewID = after.ViewID
+	if before != after || pid != nextPID || proof != nextProof {
+		return Locator{}, 0, invalidTarget("terminal_target_changed")
 	}
 	after.OccupantID = proof
 	return after, pid, nil
@@ -138,20 +175,20 @@ func parseTmux(id, socket, pane, out string) (Locator, error) {
 		if len(f) != 5 {
 			return Locator{}, errors.New("malformed tmux query")
 		}
-		if f[4] != pane {
-			continue
-		}
 		parts := strings.Split(f[1], ":")
-		if len(parts) != 3 || !intText(parts[0]) || !intText(parts[1]) || !intText(parts[2]) || !tmuxSession.MatchString(f[2]) || !tmuxWindow.MatchString(f[3]) || !filepath.IsAbs(f[0]) {
+		if len(parts) != 3 || !intText(parts[0]) || !intText(parts[1]) || !intText(parts[2]) || !tmuxSession.MatchString(f[2]) || !tmuxWindow.MatchString(f[3]) || !filepath.IsAbs(f[0]) || !tmuxPane.MatchString(f[4]) {
 			return Locator{}, errors.New("invalid tmux identity")
 		}
 		if filepath.Clean(f[0]) != filepath.Clean(socket) {
 			return Locator{}, errors.New("tmux socket identity mismatch")
 		}
+		if f[4] != pane {
+			continue
+		}
 		matches = append(matches, Locator{V: 1, InstallationID: id, Backend: "tmux", Namespace: f[0], ServerIdentity: f[1], WorkspaceID: f[2], ViewID: f[3], PaneID: f[4]})
 	}
 	if len(matches) != 1 {
-		return Locator{}, errors.New("tmux pane missing or has ambiguous membership")
+		return Locator{}, invalidTarget("tmux pane missing or has ambiguous membership")
 	}
 	return matches[0], nil
 }
@@ -190,6 +227,9 @@ func captureHerdr(ctx context.Context, id, namespace, pane string) (Locator, err
 	return captureHerdrTarget(ctx, id, namespace, pane, "")
 }
 func captureHerdrTarget(ctx context.Context, id, namespace, pane, terminal string) (Locator, error) {
+	return queryHerdrTarget(ctx, id, namespace, pane, terminal, "")
+}
+func queryHerdrTarget(ctx context.Context, id, namespace, pane, terminal, expectedSocket string) (Locator, error) {
 	path, err := herdrSocket(namespace)
 	if err != nil {
 		return Locator{}, err
@@ -197,6 +237,12 @@ func captureHerdrTarget(ctx context.Context, id, namespace, pane, terminal strin
 	before, err := socketIdentity(path)
 	if err != nil {
 		return Locator{}, err
+	}
+	if ctx.Err() != nil {
+		return Locator{}, ctx.Err()
+	}
+	if expectedSocket != "" && before != expectedSocket {
+		return Locator{}, invalidTarget("Herdr instance changed")
 	}
 	d := net.Dialer{Timeout: 2 * time.Second}
 	conn, err := d.DialContext(ctx, "unix", path)
@@ -228,8 +274,11 @@ func captureHerdrTarget(ctx context.Context, id, namespace, pane, terminal strin
 		return Locator{}, errors.New("invalid Herdr snapshot")
 	}
 	after, err := socketIdentity(path)
-	if err != nil || before != after {
-		return Locator{}, errors.New("Herdr instance changed")
+	if err != nil {
+		return Locator{}, err
+	}
+	if before != after {
+		return Locator{}, invalidTarget("Herdr instance changed")
 	}
 	return locateHerdr(id, namespace, pane, terminal, before, response.Result.Snapshot)
 }
@@ -240,35 +289,42 @@ func locateHerdr(id, ns, pane, terminal, instance string, s herdrSnapshot) (Loca
 	if (s.Version != "0.9.3" && s.Version != "0.9.1") || s.Protocol != 22 {
 		return Locator{}, errors.New("Herdr notification locator requires verified 0.9.1 or 0.9.3 protocol 22")
 	}
+	if s.Panes == nil {
+		return Locator{}, errors.New("incomplete Herdr snapshot")
+	}
 	var found []Locator
-	seen := map[string]bool{}
-	seenPanes := map[string]bool{}
+	terminals, panes := map[string]int{}, map[string]int{}
+	duplicate := false
 	for _, p := range s.Panes {
-		if p.TerminalID == "" || seen[p.TerminalID] || seenPanes[p.PaneID] {
-			return Locator{}, errors.New("ambiguous Herdr occupant")
+		l := Locator{V: 1, InstallationID: id, Backend: "herdr", Namespace: ns, ServerIdentity: instance, WorkspaceID: p.WorkspaceID, ViewID: p.TabID, PaneID: p.PaneID, TerminalID: p.TerminalID, OccupantID: p.TerminalID}
+		if err := l.validate(); err != nil {
+			return Locator{}, err
 		}
-		seen[p.TerminalID] = true
-		seenPanes[p.PaneID] = true
+		terminals[p.TerminalID]++
+		panes[p.PaneID]++
+		duplicate = duplicate || terminals[p.TerminalID] > 1 || panes[p.PaneID] > 1
 		if terminal != "" && p.TerminalID == terminal || terminal == "" && p.PaneID == pane {
-			l := Locator{V: 1, InstallationID: id, Backend: "herdr", Namespace: ns, ServerIdentity: instance, WorkspaceID: p.WorkspaceID, ViewID: p.TabID, PaneID: p.PaneID, TerminalID: p.TerminalID, OccupantID: p.TerminalID}
-			if err := l.validate(); err != nil {
-				return Locator{}, err
-			}
 			found = append(found, l)
 		}
 	}
-	if len(found) != 1 {
-		return Locator{}, errors.New("Herdr target missing or ambiguous")
+	if len(found) > 1 || len(found) == 1 && (panes[found[0].PaneID] > 1 || terminals[found[0].TerminalID] > 1) {
+		return Locator{}, invalidTarget("ambiguous Herdr occupant")
+	}
+	if duplicate {
+		return Locator{}, errors.New("inconsistent Herdr snapshot")
+	}
+	if len(found) == 0 {
+		return Locator{}, invalidTarget("Herdr target missing")
 	}
 	return found[0], nil
 }
 func verifyTarget(ctx context.Context, s Store, in io.Reader) (map[string]any, error) {
-	return checkTarget(ctx, s, in, false)
+	return checkTarget(ctx, s.installation, in, false)
 }
 func resolveTarget(ctx context.Context, s Store, in io.Reader) (map[string]any, error) {
-	return checkTarget(ctx, s, in, true)
+	return checkTarget(ctx, s.installation, in, true)
 }
-func checkTarget(ctx context.Context, s Store, in io.Reader, resolve bool) (map[string]any, error) {
+func checkTarget(ctx context.Context, installation func() (string, error), in io.Reader, resolve bool) (map[string]any, error) {
 	var expected Locator
 	if err := readFrameContext(ctx, in, &expected); err != nil {
 		return nil, err
@@ -276,27 +332,34 @@ func checkTarget(ctx context.Context, s Store, in io.Reader, resolve bool) (map[
 	if err := expected.validate(); err != nil {
 		return nil, err
 	}
-	id, err := s.installation()
+	id, err := installation()
 	if err != nil {
 		return nil, err
 	}
 	if expected.InstallationID != id {
-		return nil, errors.New("installation replaced")
+		return nil, targetFailure{"installation_replaced", "installation replaced"}
 	}
 	var actual Locator
 	panePID := 0
 	switch expected.Backend {
 	case "tmux":
 		if !strongTmuxOccupant.MatchString(expected.OccupantID) {
-			return nil, errors.New("target_upgrade_required")
+			return nil, targetFailure{"target_upgrade_required", "target_upgrade_required"}
 		}
 		actual, panePID, err = captureTmuxProof(ctx, id, expected.Namespace, expected.PaneID)
-	case "herdr":
-		if resolve {
-			actual, err = captureHerdrTarget(ctx, id, expected.Namespace, "", expected.TerminalID)
-		} else {
-			actual, err = captureHerdr(ctx, id, expected.Namespace, expected.PaneID)
+		// tmux can leave a socket inode after its last session exits. A rejected
+		// connection alone is inconclusive; verify the captured server PID is gone.
+		if errors.Is(err, errTmuxQuery) && ctx.Err() == nil {
+			parts := strings.Split(expected.ServerIdentity, ":")
+			if len(parts) == 3 {
+				pid, parseErr := strconv.Atoi(parts[0])
+				if parseErr == nil && pid > 0 && errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+					return nil, invalidTarget("tmux server exited")
+				}
+			}
 		}
+	case "herdr":
+		actual, err = queryHerdrTarget(ctx, id, expected.Namespace, "", expected.TerminalID, expected.ServerIdentity)
 	default:
 		return nil, errors.New("test has no terminal target")
 	}
@@ -304,15 +367,16 @@ func checkTarget(ctx context.Context, s Store, in io.Reader, resolve bool) (map[
 		return nil, err
 	}
 	comparison := actual
-	if resolve {
-		comparison.ViewID = expected.ViewID
-		if expected.Backend == "herdr" {
-			comparison.WorkspaceID = expected.WorkspaceID
-			comparison.PaneID = expected.PaneID
-		}
+	comparison.ViewID = expected.ViewID
+	if expected.Backend == "herdr" {
+		comparison.WorkspaceID = expected.WorkspaceID
+		comparison.PaneID = expected.PaneID
 	}
 	if comparison != expected {
-		return nil, errors.New("terminal target replaced")
+		return nil, invalidTarget("terminal target replaced")
+	}
+	if !resolve && actual != expected {
+		return nil, errors.New("terminal moved during verification")
 	}
 	result := map[string]any{"v": 1, "status": "valid", "locator": actual}
 	if panePID > 0 {
@@ -325,14 +389,9 @@ func identityText(dev, ino uint64, sec, nsec int64) string {
 }
 
 func targetErrorCode(err error) string {
-	switch err.Error() {
-	case "target_upgrade_required":
-		return "target_upgrade_required"
-	case "installation replaced":
-		return "installation_replaced"
-	case "terminal target replaced", "terminal_target_changed", "tmux pane missing or has ambiguous membership", "Herdr target missing or ambiguous", "ambiguous Herdr occupant", "Herdr instance changed", "tmux socket identity mismatch":
-		return "target_invalid"
-	default:
-		return "target_query_unavailable"
+	var failure targetFailure
+	if errors.As(err, &failure) {
+		return failure.code
 	}
+	return "target_query_unavailable"
 }

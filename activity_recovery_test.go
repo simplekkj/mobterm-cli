@@ -238,7 +238,7 @@ func TestCapabilityCacheAndStateClaimAcrossObservers(t *testing.T) {
 	if requests.Load() != 1 {
 		t.Fatal("capability stampede", requests.Load())
 	}
-	if _, err := runCapabilities(context.Background(), API{server.Client()}, p); err != nil {
+	if _, err := runCapabilities(context.Background(), testStore(t), API{server.Client()}, p); err != nil {
 		t.Fatal(err)
 	}
 	if requests.Load() != 2 {

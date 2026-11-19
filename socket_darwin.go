@@ -2,14 +2,14 @@ package main
 
 import (
 	"errors"
-	"os"
+
 	"syscall"
 )
 
 func socketIdentity(path string) (string, error) {
-	i, e := os.Lstat(path)
-	if e != nil || i.Mode()&os.ModeSocket == 0 {
-		return "", errors.New("Herdr socket missing or replaced")
+	i, e := targetSocketInfo(path)
+	if e != nil {
+		return "", e
 	}
 	s, ok := i.Sys().(*syscall.Stat_t)
 	if !ok {

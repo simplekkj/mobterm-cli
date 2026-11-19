@@ -22,7 +22,7 @@ const output = join(temp, 'events.jsonl');
 const recorder = join(temp, 'notify');
 // A deliberate first-write delay exceeds the former two-second sleep. This
 // proves assertions observe completed children instead of a timing assumption.
-await writeFile(recorder, `#!${process.execPath}\nconst fs=require('node:fs');let b='';process.stdin.on('data',x=>b+=x);process.stdin.on('end',()=>{const first=!fs.existsSync(${JSON.stringify(output)});setTimeout(()=>fs.appendFileSync(${JSON.stringify(output)},b+'\\n'),first?2200:0);});`);
+await writeFile(recorder, `#!${process.execPath}\nconst fs=require('node:fs');if(process.env.MOBTERM_NATIVE_COMPLETION==='1' && fs.existsSync(${JSON.stringify(join(temp,"new-cli"))}))process.stdout.write('mobterm/message-body/1\\n');let b='';process.stdin.on('data',x=>b+=x);process.stdin.on('end',()=>{const first=!fs.existsSync(${JSON.stringify(output)});setTimeout(()=>fs.appendFileSync(${JSON.stringify(output)},b+'\\n'),first?2200:0);});`);
 await chmod(recorder, 0o700);
 const children = new Set();
 const notificationChildren = new Set();
@@ -385,6 +385,7 @@ try {
   assert.equal((await blocked).block,true,'shutdown settles gate immediately without awaiting child close');
   await rm(join(temp,'interaction-policy-v1.json'));
   // Summary candidates belong to the current root/run/step, never a session's last message.
+  await writeFile(join(temp,'new-cli'),'');
   const summaryHost=host(), stopSummary=plugin.setup(summaryHost.context);
   const put=(id,content,type='assistant')=>summaryHost.messages.set(JSON.stringify(['root',id]),{id,type,content});
   const oc=(type,id,sessionID='root')=>summaryHost.emit(type,'summary-'+type+'-'+id,{sessionID,assistantMessageID:id});
@@ -394,8 +395,15 @@ try {
   put('answer',[{type:'reasoning',text:'reasoning must stay private'},{type:'text',text:'\u001b[31m已修复本轮问题。\u001b[0m\n\nSecond paragraph'}]);
   oc('session.step.started','answer');oc('session.step.ended','answer');
   for(const owner of ['child','other','global','unknown','orphan'])oc('session.step.ended','old',owner);
-  assert.equal((await finish('one')).summary,'已修复本轮问题。');
-  assert.deepEqual(summaryHost.messageReads,[['root','answer']],'only precise current root message read');
+  const first = await finish('one');
+  assert.equal(first.summary,'已修复本轮问题。');
+  assert.equal(Buffer.from(first.completion_body_base64,'base64').toString(),summaryHost.messages.get(JSON.stringify(['root','answer'])).content[1].text);
+  await rm(join(temp,'new-cli'));
+  oc('session.execution.started','rollback');oc('session.step.started','answer');oc('session.step.ended','answer');
+  const legacy = await finish('rollback');
+  assert.equal(legacy.summary, first.summary); assert.equal(legacy.completion_body_base64,undefined);
+  await writeFile(join(temp,'new-cli'),'');
+  assert.deepEqual(summaryHost.messageReads,[['root','answer'],['root','answer']],'only precise current root message read');
   oc('session.execution.started','two');oc('session.step.ended','old');
   assert.equal((await finish('two')).summary,undefined,'late prior step cannot populate a new run');
   oc('session.execution.started','three');oc('session.step.started','answer');oc('session.step.ended','answer');
@@ -426,11 +434,23 @@ try {
   const summaryCallbacks=new Map();extension({on:(name,f)=>summaryCallbacks.set(name,f)});
   let piSession='pi-summary';const summaryContext={mode:'tui',sessionManager:{getSessionId:()=>piSession},ui:{notify:()=>{}}};
   const pe=(name,event={})=>summaryCallbacks.get(name)?.(event,summaryContext);
-  const pm=content=>pe('message_end',{message:{role:'assistant',content}});
+  const pm=(content,stopReason='stop')=>{const message={role:'assistant',content,stopReason};pe('message_start',{message});pe('message_end',{message});};
   const pf=async()=>{pe('agent_settled',{aborted:false});return (await allEvents()).filter(e=>e.session_id===piSession&&e.event==='agent_settled').at(-1);};
   pe('session_start');pe('agent_start');pm([{type:'thinking',thinking:'private'},{type:'text',text:'Pi current reply'}]);
   pe('agent_end');pe('turn_end');assert.equal((await allEvents()).some(e=>e.session_id===piSession&&e.event==='agent_settled'),false);
-  assert.equal((await pf()).summary,'Pi current reply');
+  const piReply=await pf();
+  assert.equal(piReply.summary,'Pi current reply');
+  assert.equal(Buffer.from(piReply.completion_body_base64,'base64').toString(),'Pi current reply');
+  pe('agent_start');
+  const oldMessage={role:'assistant',timestamp:4321,content:[{type:'text',text:'old round'}]};
+  pe('message_start',{message:oldMessage});pe('agent_start');pe('message_end',{message:oldMessage});
+  assert.equal((await pf()).completion_body_base64,undefined,'late message_end cannot capture a previous round');
+  pe('agent_start');pm([{type:'text',text:'中\n'},{type:'tool',text:'secret'},{type:'text',text:'  🐱'}]);
+  assert.equal(Buffer.from((await pf()).completion_body_base64,'base64').toString(),'中\n  🐱');
+  pe('agent_start');pm([{type:'text',text:'partial'}],'length');
+  const partialReply=await pf();assert.equal(partialReply.summary,'partial');assert.equal(partialReply.completion_body_base64,undefined);
+  pe('agent_start');pm([{type:'text',text:'x'.repeat(512*1024+1)}]);
+  const oversized=await pf();assert.equal(oversized.completion_body_too_large,true);assert.equal(oversized.completion_body_base64,undefined);
   pe('agent_start');assert.equal((await pf()).summary,undefined,'new round has no old summary');
   pe('agent_start');pm([{type:'text',text:'stale'}]);pe('tool_execution_start',{toolCallId:'continue',toolName:'read'});
   assert.equal((await pf()).summary,undefined,'tool continuation clears Pi summary');

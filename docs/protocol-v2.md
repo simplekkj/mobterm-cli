@@ -376,3 +376,18 @@ completion means “this response ended”. System summary consent is independen
 local and default off, including when loading an old snapshot. Marker revision 2
 records only actually displayed details, so consent withdrawal can retract the
 matching delivered notification without changing history, unread state or grants.
+
+### Historical full replies
+
+The first accepted completion freezes the locally attributed assistant text
+under its original installation/pair, occurrence, target and run identity.
+The durable intent contains a private file reference, creation time and content
+digest. The outbox transaction binds that reference to the actual final
+envelope fingerprint, including when capability negotiation selects v1. Its
+existing seven-day tombstone keeps the binding after successful handoff clears
+the ciphertext. Retries and later rounds cannot choose a different body or
+renew the retention window. Orphan private files left by an interrupted commit
+have no readable event binding and count toward the same eviction limits.
+An oversized, absent or failed optional body leaves the ordinary notification
+eligible for delivery. Opening this SSH history requires no live terminal or
+unexpired jump authority. See [message read](protocol-v1.md#local-ssh-message-body-protocol-1).

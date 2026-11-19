@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 )
 
 // Only bounded assistant text enters durable state. This is a plain-text
@@ -13,66 +12,13 @@ func cleanMessageSummary(text string) string {
 	if len(text) > 65536 {
 		text = text[:65536]
 	}
-	var b strings.Builder
-	state := 0 // plain, ESC, CSI, OSC, OSC-ESC
-	for _, r := range text {
-		switch state {
-		case 1:
-			if r == '[' {
-				state = 2
-			} else if r == ']' {
-				state = 3
-			} else {
-				state = 0
-			}
-			continue
-		case 2:
-			if r >= 0x40 && r <= 0x7e {
-				state = 0
-			}
-			continue
-		case 3:
-			if r == 7 || r == 0x9c {
-				state = 0
-			} else if r == 27 {
-				state = 4
-			}
-			continue
-		case 4:
-			if r == '\\' {
-				state = 0
-			} else {
-				state = 3
-			}
-			continue
-		}
-		if r == 27 {
-			state = 1
-			continue
-		}
-		if r == 0x9b {
-			state = 2
-			continue
-		}
-		if r == 0x9d {
-			state = 3
-			continue
-		}
-		if r == utf8.RuneError || r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 || r == 0x200e || r == 0x200f || r == 0x061c {
-			continue
-		}
-		if unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t' {
-			continue
-		}
-		b.WriteRune(r)
-	}
 	// Fenced code and attachment-only blocks are not prose. Select the first
 	// prose paragraph, without joining separate paragraphs or code into it.
 	var lines []string
 	fence := ""
 	skipBlock := false
 	thought := ""
-	for _, line := range strings.Split(b.String(), "\n") {
+	for _, line := range strings.Split(strings.ReplaceAll(cleanTerminalText(text), "\ufffd", ""), "\n") {
 		trim := strings.TrimSpace(line)
 		if thought != "" {
 			if strings.Contains(trim, thought) {
@@ -166,4 +112,61 @@ func notificationPayloadSize(e Envelope) int {
 	payload := map[string]any{"aps": map[string]any{"alert": map[string]any{"title": "MobTerm", "loc-key": "agentNotificationNeedsInputAlert"}, "sound": "default", "mutable-content": 1, "badge": 2147483647}, "mobterm": e}
 	raw, _ := json.Marshal(payload)
 	return len(raw) + strings.Count(string(raw), "/")
+}
+
+func cleanTerminalText(text string) string {
+	var b strings.Builder
+	state := 0 // plain, ESC, CSI, OSC, OSC-ESC
+	for _, r := range text {
+		switch state {
+		case 1:
+			if r == '[' {
+				state = 2
+			} else if strings.ContainsRune("]PX^_", r) {
+				state = 3
+			} else {
+				state = 0
+			}
+			continue
+		case 2:
+			if r >= 0x40 && r <= 0x7e {
+				state = 0
+			}
+			continue
+		case 3:
+			if r == 7 || r == 0x9c {
+				state = 0
+			} else if r == 27 {
+				state = 4
+			}
+			continue
+		case 4:
+			if r == '\\' {
+				state = 0
+			} else {
+				state = 3
+			}
+			continue
+		}
+		if r == 27 {
+			state = 1
+			continue
+		}
+		if r == 0x9b {
+			state = 2
+			continue
+		}
+		if r == 0x9d || r == 0x90 || r == 0x98 || r == 0x9e || r == 0x9f {
+			state = 3
+			continue
+		}
+		if r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 || r == 0x200e || r == 0x200f || r == 0x061c {
+			continue
+		}
+		if unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t' {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }

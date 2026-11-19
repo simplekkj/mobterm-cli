@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,9 +28,9 @@ type RunCapabilities struct {
 	} `json:"policy"`
 }
 
-func runCapabilities(ctx context.Context, a API, p Pair) (RunCapabilities, error) {
+func runCapabilities(ctx context.Context, s Store, a API, p Pair) (RunCapabilities, error) {
 	var c RunCapabilities
-	m, err := a.request(ctx, p, "GET", "/v2/pairs/"+p.PairID+"/capabilities", nil)
+	m, err := a.pairQuery(ctx, s, p, "GET", "/v2/pairs/"+p.PairID+"/capabilities", nil)
 	if err != nil {
 		var ae *APIError
 		if errors.As(err, &ae) && ae.Status == 404 {
@@ -83,6 +84,8 @@ type PendingRequest struct {
 }
 
 type Activity struct {
+	Body           assistantBody `json:"-"`
+	ClaudeStop     string        `json:"-"`
 	ChildWait      *claudeChildWait
 	Summary        string
 	CodexRoot      bool
@@ -123,6 +126,7 @@ type StoredRun struct {
 	Approval        *ApprovalHint             `json:"approval,omitempty"`
 }
 type RunIntent struct {
+	Body       *bodyRef   `json:"body,omitempty"`
 	PairID     string     `json:"pair_id"`
 	Key        string     `json:"key"`
 	Occurrence string     `json:"occurrence"`
@@ -399,6 +403,10 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 			delete(db.Intents, ik)
 		}
 	}
+	var stoppedBodies map[string]*bodyRef
+	if a.ClaudeStop != "" {
+		stoppedBodies = s.claudeBodies(a, l)
+	}
 	for pid, pair := range pairs {
 		if pair.Status != "active" || pair.InstallationID != l.InstallationID {
 			continue
@@ -439,7 +447,19 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 			payload.Interaction = a.Interaction
 		}
 		payload = fitRunDisplayBudget(payload)
-		db.Intents[ik] = RunIntent{PairID: pid, Key: key, Occurrence: a.Occurrence, Kind: kind, Payload: payload, ExpiresAt: now + 3600}
+		var body *bodyRef
+		if kind == "turn_completed" {
+			if a.ClaudeStop != "" {
+				body = stoppedBodies[pid]
+			} else {
+				body = s.freezeBody(pair, a.Body, now)
+			}
+		}
+		if body != nil {
+			// Record the original run identity even when negotiation later selects v1.
+			body.Source = digest(strings.Join([]string{key, a.Occurrence, stream, fmt.Sprint(r.Revision)}, "\x00"))
+		}
+		db.Intents[ik] = RunIntent{Body: body, PairID: pid, Key: key, Occurrence: a.Occurrence, Kind: kind, Payload: payload, ExpiresAt: now + 3600}
 		if kind != "state" {
 			delete(db.Intents, digest(pid+"\x00state\x00"+key))
 		}
@@ -576,7 +596,7 @@ func enqueueRunReminder(ctx context.Context, s Store, intent RunIntent) (deliver
 	}
 	old := cloneShard(sh)
 	raw, _ := json.Marshal(intent.Payload.Locator)
-	d := delivery{PairID: e.PairID, EventID: e.EventID, Kind: e.Kind, LocatorHash: digest(string(raw)), Created: intent.Payload.OccurredAt, Expires: e.ExpiresAt, State: "pending", Envelope: &e, Approval: intent.Payload.Approval}
+	d := delivery{Body: bindBody(intent.Body, e), PairID: e.PairID, EventID: e.EventID, Kind: e.Kind, LocatorHash: digest(string(raw)), Created: intent.Payload.OccurredAt, Expires: e.ExpiresAt, State: "pending", Envelope: &e, Approval: intent.Payload.Approval}
 	sh.Records[key] = d
 	idx, err := s.outboxLoad(true)
 	if err != nil {
@@ -671,7 +691,7 @@ func flushRunIntents(ctx context.Context, s Store, api API, states bool) error {
 			if intent.Payload.Interaction != nil || intent.Payload.Approval != nil {
 				// A new grant may postdate the observation cache. Never strip a
 				// freshly registered request using a stale authorization clock.
-				c, e = runCapabilities(ctx, api, p)
+				c, e = runCapabilities(ctx, s, api, p)
 			} else {
 				c, e = completionCapabilities(ctx, s, api, p)
 			}
@@ -694,7 +714,7 @@ func flushRunIntents(ctx context.Context, s Store, api API, states bool) error {
 			}
 			if !c.Enabled || !c.States || !c.Inbox {
 				if intent.Kind == "turn_completed" || intent.Kind == "needs_input" {
-					d, e := enqueueDeliverySummary(ctx, s, p, intent.Kind, intent.Occurrence, intent.Payload.Locator, intent.Payload.Agent, intent.Payload.Summary)
+					d, e := enqueueBodyDelivery(ctx, s, p, intent.Kind, intent.Occurrence, intent.Payload.Locator, intent.Payload.Agent, intent.Payload.Summary, intent.Body, nil)
 					if e != nil {
 						last = e
 						continue
@@ -715,7 +735,7 @@ func flushRunIntents(ctx context.Context, s Store, api API, states bool) error {
 			if hint := intent.Payload.Interaction; hint != nil {
 				request, readErr := interactionRead(s, hint.RequestID)
 				if readErr == nil && request.Digest == hint.Digest && request.Kind == hint.Kind && request.Pairs[p.PairID] == c.PolicyGeneration {
-					grant, grantErr := interactionCapabilities(ctx, api, p)
+					grant, grantErr := interactionCapabilities(ctx, s, api, p)
 					interactionAllowed = grantErr == nil && grant.Enabled && grant.PolicyGeneration == c.PolicyGeneration && grant.Interactions[request.Agent][request.Kind]
 				}
 				if !interactionAllowed && !(readErr == nil && request.State == "unavailable" && request.Locator.InstallationID == p.InstallationID) {
@@ -758,7 +778,7 @@ func flushRunIntents(ctx context.Context, s Store, api API, states bool) error {
 		if release == nil {
 			continue
 		}
-		response, e := api.request(ctx, p, "PUT", "/v2/pairs/"+p.PairID+"/snapshots/"+intent.Envelope.StreamID, intent.Envelope)
+		response, e := api.pairQuery(ctx, s, p, "PUT", "/v2/pairs/"+p.PairID+"/snapshots/"+intent.Envelope.StreamID, intent.Envelope)
 		delay := 2 * time.Second
 		if e != nil {
 			delay = 5 * time.Second

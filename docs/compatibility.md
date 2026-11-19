@@ -624,3 +624,33 @@ The cross-version encrypted-summary and controlled asset activation matrix is in
 section above. Real model rounds, API/APNs delivery, lock-screen behavior and phone
 navigation are separate validation layers; this repository's local fixtures and
 isolated official-host loading do not prove them.
+
+## Full reply capture and mixed versions
+
+Install the capable CLI before refreshing managed integrations. Codex's existing
+root notify supplies its current `last-assistant-message`; preserve chained
+notifier arguments, streams and exit status. For Claude, a managed root Stop
+hook must be active: legacy notification-only hooks have no full-text source.
+Use normal ownership-checked hook installation to enable the supported Stop
+layout and reload the native Agent. Stop captures the original prompt cycle,
+strong terminal identity and active recipients; the matching idle occurrence
+checks them again before publication. Tools, a new prompt or a replacement
+terminal cannot publish the old candidate.
+
+Reinstall the OpenCode TUI plugin and Pi extension through the normal managed
+hook installer and reload each host after changing the CLI. User-edited assets
+retain the existing conflict handling. The OpenCode step must identify the
+current root assistant message in its official cache. Pi correlates assistant
+message start/end within the same session and round. It requires the native
+assistant's normal `stopReason: stop` plus non-aborted settlement. Length-limited,
+interrupted and unconfirmed native output supplies at most a summary. Only text parts travel, in original order. A body-only handshake
+sets `MOBTERM_NATIVE_COMPLETION=1` on the one notification child. The capable
+child writes `mobterm/message-body/1\n` before reading its single stdin packet.
+An old or rolled-back executable receives the original packet shape after a
+bounded handshake timeout. This per-child capability check tolerates replacement
+between notifications. Existing adapters with a new CLI still deliver summaries.
+Optional oversized/failed extensions degrade before that single send.
+The base activity budget remains 4096 bytes, with up to eight queued events,
+one notification process and the existing child deadline. Only completion adds
+bounded base64 assistant text or the explicit over-limit marker. The whole
+local packet stays within 1 MiB. No change to remote grants, envelope or APNs.

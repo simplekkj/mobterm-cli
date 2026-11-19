@@ -345,3 +345,45 @@ func TestReconcileLateResultCannotReviveAbandonedAttempt(t *testing.T) {
 		})
 	}
 }
+
+func TestRemoteRetirementDisablesArchivedReplyAfterCapabilityQuery(t *testing.T) {
+	for _, gone := range []bool{true, false} {
+		s := testStore(t)
+		id, err := s.installation()
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if gone {
+				w.WriteHeader(http.StatusGone)
+				printJSON(w, map[string]string{"error": "pair_revoked"})
+				return
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			printJSON(w, map[string]string{"error": "unavailable"})
+		}))
+		p := testPair(id, server.URL)
+		ctx := context.Background()
+		if err = s.savePair(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+		ref := s.freezeBody(p, newAssistantBody("original reply"), time.Now().Unix())
+		if ref.Status != "available" {
+			t.Fatal("fixture archive failed")
+		}
+		_, err = runCapabilities(ctx, s, API{server.Client()}, p)
+		server.Close()
+		if err == nil {
+			t.Fatal("unexpected capabilities success")
+		}
+		saved, err := s.pairs()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, active := saved[p.PairID]
+		_, err = os.Stat(filepath.Join(s.bodyDir(), bodyName(*ref, p)))
+		if gone && (active || !os.IsNotExist(err)) || !gone && (!active || err != nil) {
+			t.Fatal("revocation and network failure were not distinguished", gone)
+		}
+	}
+}

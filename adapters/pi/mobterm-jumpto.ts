@@ -49,6 +49,26 @@ const messageSummary = (content) => {
   }
 };
 
+// This optional extension belongs to the current completed assistant message.
+// Reject oversized input before joining/encoding it. Preserve text-part order.
+const completionBody = (parts) => {
+  try {
+    if (!Array.isArray(parts)) return;
+    const chunks = [];
+    let size = 0;
+    for (const part of parts) {
+      if (part?.type !== "text") continue;
+      if (typeof part.text !== "string" || !part.text.isWellFormed()) return;
+      if (!part.text.length) continue;
+      if (/^<(?:think|thinking|analysis|reasoning)(?:\s|>)/i.test(part.text.trimStart())) return;
+      size += Buffer.byteLength(part.text);
+      if (size > 512 * 1024) return { completion_body_too_large: true };
+      chunks.push(part.text);
+    }
+    if (size) return { completion_body_base64: Buffer.from(chunks.join("")).toString("base64") };
+  } catch { /* The base event remains deliverable without the extension. */ }
+};
+
 // One child and at most eight queued jobs; callbacks never await remote HTTP.
 function bridge(source, warn) {
   let stopped = false, active, warned = false;
@@ -65,16 +85,16 @@ function bridge(source, warn) {
       }
       if (Buffer.byteLength(body) > 4096) { diagnostic(); queueMicrotask(drain); return; }
       const child = spawn(executable, ["notify", "--source", source], {
-        env: { ...process.env, MOBTERM_CONFIG_DIR: store },
-        stdio: ["pipe", "ignore", "ignore"], shell: false,
+        env: { ...process.env, MOBTERM_CONFIG_DIR: store, MOBTERM_NATIVE_COMPLETION: job.extension ? "1" : "0" },
+        stdio: ["pipe", job.extension ? "pipe" : "ignore", "ignore"], shell: false,
       });
       const running = { child, cancelled: false };
       active = running;
       const timer = running.timer = setTimeout(() => { diagnostic(); child.kill("SIGKILL"); }, 10000);
-      let finished = false;
+      let finished = false, handshake;
       const finish = (failed) => {
         if (finished) return;
-        finished = true; clearTimeout(timer);
+        finished = true; clearTimeout(timer); clearTimeout(handshake);
         if (failed && !running.cancelled) diagnostic();
         if (active === running) active = undefined;
         queueMicrotask(drain);
@@ -82,18 +102,43 @@ function bridge(source, warn) {
       child.once("error", () => finish(true));
       child.once("close", (code) => finish(code !== 0));
       child.stdin.on("error", () => { if (!running.cancelled) diagnostic(); child.kill("SIGKILL"); });
-      child.stdin.end(body);
+      if (!job.extension) {
+        child.stdin.end(body);
+      } else {
+        // Negotiate with this exact child. A binary replaced between events
+        // cannot receive fields its strict parser rejects. Write stdin once.
+        let sent = false, reply = "";
+        const send = (extended) => {
+          if (sent || finished || running.cancelled) return;
+          sent = true;
+          clearTimeout(handshake);
+          if (!job.valid()) { running.cancelled = true; child.kill("SIGKILL"); return; }
+          if (extended) {
+            try {
+              const candidate = JSON.stringify({...JSON.parse(body), ...job.extension});
+              if (Buffer.byteLength(candidate) <= 1024 * 1024) body = candidate;
+            } catch { /* Keep the bounded old-shape event. */ }
+          }
+          child.stdin.end(body);
+        };
+        handshake = setTimeout(() => send(false), 500);
+        child.stdout.on("data", chunk => {
+          if (sent || chunk.length + reply.length > 64) { send(false); return; }
+          reply += chunk.toString("ascii");
+          if (reply.includes("\n")) send(reply === "mobterm/message-body/1\n");
+        });
+      }
     } catch { active = undefined; diagnostic(); queueMicrotask(drain); }
   };
   return {
-    enqueue(payload, valid) {
+    enqueue(payload, valid, extension) {
       if (stopped) return;
       const critical = ["session.execution.succeeded","session.execution.failed","session.execution.interrupted","permission.asked","form.created","agent_settled","ui_prompt_start"].includes(payload.event);
       if (queue.length >= 8) {
         const replace=queue.findIndex(job=>!job.critical);
         if(critical&&replace>=0)queue.splice(replace,1);else{diagnostic();return;}
       }
-      const job={payload,valid,critical};
+      const job={payload,valid,critical,extension};
       // Keep chronological events in a run; reserve capacity by dropping only
       // intermediate observations, never preempt a pending business reminder.
       queue.push(job); queueMicrotask(drain);
@@ -206,16 +251,25 @@ export default function mobtermJumpTo(pi) {
     return undefined;
   });
   const clearSummary = (ctx) => {
-    if (round && round.epoch === epoch && session(ctx) === round.session) round.summary = undefined;
+    if (round && round.epoch === epoch && session(ctx) === round.session) {
+      round.summary = undefined; round.body = undefined; round.message = undefined;
+    }
   };
   pi.on("message_start", (event, ctx) => {
     if (["assistant", "user"].includes(event.message?.role)) clearSummary(ctx);
+    if (round && session(ctx) === round.session && event.message?.role === "assistant") round.message = { reference: new WeakRef(event.message), timestamp: event.message.timestamp };
   });
   pi.on("message_end", (event, ctx) => {
     const current = round;
     if (!alive || ctx.mode !== "tui" || !current || current.sent ||
         current.epoch !== epoch || session(ctx) !== current.session || event.message?.role !== "assistant") return;
     current.summary = messageSummary(event.message.content);
+    const start = current.message;
+    const sameMessage = start?.reference.deref() === event.message ||
+      (Number.isSafeInteger(start?.timestamp) && start.timestamp === event.message.timestamp);
+    current.body = sameMessage && event.message.stopReason === "stop"
+      ? completionBody(event.message.content) : undefined;
+    current.message = undefined;
   });
   pi.on("tool_execution_start", (event, ctx) => {
     clearSummary(ctx);
@@ -239,6 +293,7 @@ export default function mobtermJumpTo(pi) {
     transport.enqueue({ adapter_revision: 2, runtime_version: VERSION, event: "agent_settled",
       session_id: current.session, run_id: current.id, event_id: current.id, instance_id: instance, aborted: event.aborted,
       ...(!event.aborted && current.summary ? {summary:current.summary} : {}) },
-      () => alive && ctx.mode === "tui" && epoch === current.epoch && session(ctx) === current.session);
+      () => alive && ctx.mode === "tui" && epoch === current.epoch && session(ctx) === current.session, event.aborted ? undefined : current.body);
+    current.body = undefined;
   });
 }

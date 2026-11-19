@@ -116,7 +116,7 @@ func approvalEligible(ctx context.Context, s Store, api API, p Pair, r ApprovalR
 	if err != nil || m[p.PairID][r.Agent] <= 0 {
 		return errors.New("approval_disabled")
 	}
-	c, err := runCapabilities(ctx, api, p)
+	c, err := runCapabilities(ctx, s, api, p)
 	if err != nil {
 		return err
 	}
@@ -143,7 +143,7 @@ func approvalCommand(ctx context.Context, s Store, api API, command string, in i
 			return nil, errors.New("pair_not_active")
 		}
 		if f.Enabled {
-			c, err := runCapabilities(ctx, api, p)
+			c, err := runCapabilities(ctx, s, api, p)
 			if err != nil {
 				return nil, err
 			}
@@ -438,7 +438,7 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 		g := configured[pid][a.Agent]
 		if g > 0 && p.Status == "active" && p.InstallationID == l.InstallationID {
 			check, cancel := context.WithTimeout(ctx, 2*time.Second)
-			c, e := runCapabilities(check, api, p)
+			c, e := runCapabilities(check, s, api, p)
 			cancel()
 			if e == nil && p.Status == "active" && p.InstallationID == l.InstallationID && c.Enabled && c.States && c.Inbox && c.Approvals[a.Agent] {
 				r.Pairs[pid] = c.PolicyGeneration

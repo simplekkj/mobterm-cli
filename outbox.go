@@ -18,6 +18,7 @@ const outboxByteLimit = 80 * 1024 * 1024
 const outboxShardLimit = 2 * 1024 * 1024
 
 type delivery struct {
+	Body        *bodyBinding  `json:"message_body,omitempty"`
 	Approval    *ApprovalHint `json:"approval,omitempty"`
 	PairID      string        `json:"pair_id"`
 	EventID     string        `json:"event_id"`
@@ -308,6 +309,9 @@ func enqueueDelivery(ctx context.Context, s Store, p Pair, kind, identity string
 	return enqueueDeliverySummary(ctx, s, p, kind, identity, l, agent, "", nativeSource...)
 }
 func enqueueDeliverySummary(ctx context.Context, s Store, p Pair, kind, identity string, l Locator, agent, summary string, nativeSource ...string) (delivery, error) {
+	return enqueueBodyDelivery(ctx, s, p, kind, identity, l, agent, summary, nil, nil, nativeSource...)
+}
+func enqueueBodyDelivery(ctx context.Context, s Store, p Pair, kind, identity string, l Locator, agent, summary string, ref *bodyRef, body *assistantBody, nativeSource ...string) (delivery, error) {
 	unlock, err := s.lock(ctx)
 	if err != nil {
 		return delivery{}, err
@@ -379,7 +383,13 @@ func enqueueDeliverySummary(ctx context.Context, s Store, p Pair, kind, identity
 	if err != nil {
 		return delivery{}, err
 	}
-	d := delivery{PairID: p.PairID, EventID: eventID, Kind: kind, LocatorHash: hash, Created: now, Expires: e.ExpiresAt, State: "pending", Envelope: &e}
+	if kind == "turn_completed" && body != nil {
+		current, readErr := s.pairs()
+		if readErr == nil && current[p.PairID] == p && p.Status == "active" {
+			ref = s.freezeBody(p, *body, now)
+		}
+	}
+	d := delivery{Body: bindBody(ref, e), PairID: p.PairID, EventID: eventID, Kind: kind, LocatorHash: hash, Created: now, Expires: e.ExpiresAt, State: "pending", Envelope: &e}
 	sh.Records[key] = d
 	idx, err := s.outboxLoad(true)
 	if err != nil {
@@ -809,7 +819,7 @@ func refreshDelivery(ctx context.Context, s Store, a API, d delivery) (map[strin
 	if !ok || p.Status != "active" {
 		return deliveryResult(d), errors.New("pair_not_active")
 	}
-	response, requestErr := a.request(ctx, p, "GET", "/v1/pairs/"+p.PairID+"/events/"+d.EventID, nil)
+	response, requestErr := a.pairQuery(ctx, s, p, "GET", "/v1/pairs/"+p.PairID+"/events/"+d.EventID, nil)
 	state, _ := response["state"].(string)
 	updated, err := updateDelivery(ctx, s, d.PairID, d.EventID, func(current *delivery) error {
 		if current.State != "handed_off" {

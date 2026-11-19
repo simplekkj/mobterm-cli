@@ -133,9 +133,9 @@ A summary is an Agent output excerpt, not MobTerm's verification of claims such
 as “tests passed”. Authenticated event/state enums determine status: completion
 means this response ended, not that the overall task succeeded. Summaries do not
 participate in occurrence/event IDs, Locator hashes, SSH targets, approval or
-interaction digests, policy, or request selection. Only the cleaned candidate
-and frozen event excerpt enter the existing mode-0600 local store. Outboxes
-remain ciphertext-only; logs and additional APNs/userInfo/spool fields contain
+interaction digests, policy, or request selection. The existing candidate and frozen event excerpt remain bounded. Full replies are
+separate private files; outbox metadata retains only the local archive reference,
+size, content digest and exact envelope binding; logs and additional APNs/userInfo/spool fields contain
 no plaintext summary. Same-event re-entry and retries reuse the original envelope.
 
 App records show the original authenticated event's summary independently of a
@@ -147,3 +147,20 @@ summary preview off retracts delivered detailed notifications which actually
 contained a summary, respecting revision races; it does not delete App history,
 unread records, generic reminders or change remote notification/action grants.
 System lock-screen policy retains final control over subsequent presentation.
+
+## Local historical message bodies
+
+An attributed original reply stays on the CLI installation in a private 0700
+directory and 0600 file. Neither the cloud envelope nor APNs receives full
+text. The local bounds are 512 KiB of UTF-8 per reply, 500 files and 64 MiB
+of reply bytes across the installation, including unpublished candidates.
+The original creation time limits reads to seven days. Related writes and
+explicit outbox maintenance prune expired entries and then evict oldest
+entries (filename tie-break). Idle machines can retain expired files until
+maintenance. Pair retirement removes its candidates/files and denies future
+reads even if physical cleanup fails. Installation replacement fences the old
+identity. The read command opens the existing lock and files only; it does
+not initialize, prune, contact the API or update a run, terminal, request or
+read receipt. The App and CLI each enforce locally known binding/revocation:
+a cloud-only revocation has a propagation window until either learns it.
+A historical read does not grant an approval, answer or navigation right.
