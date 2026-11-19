@@ -189,6 +189,9 @@ func retireLocalPair(ctx context.Context, s Store, in io.Reader) (map[string]any
 // Caller holds the Store lock. Markers contain no credentials and are never
 // evicted: an interrupted setup may resume after arbitrarily many later pairs.
 func (s Store) recordRetirementLocked(id, reason, apiURL, installationID string) error {
+	if err := removeReplyActivationLocked(s, id, ""); err != nil {
+		return err
+	}
 	var history []retiredPair
 	if err := s.readJSON("pair-history.json", &history); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err

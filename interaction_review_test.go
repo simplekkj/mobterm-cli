@@ -22,6 +22,11 @@ import (
 func reviewInteractionSetup(t *testing.T) (Store, API, Pair, Locator, chan RunPayload) {
 	t.Helper()
 	claudeNotifyEnvironment(t)
+	saved := claudeHookVersion
+	claudeHookVersion = func(context.Context) string {
+		return strings.TrimSuffix(os.Getenv("FIXTURE_CLAUDE_VERSION"), " (Claude Code)")
+	}
+	t.Cleanup(func() { claudeHookVersion = saved })
 	t.Setenv("FIXTURE_CLAUDE_VERSION", "2.1.317 (Claude Code)")
 	s := testStore(t)
 	id, err := s.installation()

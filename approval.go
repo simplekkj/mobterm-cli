@@ -261,6 +261,9 @@ func approvalCommand(ctx context.Context, s Store, api API, command string, in i
 	if command == "inspect" {
 		return approvalResult(r, f.PairID, generation, true), nil
 	}
+	if command == "decide" && !nativeRequestCurrent(s, r.Agent, r.Session, r.RequestID, r.Locator) {
+		return nil, errors.New("approval_source_changed")
+	}
 	r.DecisionID = f.DecisionID
 	r.Action = f.Action
 	r.DecidingPair = f.PairID
@@ -613,7 +616,7 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 			return nil, e
 		}
 		again, e := approvalRead(s, id)
-		if e == nil && again.State == "decision_recorded" && again.DecisionID == current.DecisionID && time.Now().Unix() < expires && approvalAlive(again) && approvalRunWaiting(s, again) {
+		if e == nil && again.State == "decision_recorded" && again.DecisionID == current.DecisionID && time.Now().Unix() < expires && approvalAlive(again) && approvalRunWaiting(s, again) && nativeRequestCurrent(s, again.Agent, again.Session, again.RequestID, again.Locator) {
 			again.State = "consumed"
 			again.OperationJSON = ""
 			e = s.writeJSON("approval-"+id+".json", again)

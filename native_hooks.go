@@ -15,10 +15,10 @@ import (
 	"strings"
 )
 
-//go:embed adapters/opencode/package.json adapters/opencode/tui.js adapters/pi/mobterm-jumpto.ts
+//go:embed adapters/opencode/package.json adapters/opencode/tui.js adapters/pi/mobterm-jumpto.ts adapters/shared/*.js adapters/claude/*
 var nativeAssets embed.FS
 
-const nativeAdapterRevision = 4
+const nativeAdapterRevision = 5
 
 type nativeOwnedFile struct {
 	SHA         string `json:"sha256"`
@@ -55,6 +55,8 @@ func nativeConfigPath(agent string) (string, error) {
 			root = filepath.Join(root, "opencode")
 		}
 		root = filepath.Join(root, "cli.json")
+	case "claude":
+		return configPath("claude")
 	case "pi":
 		root = os.Getenv("PI_CODING_AGENT_DIR")
 		if root == "" {
@@ -123,13 +125,32 @@ func nativeRenderedFiles(s Store, agent, path, executable string) (map[string][]
 		if err != nil {
 			return nil, err
 		}
+		for token, asset := range map[string]string{"__MOBTERM_MINIMUM_JS__": "adapters/shared/minimum.js", "__MOBTERM_REPLY_JS__": "adapters/shared/reply.js"} {
+			if bytes.Contains(b, []byte(token)) {
+				snippet, err := nativeAssets.ReadFile(asset)
+				if err != nil {
+					return nil, err
+				}
+				b = bytes.ReplaceAll(b, []byte(token), snippet)
+			}
+		}
+		b = bytes.ReplaceAll(b, []byte("__MOBTERM_MINIMUMS_JSON__"), []byte(nativeMinimumJSON))
 		b = bytes.ReplaceAll(b, []byte("__MOBTERM_CLI_JSON__"), cli)
 		b = bytes.ReplaceAll(b, []byte("__MOBTERM_STORE_JSON__"), state)
 		return b, nil
 	}
 	files := map[string][]byte{}
 	reference := ""
-	if agent == "pi" {
+	if agent == "claude" {
+		reference = filepath.Join(s.Dir, "native", "claude-reply")
+		for name, target := range map[string]string{"plugin.json": ".claude-plugin/plugin.json", "hooks.json": "hooks/hooks.json", "register.js": "hooks/register.js"} {
+			b, err := render("adapters/claude/" + name)
+			if err != nil {
+				return nil, "", err
+			}
+			files[filepath.Join(reference, target)] = b
+		}
+	} else if agent == "pi" {
 		b, err := render("adapters/pi/mobterm-jumpto.ts")
 		if err != nil {
 			return nil, "", err

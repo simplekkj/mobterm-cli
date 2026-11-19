@@ -4,14 +4,8 @@ import { randomUUID } from "node:crypto";
 const executable = __MOBTERM_CLI_JSON__;
 const store = __MOBTERM_STORE_JSON__;
 const validID = (value) => typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= 1024 && !/[\u0000-\u001f\u007f]/.test(value);
-const stableVersion = (value, minimum) => {
-  if (typeof value !== "string") return false;
-  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)?$/.exec(value);
-  if (!match) return false;
-  const parts = match.slice(1, 4).map(Number);
-  return parts.every(Number.isSafeInteger) && (parts[0] > minimum[0] ||
-    (parts[0] === minimum[0] && (parts[1] > minimum[1] || (parts[1] === minimum[1] && parts[2] >= minimum[2]))));
-};
+__MOBTERM_MINIMUM_JS__
+__MOBTERM_REPLY_JS__
 
 // Bounded prose only. The CLI applies the same final wire limits before storage.
 const messageSummary = (content) => {
@@ -154,12 +148,19 @@ export default Plugin.define({
   id: "mobterm.jumpto",
   setup(context) {
     const version = context.app.version;
-    if (!stableVersion(version, [2, 0, 0]) || context.app.channel !== "latest") return;
+    if (!atLeast(version, minimums.notification.opencode)) return;
     const [memory, update] = context.storage.memory("mobterm.jumpto.v1", {
       initial: { instance: randomUUID(), seen: [] },
     });
-    let alive = true, routeEpoch = 0, previousRoute;
+    let alive = true, routeEpoch = 0, previousRoute, previousLocation;
+    const activation = randomUUID();
     const lifecycles = new Map();
+    let stopReply, replySession;
+    const inputReceipts = new Map();
+    const invalidateReply = sessionID => {
+      if (sessionID !== undefined && replySession !== sessionID && root(sessionID) !== replySession) return;
+      stopReply?.(); stopReply = undefined; replySession = undefined;
+    };
     const tools = new Map();
     const approvalChildren = new Map();
     const resolved = new Set();
@@ -197,12 +198,26 @@ export default Plugin.define({
         }
       }
     };
-    const lifecycle = (sessionID, terminal) => {
+    const executionSequence = (event) => {
+      const durable = event.durable;
+      if (durable?.aggregateID === event.data?.sessionID && durable?.version === 1 &&
+          Number.isSafeInteger(durable.seq) && durable.seq >= 0) return durable.seq;
+    };
+    const staleExecution = (event) => {
+      const id = event.data?.sessionID;
+      if (!validID(id) || !validID(event.id)) return true;
+      const location = context.data.session.get(id)?.location;
+      if (event.location && location && locationKey(event.location) !== locationKey(location)) return true;
+      const seen = lifecycles.get(id)?.sequence, seq = executionSequence(event);
+      return seen !== undefined && seq !== undefined && seq <= seen;
+    };
+    const lifecycle = (sessionID, terminal, event) => {
       if (!validID(sessionID)) return;
+      invalidateReply(sessionID);
       forgetRequests(sessionID);
       const previous = lifecycles.get(sessionID);
       lifecycles.delete(sessionID);
-      lifecycles.set(sessionID, { generation: (previous?.generation ?? 0) + 1, terminal, run: terminal ? previous?.run ?? randomUUID() : randomUUID() });
+      lifecycles.set(sessionID, { start: terminal ? undefined : event.durable, sequence: executionSequence(event) ?? previous?.sequence, generation: (previous?.generation ?? 0) + 1, terminal, run: terminal ? previous?.run ?? randomUUID() : randomUUID() });
       if (lifecycles.size > 512) lifecycles.delete(lifecycles.keys().next().value);
     };
     const clearRequest = (event, id) => {
@@ -229,7 +244,7 @@ export default Plugin.define({
       if (event.location && locationKey(event.location) !== location) return;
       current.summary = undefined; current.body = undefined; current.messageID = undefined;
       transport.enqueue({adapter_revision:2,runtime_version:version,event:name,session_id:sessionID,
-        run_id:current.run,event_id:event.id,instance_id:memory.instance,...extra},
+        run_id:current.run,event_id:event.id,instance_id:activation,...extra},
         () => alive && epoch === routeEpoch && root(route()) === sessionID && locationKey(context.data.session.get(sessionID)?.location) === location);
     };
     const summaryStep = (event, ended = false) => {
@@ -278,7 +293,7 @@ export default Plugin.define({
     });
     const startInteraction = async (payload, requestID, location, valid, isForm) => {
       const sessionID=payload.session_id, key=JSON.stringify([sessionID,requestID]);
-      if(version!=="2.2.5"){transport.enqueue({...payload,unavailable_reason:"agent_version_unverified"},valid);return;}
+      if(!atLeast(version, minimums.interaction.opencode)){transport.enqueue({...payload,unavailable_reason:"agent_version_unverified"},valid);return;}
       if(approvalChildren.has(key))return;
       if(approvalChildren.size>=8){transport.enqueue(payload,valid);return;}
       // Reserve before awaiting the official client, so duplicate events cannot
@@ -356,6 +371,37 @@ export default Plugin.define({
         questionReceipts.delete(key);
       }
     };
+    const registerReply = (payload, sessionID, location, valid) => {
+      const api = context.client?.session;
+      if (!atLeast(version, minimums.reply.opencode) || !api?.get || !api?.prompt || !api?.active || !api?.inbox?.list ||
+          !api?.form?.list || !context.client.permission?.list || !location || route() !== sessionID) return;
+      invalidateReply();
+      replySession = sessionID;
+      const current = () => valid() && replySession === sessionID && route() === sessionID &&
+        !(context.data.session.form.list("global", context.data.session.get(sessionID)?.location)?.length) &&
+        context.data.session.family(sessionID).every(id => context.data.session.permission.list(id)?.length === 0 &&
+          context.data.session.form.list(id, context.data.session.get(id)?.location)?.length === 0);
+      if (!current()) return;
+      const preflight = async () => {
+        const [session, active, inbox, forms, permissions] = await Promise.all([
+          api.get({sessionID}), api.active(), api.inbox.list({sessionID}),
+          api.form.list({sessionID}), context.client.permission.list({sessionID}),
+        ]);
+        return current() && session.id === sessionID && !session.parentID && !session.time?.archived &&
+          locationKey(session.location) === location && active && typeof active === "object" && !Array.isArray(active) && !(sessionID in active) &&
+          [inbox, forms, permissions].every(list => Array.isArray(list) && list.length === 0);
+      };
+      stopReply = replyOpportunity("opencode", payload, current, preflight, async (decision, tuple) => {
+        const id = "msg_mobterm_" + decision.source_id;
+        // A delivery event may arrive before the admission promise resolves.
+        // Retain only identity and receipt proof; never retain the reply text.
+        for (const [key, item] of inputReceipts) if (item.expiry <= Date.now()) inputReceipts.delete(key);
+        if (inputReceipts.size < 128) inputReceipts.set(id, {sessionID, location, tuple, expiry:Date.now()+300000});
+        const result = await api.prompt({sessionID, id, text:decision.text, delivery:"queue"});
+        return result?.id === id && result.sessionID === sessionID && result.type === "user"
+          && result.payload?.text === decision.text && result.delivery === "queue" ? "native_accepted" : "delivery_unknown";
+      });
+    };
     const handle = (event) => {
       try {
         if (!alive || !validID(event.id) || memory.seen.includes(event.id)) return;
@@ -364,7 +410,7 @@ export default Plugin.define({
         const completion = nativeType === "session.execution.succeeded";
         const sessionID = nativeType === "form.created" ? event.data.form?.sessionID : event.data.sessionID;
         const requestID = nativeType === "form.created" ? event.data.form?.id : event.data.id;
-        if(sessionID === "global") {if(nativeType==="form.created")context.ui.toast.show({title:"MobTerm",message:"This MCP form has no session owner. Respond in the original native interface.",variant:"warning"});return;}
+        if(sessionID === "global") {invalidateReply();if(nativeType==="form.created")context.ui.toast.show({title:"MobTerm",message:"This MCP form has no session owner. Respond in the original native interface.",variant:"warning"});return;}
         if (!validID(sessionID) || (!completion && !validID(requestID))) return;
         const selected = route(), selectedRoot = root(selected), eventRoot = root(sessionID);
         if (!selectedRoot || selectedRoot !== eventRoot || (completion && sessionID !== eventRoot)) return;
@@ -372,7 +418,7 @@ export default Plugin.define({
         const location = locationKey(session.location);
         if (eventLocation && locationKey(eventLocation) !== location) return;
         const epoch = routeEpoch, generation = lifecycles.get(sessionID);
-        if (completion && generation?.terminal) return;
+        if (completion && (generation?.terminal || staleExecution(event))) return;
         const requestKey = JSON.stringify([sessionID,requestID]);
         const valid = () => {
           if (!alive || epoch !== routeEpoch || route() !== selected || root(sessionID) !== selectedRoot || root(selected) !== selectedRoot) return false;
@@ -391,9 +437,10 @@ export default Plugin.define({
         remember(event.id);
         const runID = lifecycles.get(eventRoot)?.run ?? generation?.run ?? randomUUID();
         const payload = { adapter_revision: 2, runtime_version: version, event: nativeType,
-          session_id: sessionID, run_id: runID, event_id: event.id, instance_id: memory.instance,
+          session_id: sessionID, run_id: runID, event_id: event.id, instance_id: activation,
           ...(completion ? (generation?.summary && generation.summaryLocation === location ? {summary:generation.summary} : {}) : {request_id:requestID}) };
         if (!completion) {
+          invalidateReply(sessionID);
           const rootGeneration=lifecycles.get(eventRoot);
           const validResolved=()=>alive && epoch===routeEpoch && route()===selected &&
             root(sessionID)===selectedRoot && root(selected)===selectedRoot &&
@@ -405,14 +452,24 @@ export default Plugin.define({
         }
         if (nativeType === "permission.asked" || nativeType === "form.created") void startInteraction(payload,requestID,eventLocation,valid,nativeType === "form.created");
         else transport.enqueue(payload, valid, completion && generation && generation.summaryLocation === location ? generation.body : undefined);
-        if (completion) { if (generation) { generation.terminal = true; generation.body = undefined; } forgetRequests(sessionID); }
+        if (completion) {
+          if (generation) {
+            generation.terminal = true; generation.body = undefined;
+            generation.sequence = executionSequence(event) ?? generation.sequence;
+            const start = generation.start, end = event.durable;
+            if (generation.run === payload.run_id && start?.aggregateID === sessionID && end?.aggregateID === sessionID &&
+                start.version === 1 && end.version === 1 && Number.isSafeInteger(start.seq) && Number.isSafeInteger(end.seq) &&
+                end.seq > start.seq) registerReply(payload, sessionID, location, valid);
+          }
+          forgetRequests(sessionID);
+        }
       } catch { /* A changed upstream schema must never interrupt the TUI. */ }
     };
     const dispose = [];
     let disposeRoute;
     const cleanup = () => {
       if (!alive) return;
-      alive = false; routeEpoch++; transport.stop(); pendingObservations.clear(); questionReceipts.clear();
+      invalidateReply(); inputReceipts.clear(); alive = false; routeEpoch++; transport.stop(); pendingObservations.clear(); questionReceipts.clear();
       for(const child of approvalChildren.values())child.kill("SIGTERM"); approvalChildren.clear();
       disposeRoute?.();
       for (const unsubscribe of dispose.splice(0).reverse()) {
@@ -425,14 +482,25 @@ export default Plugin.define({
         disposeRoute = release;
         createEffect(() => {
           const current = route();
-          if (current !== previousRoute) { previousRoute = current; routeEpoch++; transport.cancel(); pendingObservations.clear(); for (const current of lifecycles.values()) {current.summary=undefined;current.body=undefined;current.messageID=undefined;} for(const child of approvalChildren.values())child.kill("SIGTERM"); approvalChildren.clear(); }
+          const currentLocation = current && locationKey(context.data.session.get(current)?.location);
+          if (current !== previousRoute || currentLocation !== previousLocation) { previousRoute = current; previousLocation = currentLocation; routeEpoch++; invalidateReply(); transport.cancel(); pendingObservations.clear(); for (const current of lifecycles.values()) {current.summary=undefined;current.body=undefined;current.messageID=undefined;} for(const child of approvalChildren.values())child.kill("SIGTERM"); approvalChildren.clear(); }
         });
       });
       for (const [type, handler] of [
-        ["session.execution.started", (event) => { if (validID(event.id)) {lifecycle(event.data.sessionID, false);state(event,event.type);} }],
-        ["session.execution.failed", (event) => {state(event,event.type);lifecycle(event.data.sessionID,true);}],
-        ["session.execution.interrupted", (event) => {state(event,event.type);lifecycle(event.data.sessionID,true);}],
+        ["session.execution.started", (event) => { if (validID(event.id) && !staleExecution(event)) {lifecycle(event.data.sessionID, false, event);state(event,event.type);} }],
+        ["session.execution.failed", (event) => {if (!staleExecution(event)) {state(event,event.type);lifecycle(event.data.sessionID,true,event);}}],
+        ["session.execution.interrupted", (event) => {if (!staleExecution(event)) {state(event,event.type);lifecycle(event.data.sessionID,true,event);}}],
         ["session.execution.succeeded", handle],
+        ["session.inbox.enqueued", event => invalidateReply(event.data?.sessionID)],
+        ["session.status", event => { if (event.data?.status?.type !== "idle") invalidateReply(event.data?.sessionID); }],
+        ["session.inbox.delivered", event => {
+          const id = event.data?.inboxID, item = inputReceipts.get(id);
+          if (item && item.sessionID === event.data.sessionID && item.expiry > Date.now() &&
+              (!event.location || locationKey(event.location) === item.location)) {
+            inputReceipts.delete(id); void replyReceipt(item.tuple, "native_consumed");
+          }
+          invalidateReply(event.data?.sessionID);
+        }],
         ["session.step.started", event => summaryStep(event)],
         ["session.step.ended", event => summaryStep(event, true)],
         ["session.tool.input.started", event => {if(validID(event.data.id)&&typeof event.data.name==="string"){tools.set(event.data.id,event.data.name);if(tools.size>128)tools.delete(tools.keys().next().value);state(event,"tool_pending",{tool_id:event.data.id,tool_name:event.data.name});}}],

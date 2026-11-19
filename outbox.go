@@ -18,6 +18,7 @@ const outboxByteLimit = 80 * 1024 * 1024
 const outboxShardLimit = 2 * 1024 * 1024
 
 type delivery struct {
+	Reply       *replyBinding `json:"reply,omitempty"`
 	Body        *bodyBinding  `json:"message_body,omitempty"`
 	Approval    *ApprovalHint `json:"approval,omitempty"`
 	PairID      string        `json:"pair_id"`
@@ -202,7 +203,16 @@ func (s Store) saveShard(idx outboxIndex, key string, old, sh outboxShard) error
 	idx.Shards[key[:2]] = len(sh.Records)
 	b, _ := json.Marshal(sh)
 	if len(b) > outboxShardLimit {
-		return errors.New("outbox_shard_capacity")
+		// Adding the optional reply binding must not suppress delivery of a
+		// notification that otherwise fits. Never remove an older binding.
+		if d, added := sh.Records[key]; added && old.Records[key].EventID == "" && d.Reply != nil {
+			d.Reply = nil
+			sh.Records[key] = d
+			b, _ = json.Marshal(sh)
+		}
+		if len(b) > outboxShardLimit {
+			return errors.New("outbox_shard_capacity")
+		}
 	}
 	if err := s.outboxWrite("transaction.json", outboxTransaction{1, key[:2], sh, idx}, 36*1024*1024); err != nil {
 		return err
@@ -312,6 +322,9 @@ func enqueueDeliverySummary(ctx context.Context, s Store, p Pair, kind, identity
 	return enqueueBodyDelivery(ctx, s, p, kind, identity, l, agent, summary, nil, nil, nativeSource...)
 }
 func enqueueBodyDelivery(ctx context.Context, s Store, p Pair, kind, identity string, l Locator, agent, summary string, ref *bodyRef, body *assistantBody, nativeSource ...string) (delivery, error) {
+	return enqueueBoundDelivery(ctx, s, p, kind, identity, l, agent, summary, ref, body, nil, nativeSource...)
+}
+func enqueueBoundDelivery(ctx context.Context, s Store, p Pair, kind, identity string, l Locator, agent, summary string, ref *bodyRef, body *assistantBody, reply *replyBinding, nativeSource ...string) (delivery, error) {
 	unlock, err := s.lock(ctx)
 	if err != nil {
 		return delivery{}, err
@@ -389,7 +402,7 @@ func enqueueBodyDelivery(ctx context.Context, s Store, p Pair, kind, identity st
 			ref = s.freezeBody(p, *body, now)
 		}
 	}
-	d := delivery{Body: bindBody(ref, e), PairID: p.PairID, EventID: eventID, Kind: kind, LocatorHash: hash, Created: now, Expires: e.ExpiresAt, State: "pending", Envelope: &e}
+	d := delivery{Reply: bindReply(reply, e), Body: bindBody(ref, e), PairID: p.PairID, EventID: eventID, Kind: kind, LocatorHash: hash, Created: now, Expires: e.ExpiresAt, State: "pending", Envelope: &e}
 	sh.Records[key] = d
 	idx, err := s.outboxLoad(true)
 	if err != nil {

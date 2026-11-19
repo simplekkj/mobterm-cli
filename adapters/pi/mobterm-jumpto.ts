@@ -7,14 +7,8 @@ import { join } from "node:path";
 const executable = __MOBTERM_CLI_JSON__;
 const store = __MOBTERM_STORE_JSON__;
 const validID = (value) => typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= 1024 && !/[\u0000-\u001f\u007f]/.test(value);
-const stableVersion = (value, minimum) => {
-  if (typeof value !== "string") return false;
-  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)?$/.exec(value);
-  if (!match) return false;
-  const parts = match.slice(1, 4).map(Number);
-  return parts.every(Number.isSafeInteger) && (parts[0] > minimum[0] ||
-    (parts[0] === minimum[0] && (parts[1] > minimum[1] || (parts[1] === minimum[1] && parts[2] >= minimum[2]))));
-};
+__MOBTERM_MINIMUM_JS__
+__MOBTERM_REPLY_JS__
 
 // Bounded prose only. The CLI applies the same final wire limits before storage.
 const messageSummary = (content) => {
@@ -152,7 +146,10 @@ import { VERSION } from "@earendil-works/pi-coding-agent";
 export default function mobtermJumpTo(pi) {
   let alive = true, epoch = 0, round, context;
   const instance = randomUUID();
+  let stopReply;
+  const invalidateReply = () => { stopReply?.(); stopReply = undefined; };
   const pendingGates = new Map();
+  const openPrompts = new Map();
   let confirmQueue=Promise.resolve();
   const settleGates=()=>{for(const gate of pendingGates.values())gate.cancel();pendingGates.clear();};
   const receipt=(result,state)=>new Promise(resolve=>{
@@ -176,14 +173,22 @@ export default function mobtermJumpTo(pi) {
     if (context?.mode === "tui") context.ui.notify("MobTerm notification unavailable. Check integration.", "warning");
   });
   const session = (ctx) => ctx.sessionManager.getSessionId();
-  const reset = (ctx) => { context = ctx; epoch++; round = undefined; transport.cancel(); settleGates(); };
+  const reset = (ctx) => { invalidateReply(); openPrompts.clear(); context = ctx; epoch++; round = undefined; transport.cancel(); settleGates(); };
   pi.on("session_start", (_event, ctx) => { alive = true; reset(ctx); });
   pi.on("session_shutdown", (_event, ctx) => { alive = false; reset(ctx); });
+  for (const event of ["session_before_switch", "session_before_fork", "session_before_tree", "session_before_compact"]) {
+    pi.on(event, () => {
+      invalidateReply();
+      if (round) round.replyInvalidated = true;
+    });
+  }
+  pi.on("input", () => { invalidateReply(); });
   pi.on("agent_start", (_event, ctx) => {
+    invalidateReply();
     context = ctx;
     round = undefined;
     const id = session(ctx);
-    if (!alive || ctx.mode !== "tui" || !stableVersion(VERSION, [1, 1, 0]) || !validID(id)) return;
+    if (!alive || ctx.mode !== "tui" || !atLeast(VERSION, minimums.notification.pi) || !validID(id)) return;
     round = { session: id, id: randomUUID(), epoch, sent: false };
     send("agent_start", ctx);
   });
@@ -203,7 +208,8 @@ export default function mobtermJumpTo(pi) {
     }catch(error){return error?.code!=="ENOENT";}
   };
   pi.on("tool_call", async (event,ctx) => {
-    if(!alive||ctx.mode!=="tui"||!["1.4.0","1.5.0"].includes(VERSION)||!gateEnabled())return;
+    invalidateReply();
+    if(!alive||ctx.mode!=="tui"||!atLeast(VERSION, minimums.interaction.pi)||!gateEnabled())return;
     if(!["bash","read","write","edit","grep","find","ls"].includes(event.toolName))return;
     const captured={session:session(ctx),epoch,signal:ctx.signal,deadline:Date.now()+120000,round:round?.id??randomUUID(),toolCallId:event.toolCallId};
     const valid=()=>alive&&epoch===captured.epoch&&session(ctx)===captured.session&&!captured.signal?.aborted&&Date.now()<captured.deadline&&gateEnabled();
@@ -256,6 +262,7 @@ export default function mobtermJumpTo(pi) {
     }
   };
   pi.on("message_start", (event, ctx) => {
+    if (event.message?.role === "user") invalidateReply();
     if (["assistant", "user"].includes(event.message?.role)) clearSummary(ctx);
     if (round && session(ctx) === round.session && event.message?.role === "assistant") round.message = { reference: new WeakRef(event.message), timestamp: event.message.timestamp };
   });
@@ -281,7 +288,15 @@ export default function mobtermJumpTo(pi) {
       send("tool_execution_end", ctx, {tool_id:event.toolCallId,tool_name:event.toolName,tool_status:event.isError?"failed":"succeeded"});
   });
   for (const name of ["ui_prompt_start", "ui_prompt_end"]) pi.on(name, (event,ctx) => {
-    if (event.reason === "ui_prompt" && ["select","confirm","input","editor","custom"].includes(event.kind)) send(name,ctx);
+    if (!alive || ctx.mode !== "tui" || event.reason !== "ui_prompt") return;
+    const key = JSON.stringify([session(ctx), event.kind]);
+    const count = openPrompts.get(key) ?? 0;
+    if (name === "ui_prompt_start") {
+      openPrompts.set(key, count + 1);
+      invalidateReply();
+    } else if (count > 1) openPrompts.set(key, count - 1);
+    else openPrompts.delete(key);
+    if (["select","confirm","input","editor","custom"].includes(event.kind)) send(name,ctx);
   });
   pi.on("agent_settled", (event, ctx) => {
     context = ctx;
@@ -290,10 +305,25 @@ export default function mobtermJumpTo(pi) {
     if (!alive || ctx.mode !== "tui" || !current || current.sent ||
         current.epoch !== epoch || session(ctx) !== current.session) return;
     current.sent = true;
-    transport.enqueue({ adapter_revision: 2, runtime_version: VERSION, event: "agent_settled",
+    const source = { adapter_revision: 2, runtime_version: VERSION, event: "agent_settled",
       session_id: current.session, run_id: current.id, event_id: current.id, instance_id: instance, aborted: event.aborted,
-      ...(!event.aborted && current.summary ? {summary:current.summary} : {}) },
+      ...(!event.aborted && current.summary ? {summary:current.summary} : {}) };
+    transport.enqueue(source,
       () => alive && ctx.mode === "tui" && epoch === current.epoch && session(ctx) === current.session, event.aborted ? undefined : current.body);
+    if (!event.aborted && atLeast(VERSION, minimums.reply.pi) && typeof pi.sendUserMessage === "function"
+        && typeof ctx.isIdle === "function" && typeof ctx.hasPendingMessages === "function") {
+      const valid = () => alive && round === current && current.epoch === epoch && ctx.mode === "tui"
+        && !current.replyInvalidated && session(ctx) === current.session && !pendingGates.size && !openPrompts.size
+        && ctx.isIdle() === true && ctx.hasPendingMessages() === false;
+      if (valid()) {
+        invalidateReply();
+        stopReply = replyOpportunity("pi", source, valid, () => true, decision => {
+          pi.sendUserMessage(decision.text, {expandPromptTemplates:false});
+          // The host exposes no receipt or caller-supplied native input ID.
+          return "delivery_unknown";
+        });
+      }
+    }
     current.body = undefined;
   });
 }

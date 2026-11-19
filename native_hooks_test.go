@@ -383,7 +383,7 @@ func TestNativeSummaryAssetUpgrade(t *testing.T) {
 			if err := s.readJSON(nativeRecordName(agent), &record); err != nil {
 				t.Fatal(err)
 			}
-			if record.Revision != 4 || record.Pending != "" {
+			if record.Revision != nativeAdapterRevision || record.Pending != "" {
 				t.Fatalf("upgrade incomplete: revision=%d pending=%q", record.Revision, record.Pending)
 			}
 			files, _, err := nativeRenderedFiles(s, agent, path, cli)

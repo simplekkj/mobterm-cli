@@ -48,7 +48,7 @@ type codexThread struct {
 func codexFollowupSpec(raw []byte) (codexAsyncHook, InteractionSpec, error) {
 	var p codexAsyncHook
 	var object map[string]json.RawMessage
-	spec := InteractionSpec{Kind: "followupMessage", AgentVersion: "0.166.0", AdapterVersion: 1, Title: "Codex follow-up message", Scope: "Send a new user message to the original running Codex thread. This does not answer a blocking request or win a race with messages sent from another terminal.", SupportedActions: []string{"send_message", "release"}, TTL: 300 * time.Second}
+	spec := InteractionSpec{Kind: "followupMessage", AdapterVersion: 1, Title: "Codex follow-up message", Scope: "Send a new user message to the original running Codex thread. This does not answer a blocking request or win a race with messages sent from another terminal.", SupportedActions: []string{"send_message", "release"}, TTL: 300 * time.Second}
 	if len(raw) > interactionRequestLimit || interactionJSON(raw, &object) != nil || json.Unmarshal(raw, &p) != nil {
 		return p, spec, errors.New("codex_async_contract_unverified")
 	}
@@ -222,9 +222,10 @@ func codexConnect(ctx context.Context) (*codexRPC, error) {
 	}
 	_, version, _ := strings.Cut(initialized.UserAgent, "/")
 	parts := strings.Fields(version)
-	if len(parts) == 0 || parts[0] != "0.166.0" {
+	if len(parts) == 0 || !nativeInteractionVersion("codex", parts[0]) {
 		return fail(errors.New("codex_agent_version_unverified"))
 	}
+	client.version = parts[0]
 	if err = client.write(1, []byte(`{"method":"initialized"}`)); err != nil {
 		return fail(err)
 	}
@@ -370,6 +371,7 @@ func interactionCodexFollowup(ctx context.Context, s Store, api API, raw []byte)
 	}
 	bounded, stop := context.WithDeadline(ctx, time.Unix(start.StartedAt+300, 0))
 	defer stop()
+	spec.AgentVersion = client.version
 	spec.OwnerPID = client.peerPID
 	spec.OwnerBirth = client.peerBirth
 	meta, _ := json.Marshal(map[string]any{"thread_id": thread.ID, "session_id": thread.SessionID, "native_call_id": p.ToolUseID, "turn_id": p.TurnID, "daemon_pid": client.peerPID, "daemon_birth": client.peerBirth, "transcript_path": p.TranscriptPath})

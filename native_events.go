@@ -68,7 +68,7 @@ func parseNativeEvent(source string, payload []byte) (string, string, error) {
 		}
 		kind = "turn_completed"
 	}
-	return kind, digest(source + "\x00" + p.Event + "\x00" + p.SessionID + "\x00" + p.EventID + "\x00" + p.InstanceID), nil
+	return kind, newReplyOccurrence(source, p.Event, p.SessionID, p.EventID, p.InstanceID), nil
 }
 
 func nativeTargetIdentity(identity string, locator Locator) string {

@@ -175,7 +175,7 @@ func TestPiPackageSelectionStatusAndInstall(t *testing.T) {
 		{"unset override", "", bin, "99.0.0", ""},
 		{"missing package", "missing private package", filepath.Join(cwd, "missing private package"), "", "below_minimum"},
 		{"low version", "./selected package", selected, "1.0.99", "below_minimum"},
-		{"prerelease", "~/package", filepath.Join(home, "package"), "1.3.0-rc.1", "prerelease"},
+		{"prerelease", "~/package", filepath.Join(home, "package"), "1.3.0-rc.1", ""},
 		{"invalid file host", "file://private.invalid/package", "", "", "probe_failed"},
 		{"invalid file escape", fileURL + "%invalid", "", "", "probe_failed"},
 		{"invalid file encoding", fileURL + "%FF", "", "", "probe_failed"},
@@ -242,7 +242,7 @@ func TestPiPackageSelectionStatusAndInstall(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				want := "pi requires stable >=1.1.0: " + sample.reason + "; hook configuration unchanged"
+				want := "pi requires >=1.1.0: " + sample.reason + "; hook configuration unchanged"
 				if err == nil || err.Error() != want {
 					t.Fatalf("unsafe/incorrect install refusal: %v", err)
 				}

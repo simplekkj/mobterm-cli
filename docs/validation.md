@@ -1969,3 +1969,75 @@ and both accepted the unchanged old adapter packet. Each accepted occurrence
 was read back from local run state. The Node harness separately exercised the
 shipped adapters. The host registration checks used temporary HOME/config;
 they did not run a live model conversation or send real APNs notifications.
+
+
+## Native source-bound replies, 2026-11-19
+
+Verified on macOS Darwin 24.6.0, x86_64, Go 1.27.1 and Node 22.22.2.
+The tested locally built CLI used the implementation working tree based on
+`b21dd0e1facffcfa6373833400c1bfae84f54872`. Its SHA-256 for the three final
+native delivery runs was `96ab1a4618510ddfcac164fb7b1ccef5735509450c5815c7c7e5749ac8c6af18`.
+The exact Git commits for this cross-repository delivery appear in its handoff.
+
+| Executed scope | Result |
+| --- | --- |
+| `node scripts/test-native-adapters.mjs` | PASS. Includes the exported adapter modules, held and late helper outcomes, grants, version gates, Pi switch/tree/busy/third-party prompt, OpenCode route/permission/new source/disposal, and Claude stop/end/change/reload/subagent results. Unicode, whitespace and full-budget input are checked. |
+| `python3 scripts/test-claude-native-reply.py "$CLAUDE_BINARY" "$CLI"` | PASS with official Claude Code 2.1.328. The CLI-generated plugin passed Claude's module validator. A real isolated interactive TUI loaded the Mod. Its ordinary-reply helper and classic Hook saw the same session, host PID and prompt ID. The Mod submitted the exact new user text, produced `native_accepted`, and the local model fixture saw both prompts in that original session. |
+| `python3 scripts/test-plugin-native-reply.py opencode "$OPENCODE_BINARY" "$CLI"` | PASS with official OpenCode V2 2.3.2. The real standalone TUI accepted the original plugin's explicit queued prompt, published the matching native inbox delivery, and the fixture received both user messages, byte-for-byte, in the same history. Receipt states observed: `native_accepted` and `native_consumed`. |
+| `python3 scripts/test-plugin-native-reply.py pi "$PI_BINARY" "$CLI"` | PASS with official Pi 1.5.2. The original extension's `sendUserMessage` produced a second native user-message event in the same session. The local provider received the text with surrounding whitespace, Unicode and literal template unchanged. The adapter reported `delivery_unknown` because its public caller has no reliable correlation ID. |
+| `python3 scripts/test-native-adapters-host.py opencode "$OPENCODE_BINARY" "$CLI" 2.3.2`, and `python3 scripts/test-native-adapters-host.py pi "$PI_BINARY" "$CLI" 1.5.2 "$PI_PACKAGE_ROOT"` | PASS in isolated directories. OpenCode loaded all 18 listeners on both real TUI launches. Pi's official discovery/import and its real TUI registered 16 listeners. An initial OpenCode probe under simultaneous builds timed out, and one JS child readiness check timed out. Both reruns passed. |
+| Codex CLI `--version` | Observed 0.170.0. Ordinary replies have no dispatch path in either shared or embedded/profile mode. Legacy async acceptance, exact loaded-thread mapping and socket/queue checks use the existing controlled tests. |
+
+Controlled native-event regressions exercised late and overlapping callbacks.
+Pi preserved its completion notification across a pre-settlement compaction,
+withheld the ordinary operation while a third-party UI prompt remained open
+and refused a missing pending-input probe result. OpenCode refused same-location
+global forms and family permissions already open at completion, rejected a
+malformed active-session response, and ignored replayed durable execution
+events with older sequence numbers. Claude forwarded incomplete native
+completion events through the Mod hook without opening an opportunity.
+
+The three real native delivery runs supply one already-authorized helper decision
+and a local synthetic model response. They verify the production adapter's
+submission and original host consumption; remote authorization, API/APNs, paid
+model execution, real device delivery and background/SSH transport are separate
+evidence. No installed user session, credential or configuration was exercised.
+
+### CLI checks for the final source-bound reply implementation
+
+Both full suites ran serially on macOS 15.8.1 x86_64, Go 1.27.1 and tmux 3.7c
+with the same final Go sources, tests and embedded adapters. The repository
+build command produced SHA-256
+`2feec877afdee17e3174f544f782ce77777eacb4f14039c8a41061a34042da82`.
+Building the same tree without `-trimpath` reproduced the binary used in the
+three official host tests byte for byte.
+
+| Executed command or scope | Observed result |
+| --- | --- |
+| `MOBTERM_REQUIRE_TMUX=1 go test -json -count=1 -timeout 45m ./...` | PASS, 624.759 s. All 836 tests and subtests passed with zero skips. The live tmux identity, pane movement and respawn fixtures ran. |
+| `MOBTERM_REQUIRE_TMUX=1 go test -race -json -count=1 -timeout 45m ./...` | PASS, 754.271 s. All 836 tests and subtests passed with zero skips and zero race reports. |
+| `test -z "$(gofmt -l .)"`, `go vet ./...`, `go build -trimpath -o mobterm-cli .`, `git diff --check` | PASS. |
+| `node scripts/test-native-adapters.mjs` and `go test -count=1 -run '^TestNativeSummaryAssetUpgrade$' ./...` | PASS against the final templates, including reinstall/upgrade of generated adapters and their ownership fingerprints. |
+| Final CLI executable with a temporary private store and synthetic Pair | PASS for read-only negotiation, signed local disable, stale signed-frame rejection, configuration revision readback and authenticated missing-source fallback. |
+
+The Go/Swift wire vectors, two-Pair competing submissions, single-use native
+authorization, stale source/owner changes, crash responsibility, policy
+off/on replay, receipt access after outbox cleanup and private file checks ran
+in both suites. The controlled native completion fixtures produced one
+notification per Pair and matched its signed envelope to the same original
+Claude, OpenCode or Pi source with no body. Claude ran with the Mod callback
+both before and after classic Stop/idle delivery.
+
+The Codex regression used a recording Unix daemon at the guarded default
+rendezvous for an isolated configuration. Each positive control established a
+loaded, directly addressable thread. In all four scenarios (unsubscribed idle,
+same-ID unload/reload, shared tree session ID, embedded/profile with a separate
+default daemon), CLI inspect and send returned the ordinary-reply fallback.
+They opened zero additional connections and made zero native calls.
+
+An early integration run caught obsolete expectations for the managed adapter
+revision and reached Go's default ten-minute package timeout during the
+seven-day outbox fixture. Superseded concurrent runs were stopped. An earlier
+ordinary suite passed in 617.951 s before the last Pi/OpenCode adapter changes.
+The final runs above include those changes and used a 45-minute package-level
+test timeout.

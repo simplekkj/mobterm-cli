@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -35,16 +37,33 @@ type agentCompatibility struct {
 	suffix    string
 }
 
+//go:embed adapters/minimums.json
+var nativeMinimumJSON string
+
+type capabilityMinimums struct {
+	Notification map[string]stableVersion `json:"notification"`
+	Interaction  map[string]stableVersion `json:"interaction"`
+	Reply        map[string]stableVersion `json:"reply"`
+}
+
+var minimums = func() capabilityMinimums {
+	var policy capabilityMinimums
+	if err := json.Unmarshal([]byte(nativeMinimumJSON), &policy); err != nil {
+		panic(err)
+	}
+	return policy
+}()
+
 var agentCompatibilities = map[string]agentCompatibility{
-	"codex":    {stableVersion{0, 100, 0}, "0.163.0", "codex-cli ", ""},
-	"claude":   {stableVersion{2, 0, 36}, "2.1.301", "", " (Claude Code)"},
-	"opencode": {stableVersion{2, 0, 0}, "2.1.0", "opencode v", ""},
-	"pi":       {stableVersion{1, 1, 0}, "1.3.0", "", ""},
+	"codex":    {minimums.Notification["codex"], "0.163.0", "codex-cli ", ""},
+	"claude":   {minimums.Notification["claude"], "2.1.301", "", " (Claude Code)"},
+	"opencode": {minimums.Notification["opencode"], "2.1.0", "opencode v", ""},
+	"pi":       {minimums.Notification["pi"], "1.3.0", "", ""},
 }
 
 // Match a whole official version token. An optional v and SemVer build metadata
-// are accepted; prereleases are parsed only to give a precise refusal reason.
-var agentVersionToken = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$`)
+// are accepted. A prerelease of the minimum sorts below that release.
+var agentVersionToken = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$`)
 
 func (p agentCompatibility) evaluate(output string) string {
 	output = strings.TrimSpace(output)
@@ -59,18 +78,28 @@ func (p agentCompatibility) evaluate(output string) string {
 	if m == nil {
 		return "unknown_output"
 	}
-	var actual stableVersion
-	for i := range actual {
-		n, err := strconv.ParseUint(m[i+1], 10, 64)
-		if err != nil {
-			return "version_overflow"
+	return compareMinimum(m, p.minimum)
+}
+
+// All configured minima are releases. Compare decimal strings to avoid
+// losing precision on a valid future major or prerelease numeric component.
+func compareMinimum(m []string, minimum stableVersion) string {
+	for _, id := range strings.Split(m[4], ".") {
+		if len(id) > 1 && id[0] == '0' && strings.Trim(id, "0123456789") == "" {
+			return "unknown_output"
 		}
-		actual[i] = n
+	}
+	for i, component := range minimum {
+		floor := strconv.FormatUint(component, 10)
+		n := m[i+1]
+		if len(n) < len(floor) || len(n) == len(floor) && n < floor {
+			return "below_minimum"
+		}
+		if n != floor {
+			return ""
+		}
 	}
 	if m[4] != "" {
-		return "prerelease"
-	}
-	if actual.less(p.minimum) {
 		return "below_minimum"
 	}
 	return ""
@@ -148,6 +177,10 @@ func agentVersionOutput(ctx context.Context, agent string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return probeSelectedAgent(ctx, agent, piPackage, launch, budget)
+}
+
+func probeSelectedAgent(ctx context.Context, agent, piPackage string, launch agentLaunch, budget int) ([]byte, error) {
 	c := exec.CommandContext(ctx, launch.executable, append(launch.args, "--version")...)
 	dir, err := os.MkdirTemp("", "mobterm-agent-version-")
 	if err != nil {
@@ -235,7 +268,7 @@ func hookVersions(ctx context.Context, agent string) error {
 		if !ok {
 			return fmt.Errorf("agent must be codex, claude, opencode or pi")
 		}
-		return fmt.Errorf("%s requires stable >=%s: %s; hook configuration unchanged", agent, p.minimum, probe.reason)
+		return fmt.Errorf("%s requires >=%s: %s; hook configuration unchanged", agent, p.minimum, probe.reason)
 	}
 	return nil
 }

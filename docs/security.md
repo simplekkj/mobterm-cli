@@ -164,3 +164,14 @@ not initialize, prune, contact the API or update a run, terminal, request or
 read receipt. The App and CLI each enforce locally known binding/revocation:
 a cloud-only revocation has a propagation window until either learns it.
 A historical read does not grant an approval, answer or navigation right.
+
+## Latest-source ordinary replies
+
+Ordinary replies require an explicit local activation for the Pair/Agent and
+current cloud policy generation. Only the original live native adapter receives
+the decision through the bounded helper. The native runtime version and source
+are checked separately from terminal liveness, discovery and cached message
+content. The adapter never sends reply text to an argv, shell, PTY, terminal
+clipboard, notification service or APNs. A matching durable receipt can
+advance evidence after delivery uncertainty; losing the result cannot create
+another dispatch. See [reply wire v1](reply-v1.md).

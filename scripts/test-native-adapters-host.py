@@ -65,7 +65,7 @@ export default function(pi) {
                     except OSError:break
             if not marker.exists():raise RuntimeError('Pi TUI did not load extension: '+repr(tail))
             result=json.loads(marker.read_text())
-            assert result=={'version':version,'mode':'tui','listeners':11},result
+            assert result=={'version':version,'mode':'tui','listeners':16},result
             print('PASS Pi actual TUI session_start',result)
         finally:
             if proc.poll() is None:os.killpg(proc.pid,signal.SIGTERM)
@@ -101,7 +101,7 @@ export default {...plugin,setup(context){
                         except OSError:break
                 if not marker.exists(): raise RuntimeError('official TUI did not load plugin; isolated output: '+repr(tail))
                 result=json.loads(marker.read_text())
-                assert result['version']==version and result['listeners']==15,result
+                assert result['version']==version and result['listeners']==18,result
                 print('PASS OpenCode official TUI setup/restart',result)
             finally:
                 if proc.poll() is None:os.killpg(proc.pid,signal.SIGTERM)

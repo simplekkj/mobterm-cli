@@ -25,7 +25,7 @@ func flags(name string, args []string, defs func(*flag.FlagSet)) (*flag.FlagSet,
 	return f, f.Parse(args)
 }
 func installationStatus(id string) map[string]any {
-	return map[string]any{"v": 1, "installation_id": id, "version": version, "commit": commit, "interaction_protocols": []int{1}, "message_body_protocols": []int{1}, "read_only_target_protocols": []int{1}}
+	return map[string]any{"v": 1, "installation_id": id, "version": version, "commit": commit, "interaction_protocols": []int{1}, "message_body_protocols": []int{1}, "reply_protocols": []int{1}, "read_only_target_protocols": []int{1}}
 }
 
 func status(ctx context.Context, s Store, a API, pairID string, installationOnly bool) (result map[string]any, err error) {
@@ -157,6 +157,11 @@ func commandTimeout(args []string) time.Duration {
 		return 2 * time.Second
 	case "approval":
 		return 125 * time.Second
+	case "reply":
+		if len(args) > 1 && args[1] == "wait" {
+			return 301 * time.Second
+		}
+		return 10 * time.Second
 	case "interaction":
 		return 335 * time.Second
 	case "upgrade":
@@ -197,7 +202,7 @@ func commandTimeout(args []string) time.Duration {
 
 func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "mobterm-cli setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | message read --stdin-frame | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | pairs retire --stdin-frame --json | upgrade --version vX.Y.Z | version")
+		fmt.Fprintln(out, "mobterm-cli setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | reply inspect|send|status|configure|configuration --stdin-frame | message read --stdin-frame | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | pairs retire --stdin-frame --json | upgrade --version vX.Y.Z | version")
 		return 0
 	}
 	if args[0] == "version" || args[0] == "--version" {
@@ -268,6 +273,17 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 			err = errors.New("approval_requires_frame")
 		} else {
 			value, err = approvalCommand(ctx, s, a, args[1], in)
+		}
+	case "reply":
+		if len(args) == 4 && args[1] == "wait" && args[2] == "--source" {
+			value, err = replyWait(ctx, s, a, args[3], in)
+		} else if (len(args) == 3 || len(args) == 4 && args[3] == "--json") && args[2] == "--stdin-frame" {
+			value, err = replyCommand(ctx, s, a, args[1], in)
+		} else {
+			err = errors.New("reply_requires_frame")
+		}
+		if err != nil {
+			err = errors.New(safeCode(err.Error()))
 		}
 	case "interaction":
 		if len(args) == 2 && args[1] == "codex-followup" {
@@ -530,7 +546,7 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 			if args[0] == "target" {
 				code = targetErrorCode(err)
 			}
-			if args[0] == "interaction" {
+			if args[0] == "interaction" || args[0] == "reply" {
 				code = safeCode(err.Error())
 			}
 			printJSON(out, map[string]any{"v": 1, "ok": false, "error": code})

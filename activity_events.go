@@ -99,7 +99,7 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 		a.Summary = cleanMessageSummary(p.Summary)
 		a.Run = p.RunID
 		a.Instance = p.InstanceID
-		a.Occurrence = digest(source + "\x00" + p.Event + "\x00" + p.SessionID + "\x00" + p.EventID + "\x00" + p.InstanceID)
+		a.Occurrence = newReplyOccurrence(source, p.Event, p.SessionID, p.EventID, p.InstanceID)
 		switch p.Event {
 		case "session.execution.started", "agent_start":
 			a.State = "running"
@@ -241,7 +241,7 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 			a.Summary = summary
 			a.State = "turn_completed"
 			a.Reminder = "turn_completed"
-			a.Occurrence = digest("claude\x00" + digest(p.SessionID) + "\x00" + cycle + "\x00completed")
+			a.Occurrence = claudeCompletionOccurrence(p.SessionID, cycle)
 			break
 		}
 		kind, id, err := parseEvent(ctx, s, source, raw)

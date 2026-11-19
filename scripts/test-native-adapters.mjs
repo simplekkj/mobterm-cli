@@ -1,5 +1,7 @@
 // Controlled native-event contract tests. These are not real-host loading evidence.
 import assert from 'node:assert/strict';
+import {testNativeReply} from './test-native-reply.mjs';
+await testNativeReply();
 import { createHash, createHmac, hkdfSync } from 'node:crypto';
 import { readFile, mkdtemp, writeFile, chmod, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -60,6 +62,9 @@ let diagnostics = 0;
 globalThis.__mobtermFixture = { Plugin: { define: x => x }, createEffect, createRoot, spawn };
 async function load(source, version = '1.3.0', executable = recorder) {
   let text = await readFile(new URL(`../adapters/${source === 'pi' ? 'pi/mobterm-jumpto.ts' : 'opencode/tui.js'}`, import.meta.url), 'utf8');
+  text = text.replace('__MOBTERM_MINIMUM_JS__', await readFile(new URL('../adapters/shared/minimum.js', import.meta.url), 'utf8'))
+    .replace('__MOBTERM_REPLY_JS__', await readFile(new URL('../adapters/shared/reply.js', import.meta.url), 'utf8'));
+  text = text.replace('__MOBTERM_MINIMUMS_JSON__', await readFile(new URL('../adapters/minimums.json', import.meta.url), 'utf8'));
   text = text.replaceAll('__MOBTERM_CLI_JSON__', JSON.stringify(executable)).replaceAll('__MOBTERM_STORE_JSON__', JSON.stringify(temp))
     .replace('import { spawn } from "node:child_process";', 'const {spawn} = globalThis.__mobtermFixture;')
     .replace('import { Plugin } from "@opencode/plugin/tui";', 'const {Plugin} = globalThis.__mobtermFixture;')
@@ -152,9 +157,9 @@ try {
   cleanAgain();cleanSecond();
   const unsupported=host();unsupported.context.app.version='1.99.0';plugin.setup(unsupported.context);
   assert.equal(unsupported.handlers.size,0);
-  unsupported.context.app.version='2.1.0';unsupported.context.app.channel='dev';plugin.setup(unsupported.context);
-  assert.equal(unsupported.handlers.size,0);
-  unsupported.context.app.channel='latest';unsupported.context.app.version='2.1.0-beta';plugin.setup(unsupported.context);
+  const preview=host();preview.context.app.version='2.1.0-rc.1';preview.context.app.channel='dev';
+  const stopPreview=plugin.setup(preview.context);assert.ok(preview.handlers.size>0);stopPreview();
+  unsupported.context.app.channel='latest';unsupported.context.app.version='2.0.0-beta';plugin.setup(unsupported.context);
   assert.equal(unsupported.handlers.size,0,'prerelease runtime rejected');
   const malformed=host(),cleanMalformed=plugin.setup(malformed.context);
   malformed.emit('session.execution.succeeded','x'.repeat(8192),{sessionID:'root'});

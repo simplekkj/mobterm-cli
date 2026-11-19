@@ -25,6 +25,7 @@ type codexRPC struct {
 	next      int
 	peerPID   int
 	peerBirth string
+	version   string
 }
 
 func codexHandshake(ctx context.Context, c *net.UnixConn) (*codexRPC, error) {

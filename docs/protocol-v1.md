@@ -1,5 +1,10 @@
 # Mobterm notification protocol v1
 
+Latest-source ordinary message replies use trusted SSH [reply wire v1](reply-v1.md)
+and the [native adapter capability matrix](native-interactions.md). Existing
+notifications, envelopes and Jump to use their original contracts.
+
+
 The optional negotiated [v2 contract](protocol-v2.md) adds run state, inbox/badge
 and native approval. This v1 envelope, AAD, target/setup frames and vectors remain
 unchanged; unknown peers receive only a meaningful supported v1 reminder.
@@ -81,7 +86,7 @@ Full status and installation-only/agents-only retain their existing roles.
 
 `status --json` adds Agent compatibility diagnostics under `capabilities.codex`
 and `capabilities.claude`, plus `capabilities.opencode` and `capabilities.pi`: `minimum_version`, `supported_range`, and (on refusal)
-`version_rejection`. `supported` is the shared stable/minimum policy decision,
+`version_rejection`. `supported` is the shared SemVer minimum policy decision,
 not proof of native-event or phone delivery. `version` is a validation reference,
 identified by `version_role: "validation_reference"`; it is not a version gate.
 `actual_version` is bounded to 100 bytes (empty for failed/oversized probes), and
@@ -136,7 +141,7 @@ Each capability adds the required typed `probe_status`:
 `installed` retains its prior successful-probe meaning and is not an absence
 signal by itself. Existing version rejection codes remain compatible; use
 `probe_status`, not their strings, to distinguish absent/failed/cancelled probes.
-Unknown output, prereleases and old versions produce `ok` with `supported:false`.
+Unknown output and versions below the release minimum (including a prerelease of that minimum) produce `ok` with `supported:false`.
 Only `ok`, `installed:true`, `supported:true` and the applicable integration
 capabilities permit configuration. OpenCode/Pi additionally require
 `managed_hooks:true` and supported `adapter_revision`; Codex/Claude do not.

@@ -13,7 +13,7 @@ import (
 // This is a validated baseline, not a claim about the first release with hooks.
 func codexNativeVersion(actual string) bool {
 	compatibility := agentCompatibilities["codex"]
-	compatibility.minimum = stableVersion{0, 166, 0}
+	compatibility.minimum = minimums.Interaction["codex"]
 	return compatibility.evaluate(actual) == ""
 }
 

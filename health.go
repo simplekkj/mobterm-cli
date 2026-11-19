@@ -25,6 +25,7 @@ type agentHealth struct {
 	RecoveryAction     string        `json:"recovery_action,omitempty"`
 	RunState           string        `json:"run_state,omitempty"`
 	MobileApproval     string        `json:"mobile_approval,omitempty"`
+	ReplyAdapter       string        `json:"reply_adapter,omitempty"`
 	NativeTrust        string        `json:"native_trust,omitempty"`
 }
 
@@ -79,6 +80,12 @@ func hookHealth(s Store, capabilities map[string]any) map[string]agentHealth {
 }
 func inspectHook(s Store, agent string) agentHealth {
 	h := agentHealth{State: "complete", ConfigurationState: "complete", Issues: []healthIssue{}, Loaded: "unknown"}
+	if agent == "claude" {
+		h.ReplyAdapter = "not_configured"
+		if nativeHooksInstalled(s, agent) {
+			h.ReplyAdapter = "installed_load_unverified"
+		}
+	}
 	if agent == "pi" || agent == "opencode" {
 		return inspectNativeHook(s, agent, h)
 	}

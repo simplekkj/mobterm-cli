@@ -7,14 +7,14 @@ on 2026-10-16 and extended for OpenCode/Pi on 2026-10-20. â€œCurrent referenceâ€
 reproducible sample label, not the newest upstream release or an action allowlist.
 For current v2 observation and legacy approval behavior, see
 [negotiated state and approval](#negotiated-state-and-approval-2026-10-31); for
-new request/answer actions, use the separate exact-version gates in
+new request/answer actions, use the per-action minimum versions and runtime schemas in
 [native interactions](native-interactions.md). Codex completion remains native
 `notify`; the hooks-only G0 requirement remains blocked as recorded below.
 
 ## Notification version policy and fixed samples
 
-Install, notify and status share one local stable-version
-policy; they do not query a registry at runtime. Stable versions at or above the
+Install, notify and status share one local SemVer
+policy without a registry query. Versions at or above the
 minimum can use the existing adapter, with no mechanical upper limit. Every event
 must still satisfy the field, semantic, target and pairing checks. A future version
 passing the gate is **not** a claim that its event contract has been tested.
@@ -35,11 +35,11 @@ needed merely to unlock a higher stable Agent version using the same contract.
 Only whole official output forms `codex-cli X.Y.Z`, `X.Y.Z (Claude Code)`,
 `opencode vX.Y.Z`, and Pi plain `X.Y.Z` are
 recognized. Outer whitespace, an optional `v` immediately before the number and
-SemVer build metadata (`+build.7`) are accepted. Components are unsigned 64-bit
-integers with no leading zeros. Build metadata has nonempty ASCII alphanumeric /
-hyphen dot-separated identifiers and does not affect comparison. Prereleases
-(alpha/beta/rc/nightly/dev or any `-suffix`), overflow, partial versions, banners,
-multiple versions and unknown forms fail safely. Probe output is bounded by the
+SemVer build metadata (`+build.7`) are accepted. Numeric components have no leading zeros. Build metadata does
+not affect comparison. A prerelease of the minimum sorts below that release;
+a prerelease of a higher core version passes the version floor. Invalid forms
+such as `1.2.3-01`, empty identifiers, banners, or multiple versions fail.
+Probe output is bounded by the
 2 MiB command limit and by 100 bytes in status. Each Agent probe has the same
 20-second budget, bounded by the calling context, with bounded pipe cleanup.
 `hooks install` and `status --agents-json` allow 25 seconds for the probe and
@@ -96,10 +96,10 @@ alone still does not prove either completion or an actionable human wait.
 
 | Source | Native event | Mapping / limitation |
 | --- | --- | --- |
-| Codex >=0.100.0 stable | `notify: agent-turn-complete` | `turn_completed`; requires stable thread/turn identity and positive root provenance below |
+| Codex >=0.100.0 | `notify: agent-turn-complete` | `turn_completed`; requires stable thread/turn identity and positive root provenance below |
 | Codex | `PermissionRequest`, `Stop`, TUI approval alerts | Not forwarded: not proof of final completion or unresolved human wait |
-| Claude Code >=2.0.36 stable | `UserPromptSubmit` then `Notification: idle_prompt` | `turn_completed`; requires a live prompt association and native delayed idle |
-| Claude Code >=2.0.36 stable | `Notification: permission_prompt`, `elicitation_dialog` | `needs_input`; independent of completion associations |
+| Claude Code >=2.0.36 | `UserPromptSubmit` then `Notification: idle_prompt` | `turn_completed`; requires a live prompt association and native delayed idle |
+| Claude Code >=2.0.36 | `Notification: permission_prompt`, `elicitation_dialog` | `needs_input`; independent of completion associations |
 | Claude Code | Other Notification/Stop/SubagentStop events | Ignored |
 | Herdr | 0.9.1, 0.9.3, protocol 22 | Same native Agent events plus snapshot/socket verification; terminal gate unchanged |
 | tmux | Structured `list-panes` support | Exact socket/server/session/window/pane; linked membership ambiguity rejected |
@@ -346,7 +346,7 @@ forms select the same package, including literal spaces in ordinary paths.
 An invalid override fails the probe without trying a different installation. Actual install
 paths use the caller environment, never this probe directory. Pi's output must
 be plain `X.Y.Z`, OpenCode's `opencode vX.Y.Z`; neither permits an extra `v` or
-runtime suffix. SemVer build metadata is accepted; pre-release versions are not.
+unrecognized runtime suffix. SemVer build metadata and valid prereleases follow the minimum-version rules above.
 
 The bridge uses a recorded absolute executable, argv and bounded stdin, one child
 plus at most eight queued jobs, a ten-second deadline and lifecycle cleanup.
@@ -484,7 +484,7 @@ a downgrade requires restoring its owned adapter as well.
 ### Interaction wire v1 adapters
 
 New request/answer actions use separate default-off per-Agent/type permissions,
-not the legacy mobile approval switch. Exact checked runtime versions, native
+not the legacy mobile approval switch. Runtime minimums and checked sample versions, native
 reply contracts, conditional limitations, schema subsets, lifecycle boundaries
 and primary source links are recorded in [native interactions](native-interactions.md).
 Notifications keep their existing minimum versions. An installed integration is

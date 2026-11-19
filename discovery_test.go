@@ -222,7 +222,7 @@ func TestAgentProbeTypedFailures(t *testing.T) {
 				os.WriteFile(filepath.Join(bin, agent), []byte("#!/bin/sh\nprintf 'unknown version\\n'\n"), 0700)
 				expected = probeOK
 			case "prerelease":
-				os.WriteFile(filepath.Join(bin, agent), []byte("#!/bin/sh\nprintf 'codex-cli 99.0.0-beta\\n'\n"), 0700)
+				os.WriteFile(filepath.Join(bin, agent), []byte("#!/bin/sh\nprintf 'codex-cli 0.100.0-beta\\n'\n"), 0700)
 				expected = probeOK
 			}
 			if cancel != nil {

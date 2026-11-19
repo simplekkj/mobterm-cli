@@ -126,7 +126,7 @@ func parseEvent(ctx context.Context, s Store, source string, payload []byte) (ki
 			if cycle.Cycle == "" || cycle.PromptID != "" && p.PromptID != "" && cycle.PromptID != p.PromptID {
 				return "", "", nil
 			}
-			return "turn_completed", digest("claude\x00" + key + "\x00" + cycle.Cycle + "\x00completed"), nil
+			return "turn_completed", claudeCompletionOccurrence(p.SessionID, cycle.Cycle), nil
 		}
 	}
 	return "", "", errors.New("unsupported event source")
@@ -246,7 +246,14 @@ func notify(ctx context.Context, s Store, a API, source string, payload []byte, 
 			continue
 		}
 
-		d, e := enqueueBodyDelivery(ctx, s, p, kind, identity, l, source, summary, nil, body, nativeSource)
+		var reply *replyBinding
+		if source == "codex" && kind == "turn_completed" {
+			var input hookInput
+			if json.Unmarshal(payload, &input) == nil {
+				reply = replyIntentBinding(Activity{Agent: source, Session: input.ThreadID, Run: input.TurnID, Instance: input.ThreadID, Occurrence: identity, Reminder: kind}, l, p, "")
+			}
+		}
+		d, e := enqueueBoundDelivery(ctx, s, p, kind, identity, l, source, summary, nil, body, reply, nativeSource)
 		if e != nil {
 			lastErr = e
 			results = append(results, map[string]any{"v": 1, "pair_id": pid, "state": "not_saved", "error": safeCode(e.Error())})

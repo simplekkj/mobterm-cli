@@ -107,6 +107,10 @@ func interactionMAC(key []byte, f InteractionFrame) (string, error) {
 	return base64.StdEncoding.EncodeToString(m.Sum(nil)), nil
 }
 func readInteractionFrame(ctx context.Context, in io.Reader, v any) error {
+	return readStrictFrame(ctx, in, v, interactionFrameLimit)
+}
+
+func readStrictFrame(ctx context.Context, in io.Reader, v any, limit uint32) error {
 	result := make(chan error, 1)
 	go func() {
 		var header [4]byte
@@ -115,7 +119,7 @@ func readInteractionFrame(ctx context.Context, in io.Reader, v any) error {
 			return
 		}
 		n := binary.BigEndian.Uint32(header[:])
-		if n == 0 || n > interactionFrameLimit {
+		if n == 0 || n > limit {
 			result <- errors.New("invalid_interaction_frame")
 			return
 		}
@@ -300,6 +304,11 @@ func interactionConfigure(ctx context.Context, s Store, api API, in io.Reader) (
 		return nil, e
 	}
 	if !f.Enabled {
+		if f.Kind == "followupMessage" {
+			if e := removeReplyActivationLocked(s, f.PairID, f.Agent); e != nil {
+				return nil, e
+			}
+		}
 		entries, e := os.ReadDir(s.Dir)
 		if e != nil {
 			return nil, e
@@ -443,6 +452,9 @@ func interactionCommand(ctx context.Context, s Store, api API, command string, i
 	m, e := localInteractions(s)
 	if e != nil || m[f.PairID][r.Agent][r.Kind] <= 0 || !interactionCurrentPair(s, p) {
 		return nil, errors.New("interaction_disabled")
+	}
+	if command == "respond" && !interactionSourceCurrent(s, r) {
+		return nil, errors.New("interaction_source_changed")
 	}
 	if !mutation {
 		return interactionResult(r, f.PairID, true), nil
@@ -769,11 +781,7 @@ func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a A
 		// This sender already runs independently of the native callback.
 		// Its 5s context covers delivery; the shorter synchronous hook
 		// budget would also count the local store's durable writes.
-		if a.ChildWait != nil {
-			_ = flushRunSnapshotsWithBudget(sendCtx, s, api, 5*time.Second)
-		} else {
-			_ = publishActivityWithBudget(sendCtx, s, api, l, a, 5*time.Second)
-		}
+		_ = flushRunSnapshotsWithBudget(sendCtx, s, api, 5*time.Second)
 	}()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -837,7 +845,7 @@ func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a A
 		}
 		again, e := interactionRead(s, r.RequestID)
 		policy, policyErr := localInteractions(s)
-		if e == nil && policyErr == nil && policy[f.PairID][a.Agent][spec.Kind] > 0 && interactionCurrentPair(s, p) && again.State == "decision_recorded" && again.Frame != nil && again.Frame.DecisionID == f.DecisionID && time.Now().Unix() < expires && interactionAlive(again) {
+		if e == nil && policyErr == nil && policy[f.PairID][a.Agent][spec.Kind] > 0 && interactionCurrentPair(s, p) && interactionSourceCurrent(s, again) && again.State == "decision_recorded" && again.Frame != nil && again.Frame.DecisionID == f.DecisionID && time.Now().Unix() < expires && interactionAlive(again) {
 			again.State = "dispatching"
 			e = s.writeJSON("interaction-"+r.RequestID+".json", again)
 		} else {
@@ -1023,22 +1031,17 @@ func interactionUnavailable(ctx context.Context, s Store, api API, l Locator, a 
 	if e != nil || !accepted {
 		return e
 	}
-	if a.ChildWait != nil {
-		return flushRunSnapshots(ctx, s, api)
-	}
-	return publishActivity(ctx, s, api, l, a)
+	return flushRunSnapshots(ctx, s, api)
 }
 
-// Persist a scoped child request and its waiting run under the same lock.
+// A waiter, its reminder intent and the current source share one writer lock.
+// A delayed network sender only flushes the durable event and cannot advance the head.
 func registerInteractionWaitLocked(s Store, r InteractionRecord, a Activity) (bool, error) {
 	path := "interaction-" + r.RequestID + ".json"
 	if err := s.writeJSON(path, r); err != nil {
 		return false, err
 	}
-	if a.ChildWait == nil {
-		return true, nil
-	}
-	_, _, changed, err := applyActivityLocked(s, r.Locator, a)
+	runKey, _, changed, err := applyActivityLocked(s, r.Locator, a)
 	if err == nil && changed {
 		return true, nil
 	}
@@ -1049,7 +1052,7 @@ func registerInteractionWaitLocked(s Store, r InteractionRecord, a Activity) (bo
 		if readErr != nil {
 			return false, errors.Join(err, readErr)
 		}
-		if hint := db.Runs[r.ChildRunKey].Requests[a.RequestID].Interaction; hint != nil && hint.RequestID == r.RequestID {
+		if hint := db.Runs[runKey].Requests[a.RequestID].Interaction; hint != nil && hint.RequestID == r.RequestID {
 			return false, err
 		}
 	}
@@ -1220,7 +1223,7 @@ func interactionAuthorize(ctx context.Context, s Store, api API, in io.Reader) (
 	if allowed {
 		current, err := interactionRead(s, r.RequestID)
 		policy, pe := localInteractions(s)
-		allowed = err == nil && pe == nil && current.State == "dispatching" && time.Now().Unix() < r.ExpiresAt && policy[r.Frame.PairID][r.Agent][r.Kind] > 0
+		allowed = err == nil && pe == nil && interactionSourceCurrent(s, current) && current.State == "dispatching" && time.Now().Unix() < r.ExpiresAt && policy[r.Frame.PairID][r.Agent][r.Kind] > 0
 	}
 	return map[string]any{"v": 1, "allowed": allowed}, nil
 }
@@ -1265,7 +1268,7 @@ func interactionAuthorizeApproval(ctx context.Context, s Store, api API, in io.R
 	}
 	if allowed {
 		policy, e := localApprovals(s)
-		allowed = e == nil && policy[r.DecidingPair][r.Agent] > 0 && time.Now().Unix() < r.ExpiresAt
+		allowed = e == nil && policy[r.DecidingPair][r.Agent] > 0 && time.Now().Unix() < r.ExpiresAt && nativeRequestCurrent(s, r.Agent, r.Session, r.RequestID, r.Locator)
 	}
 	return map[string]any{"v": 1, "allowed": allowed}, nil
 }

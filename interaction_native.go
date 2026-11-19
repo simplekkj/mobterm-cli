@@ -14,27 +14,23 @@ import (
 func nativeInteractionID(id string) bool {
 	return id != "" && len(id) <= 1024 && strings.IndexFunc(id, unicode.IsControl) < 0
 }
+
+func runtimeAtLeast(policy map[string]stableVersion, agent, actual string) bool {
+	minimum, ok := policy[agent]
+	if !ok || len(actual) > 100 || strings.HasPrefix(actual, "v") {
+		return false
+	}
+	match := agentVersionToken.FindStringSubmatch(actual)
+	return match != nil && compareMinimum(match, minimum) == ""
+}
+
 func nativeInteractionVersion(agent, actual string) bool {
-	switch agent {
-	case "claude":
-		return actual == "2.1.316" || actual == "2.1.317"
-	case "codex":
-		return actual == "0.166.0"
-	case "opencode":
-		return actual == "2.2.5"
-	case "pi":
-		return actual == "1.4.0" || actual == "1.5.0"
-	}
-	return false
+	return runtimeAtLeast(minimums.Interaction, agent, actual)
 }
-func nativeInteractionActual(ctx context.Context, agent string) string {
-	p := probeAgent(ctx, agent)
-	c := agentCompatibilities[agent]
-	if p.status != probeOK {
-		return ""
-	}
-	return strings.TrimSuffix(strings.TrimPrefix(p.actual, c.prefix), c.suffix)
+func ordinaryReplyVersion(agent, actual string) bool {
+	return runtimeAtLeast(minimums.Reply, agent, actual)
 }
+
 func nativeKeys(value map[string]json.RawMessage, allowed ...string) bool {
 	for k := range value {
 		found := false
@@ -466,7 +462,7 @@ func interactionObserve(ctx context.Context, s Store, api API, source string, ra
 			}
 			return nil, interactionUnavailable(ctx, s, api, l, a, spec, reason)
 		}
-		spec.AgentVersion = nativeInteractionActual(ctx, "claude")
+		spec.AgentVersion = claudeHookVersion(ctx)
 	} else if source == "opencode" {
 		if p.Event == "form.created" {
 			spec, err = openCodeFormSpec(object["native_form"], p.SessionID)

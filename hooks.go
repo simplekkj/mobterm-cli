@@ -50,9 +50,33 @@ func configPath(agent string) (string, error) {
 	return "", errors.New("agent must be codex or claude")
 }
 func changeHooks(ctx context.Context, s Store, agent, action, path, executable string, checkVersion bool) error {
+	if agent == "claude" {
+		modNeeded := action == "uninstall" || !checkVersion
+		if checkVersion && action == "install" {
+			probe := probeAgent(ctx, "claude")
+			policy := agentCompatibilities["claude"]
+			policy.minimum = minimums.Reply["claude"]
+			modNeeded = probe.status == probeOK && policy.evaluate(probe.actual) == ""
+			// Reuse this probe for the classic installer, which has independent
+			// notification and Question support on older releases.
+			if err := changeClassicHooks(ctx, s, agent, action, path, executable, checkVersion, &probe); err != nil {
+				return err
+			}
+		} else if err := changeClassicHooks(ctx, s, agent, action, path, executable, checkVersion, nil); err != nil {
+			return err
+		}
+		if modNeeded {
+			return changeNativeHooks(ctx, s, agent, action, path, executable, false)
+		}
+		return nil
+	}
 	if agent == "opencode" || agent == "pi" {
 		return changeNativeHooks(ctx, s, agent, action, path, executable, checkVersion)
 	}
+	return changeClassicHooks(ctx, s, agent, action, path, executable, checkVersion, nil)
+}
+
+func changeClassicHooks(ctx context.Context, s Store, agent, action, path, executable string, checkVersion bool, claudeProbe *agentProbe) error {
 	if agent != "codex" && agent != "claude" {
 		return errors.New("agent must be codex or claude")
 	}
@@ -65,13 +89,13 @@ func changeHooks(ctx context.Context, s Store, agent, action, path, executable s
 		if agent == "codex" {
 			probe := probeAgent(ctx, agent)
 			if probe.reason != "" || probe.status != probeOK {
-				return fmt.Errorf("%s requires stable >=%s: %s; hook configuration unchanged", agent, agentCompatibilities[agent].minimum, probe.reason)
+				return fmt.Errorf("%s requires >=%s: %s; hook configuration unchanged", agent, agentCompatibilities[agent].minimum, probe.reason)
 			}
 			installCodexNative = codexNativeVersion(probe.actual)
 		} else {
-			probe := probeAgent(ctx, agent)
+			probe := *claudeProbe
 			if probe.reason != "" || probe.status != probeOK {
-				return fmt.Errorf("%s requires stable >=%s: %s; hook configuration unchanged", agent, agentCompatibilities[agent].minimum, probe.reason)
+				return fmt.Errorf("%s requires >=%s: %s; hook configuration unchanged", agent, agentCompatibilities[agent].minimum, probe.reason)
 			}
 			policy := agentCompatibilities["claude"]
 			policy.minimum = stableVersion{2, 1, 301}

@@ -41,7 +41,7 @@ func TestNativeEventContract(t *testing.T) {
 					p.RuntimeVersion = "0.1.0"
 					invalid = true
 				case "prerelease":
-					p.RuntimeVersion = "99.0.0-rc.1"
+					p.RuntimeVersion = agentCompatibilities[source].minimum.String() + "-rc.1"
 					invalid = true
 				case "missing_version":
 					p.RuntimeVersion = ""

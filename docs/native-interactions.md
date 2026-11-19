@@ -1,11 +1,41 @@
 # Native interaction adapters (interaction wire v1)
 
-Checked against official release sources on 2026-11-03 (Asia/Shanghai). New
-interactive actions use an explicit version allowlist; old notification minimums
-are unchanged. Official package registry dist-tags were checked separately from
-cached release listings: Codex 0.166.0, Claude Code 2.1.317, OpenCode V2 2.2.5,
-Pi 1.5.0. Pi 1.4.0 is also supported. Claude 2.1.316 and 2.1.317 share the checked
-classic Hook contract. An unknown newer runtime does not inherit authorization.
+Each action negotiates its native schema and checks its running host. Versions
+use SemVer precedence against the following minimum releases. Build metadata
+does not affect eligibility. A newer major or prerelease still needs the actual
+action API, host mode and source binding.
+
+| Agent | Structured interactions | Ordinary reply to the current source |
+| --- | --- | --- |
+| Codex | 0.166.0 | Terminal fallback in shared and profile/embedded mode. A loaded thread has no continuous originating TUI incarnation. |
+| Claude Code | 2.1.316 classic Hooks | 2.1.326, original interactive Mod only |
+| OpenCode V2 | 2.2.5 TUI plugin | 2.2.5, same activation, root session, execution and location |
+| Pi | 1.4.0 extension-owned gate | 1.5.1, same idle extension, session and settled run |
+
+For an ordinary message follow [reply wire v1](reply-v1.md). A real host event
+may register one opportunity for up to 300 seconds. Inspecting it never starts
+a process or extends that deadline. The source notification and completion
+remain the existing event, independently of body-cache success.
+
+`hooks install --agent claude` prepares the classic Hooks and, on a compatible
+version, a fingerprint-owned plugin under the MobTerm state directory at
+`native/claude-reply`. Load this directory using Claude's own plugin mechanism
+(e.g. `claude --plugin-dir /absolute/path/to/native/claude-reply` in a new
+interactive terminal). Installation leaves active sessions and organization
+settings alone. `health.claude.reply_adapter=installed_load_unverified` describes
+the files. Only a live source-bound opportunity proves that the Mod loaded for
+this message. It captures the classic prompt ID at main turn start, requires
+the same native turn at completion, and calls `$.prompt.submit({text,asUser:true})`.
+Classic Question and Elicitation check the executable image of the running Claude ancestor. A PATH upgrade alone cannot enable its native schema. A drop is a native rejection. The Mod never repeats a dropped submission.
+
+OpenCode specifies a stable input ID and `delivery:"queue"` on the original
+host's `session.prompt`. Its matching admission result and
+`session.inbox.delivered` event carry distinct receipt states. Pi uses
+`pi.sendUserMessage(text,{expandPromptTemplates:false})`; the API has no
+caller-supplied correlation ID, so returning from it leaves delivery unknown.
+All three paths invalidate their captured source on input, native requests
+or owner change. Native final checks and submission have a race with other
+inputs on hosts that lack an expected-source precondition.
 
 ## Original TUI paths
 
@@ -21,7 +51,7 @@ classic Hook contract. An unknown newer runtime does not inherit authorization.
   existing official CODEX_HOME default Unix rendezvous, verifies its exact alias,
   private directory/socket modes and UID, and verifies kernel peer PID, UID,
   process birth and ancestry while the original Hook is alive. It neither creates
-  nor repairs a daemon endpoint. It keeps that same socket, verifies the pinned
+  nor repairs a daemon endpoint. It keeps that same socket, verifies the negotiated
   server version, and uses loaded/list plus metadata-only thread/read to require
   one live direct-input-capable thread matching session_id, optional agent_id and
   exact transcript_path. It never reads the transcript file or resumes a thread.

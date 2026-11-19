@@ -44,7 +44,7 @@ func agentDiagnostics(ctx context.Context, s Store) map[string]any {
 		capability["version_role"] = "validation_reference"
 		capability["validation_reference"] = policy.reference
 		capability["minimum_version"] = policy.minimum.String()
-		capability["supported_range"] = ">=" + policy.minimum.String() + " stable"
+		capability["supported_range"] = ">=" + policy.minimum.String()
 		capability["probe_status"] = probe.status
 		capability["installed"] = probe.installed
 		capability["actual_version"] = probe.actual

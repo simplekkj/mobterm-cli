@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -98,7 +99,7 @@ func TestOpenCodeNativePrimitiveFields(t *testing.T) {
 	}
 }
 func TestNativeInteractionVersionAndIDs(t *testing.T) {
-	for agent, version := range map[string]string{"codex": "0.166.0", "claude": "2.1.317", "opencode": "2.2.5", "pi": "1.4.0"} {
+	for agent, version := range map[string]string{"codex": "0.166.0", "claude": "2.1.316", "opencode": "2.2.5", "pi": "1.4.0"} {
 		if !nativeInteractionVersion(agent, version) || nativeInteractionVersion(agent, version+"-beta") {
 			t.Fatal(agent)
 		}
@@ -170,5 +171,36 @@ func TestCodexMCPApprovalAndOpenCodeLegacyScope(t *testing.T) {
 	_ = json.Unmarshal(raw, &operation)
 	if len(operation.Allowed) != 1 || operation.Allowed[0] != "allow_once" {
 		t.Fatal("legacy batch deny lacks scope")
+	}
+}
+
+func TestNativeCapabilityMinimums(t *testing.T) {
+	for _, policy := range []map[string]stableVersion{minimums.Reply, minimums.Interaction} {
+		for agent, minimum := range policy {
+			next := minimum
+			next[2]++
+			for _, v := range []string{minimum.String(), minimum.String() + "+build.04", next.String(), next.String() + "-rc.3+build", "15.2.0-preview"} {
+				if !runtimeAtLeast(policy, agent, v) {
+					t.Fatalf("%s refused %s", agent, v)
+				}
+			}
+			for _, v := range []string{"", "0.0.1", minimum.String() + "-rc.1", "15.2.0-alpha.01", "15.2.0-preview..7", "v15.2.0", "15.2.0+", "15.2.0\n"} {
+				if runtimeAtLeast(policy, agent, v) {
+					t.Fatalf("%s accepted %q", agent, v)
+				}
+			}
+		}
+	}
+	if ordinaryReplyVersion("codex", "99.0.0") || ordinaryReplyVersion("new-agent", "99.0.0") {
+		t.Fatal("ordinary reply needs an implemented adapter")
+	}
+}
+
+func TestRunningClaudeCannotBorrowPATHVersion(t *testing.T) {
+	claudeNotifyEnvironment(t)
+	t.Setenv("FIXTURE_CLAUDE_VERSION", "99.1.0 (Claude Code)")
+	t.Setenv("CLAUDE_PID", "1")
+	if v := runningClaudeVersion(context.Background()); v != "" {
+		t.Fatalf("accepted unrelated binary %s", v)
 	}
 }

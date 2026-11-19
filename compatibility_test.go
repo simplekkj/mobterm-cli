@@ -75,11 +75,11 @@ func TestStableAgentVersions(t *testing.T) {
 				t.Fatal("lower boundary accepted")
 			}
 			for _, suffix := range []string{"-alpha.1", "-beta", "-rc.2", "-nightly", "-dev+build.3"} {
-				if p.evaluate(agentOutput(agent, "99.0.0"+suffix)) != "prerelease" {
-					t.Fatal("prerelease accepted")
+				if p.evaluate(agentOutput(agent, "99.0.0"+suffix)) != "" || p.evaluate(agentOutput(agent, p.minimum.String()+suffix)) != "below_minimum" {
+					t.Fatal("incorrect prerelease precedence")
 				}
 			}
-			for _, token := range []string{"", "2", "2.1", "2.1.1.1", "-2.1.1", "01.2.3", "2.01.3", "2.1.03", "2.1.1+", "2.1.1+build..1", "2.1.1+build_1", "18446744073709551616.0.0", "99.18446744073709551616.0", "99.0.18446744073709551616", "99.1.1 garbage", "99.1.1\n99.1.2"} {
+			for _, token := range []string{"", "2", "2.1", "2.1.1.1", "-2.1.1", "01.2.3", "2.01.3", "2.1.03", "2.1.1+", "2.1.1+build..1", "2.1.1+build_1", "99.1.1-01", "99.1.1-beta..2", "99.1.1 garbage", "99.1.1\n99.1.2"} {
 				if p.evaluate(agentOutput(agent, token)) == "" {
 					t.Fatalf("malformed token accepted: %q", token)
 				}
@@ -425,7 +425,7 @@ func TestCompatibilityEntrypoints(t *testing.T) {
 					version = map[string]string{"codex": "0.99.0", "claude": "2.0.35"}[agent]
 					supported = false
 				case "unknown", "prerelease", "nonzero", "missing":
-					version, supported = "99.0.0-rc.1", false
+					version, supported = agentCompatibilities[agent].minimum.String()+"-rc.1", false
 				}
 				output := agentOutput(agent, version)
 				if sample == "unknown" {
@@ -467,7 +467,7 @@ func TestCompatibilityEntrypoints(t *testing.T) {
 				}
 				var out, diag bytes.Buffer
 				code := run([]string{"hooks", "install", "--agent", agent, "--json"}, strings.NewReader(""), &out, &diag)
-				if (code == 0) != supported || (!supported && (!strings.Contains(diag.String(), "requires stable >=") || strings.Contains(diag.String(), "PRIVATE_"))) {
+				if (code == 0) != supported || (!supported && (!strings.Contains(diag.String(), "requires >=") || strings.Contains(diag.String(), "PRIVATE_"))) {
 					t.Fatal("installation decision/diagnostic disagrees with policy")
 				}
 				out.Reset()
@@ -557,7 +557,7 @@ func TestRejectedCodexVersionPreservesNotifierChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := `{"type":"agent-turn-complete","thread-id":"thread","turn-id":"turn","last-assistant-message":"PRIVATE_PAYLOAD"}`
-	for _, version := range []string{"codex-cli 0.99.0", "unknown", "codex-cli 99.0.0-rc.1"} {
+	for _, version := range []string{"codex-cli 0.99.0", "unknown", "codex-cli 0.100.0-rc.1"} {
 		t.Setenv("FIXTURE_VERSION", version)
 		var out, diag bytes.Buffer
 		code := run([]string{"notify", "--source", "codex", "--mobterm-chain", payload}, strings.NewReader(""), &out, &diag)
@@ -616,7 +616,7 @@ func TestRangeNotifyEncryptedIdentity(t *testing.T) {
 				case "below":
 					v, allowed = map[string]string{"codex": "0.99.0", "claude": "2.0.35"}[agent], false
 				case "unknown", "prerelease", "nonzero", "missing":
-					v, allowed = "99.0.0-rc.1", false
+					v, allowed = agentCompatibilities[agent].minimum.String()+"-rc.1", false
 				case "invalid_event", "invalid_target", "ambiguous_target":
 					v, allowed = samples["current"][agent], false
 				}

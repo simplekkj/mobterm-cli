@@ -126,22 +126,24 @@ type StoredRun struct {
 	Approval        *ApprovalHint             `json:"approval,omitempty"`
 }
 type RunIntent struct {
-	Body       *bodyRef   `json:"body,omitempty"`
-	PairID     string     `json:"pair_id"`
-	Key        string     `json:"key"`
-	Occurrence string     `json:"occurrence"`
-	Kind       string     `json:"kind"`
-	Payload    RunPayload `json:"payload"`
-	ExpiresAt  int64      `json:"expires_at"`
-	Envelope   *Envelope  `json:"envelope,omitempty"`
+	Reply      *replyBinding `json:"reply,omitempty"`
+	Body       *bodyRef      `json:"body,omitempty"`
+	PairID     string        `json:"pair_id"`
+	Key        string        `json:"key"`
+	Occurrence string        `json:"occurrence"`
+	Kind       string        `json:"kind"`
+	Payload    RunPayload    `json:"payload"`
+	ExpiresAt  int64         `json:"expires_at"`
+	Envelope   *Envelope     `json:"envelope,omitempty"`
 }
 type RunStore struct {
-	LastPair  [2]string            `json:"last_pair,omitempty"`
-	Retired   map[string]int64     `json:"retired,omitempty"`
-	NextState map[string]int64     `json:"next_state"`
-	Intents   map[string]RunIntent `json:"intents"`
-	Runs      map[string]StoredRun `json:"runs"`
-	Current   map[string]string    `json:"current"`
+	ReplyHeads map[string]replyHead `json:"reply_heads,omitempty"`
+	LastPair   [2]string            `json:"last_pair,omitempty"`
+	Retired    map[string]int64     `json:"retired,omitempty"`
+	NextState  map[string]int64     `json:"next_state"`
+	Intents    map[string]RunIntent `json:"intents"`
+	Runs       map[string]StoredRun `json:"runs"`
+	Current    map[string]string    `json:"current"`
 }
 
 func loadRuns(s Store) (RunStore, error) {
@@ -307,6 +309,17 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 		}
 	}
 	if terminalRun(r.State) || exists && r.ChildWait != nil && (!a.ResolveRequest || len(r.Requests) == 0) {
+		// A real native request can arrive after the completion for this same
+		// run. Keep its notification lifecycle closed, but revoke the ordinary
+		// source even when this activity cannot produce a new reminder.
+		scope := replyScope(a.Agent, a.Session, l)
+		if h, ok := db.ReplyHeads[scope]; ok && h.Run == a.Run && h.Instance == a.Instance && a.Reminder == "needs_input" && h.Cursor != a.Occurrence && h.Request == "" {
+			h.Cursor = a.Occurrence
+			db.ReplyHeads[scope] = h
+			if err = saveRuns(s, db); err != nil {
+				return key, r, false, err
+			}
+		}
 		return key, r, false, nil
 	}
 	if a.Approval != nil {
@@ -407,6 +420,11 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 	if a.ClaudeStop != "" {
 		stoppedBodies = s.claudeBodies(a, l)
 	}
+	advanceReplyHead(&db, a, l, now)
+	parentBirth := ""
+	if a.Reminder == "turn_completed" && a.Agent != "codex" {
+		parentBirth, _ = processIdentity(replyParent(a.Agent))
+	}
 	for pid, pair := range pairs {
 		if pair.Status != "active" || pair.InstallationID != l.InstallationID {
 			continue
@@ -459,7 +477,7 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 			// Record the original run identity even when negotiation later selects v1.
 			body.Source = digest(strings.Join([]string{key, a.Occurrence, stream, fmt.Sprint(r.Revision)}, "\x00"))
 		}
-		db.Intents[ik] = RunIntent{Body: body, PairID: pid, Key: key, Occurrence: a.Occurrence, Kind: kind, Payload: payload, ExpiresAt: now + 3600}
+		db.Intents[ik] = RunIntent{Reply: replyIntentBinding(a, l, pair, parentBirth), Body: body, PairID: pid, Key: key, Occurrence: a.Occurrence, Kind: kind, Payload: payload, ExpiresAt: now + 3600}
 		if kind != "state" {
 			delete(db.Intents, digest(pid+"\x00state\x00"+key))
 		}
@@ -472,6 +490,15 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 		db.Current = map[string]string{instance: a.Run}
 	}
 	err = saveRuns(s, db)
+	if err != nil && err.Error() == "run_store_capacity" {
+		for ik, intent := range db.Intents {
+			if intent.Key == key && intent.Occurrence == a.Occurrence && intent.Reply != nil {
+				intent.Reply = nil
+				db.Intents[ik] = intent
+			}
+		}
+		err = saveRuns(s, db)
+	}
 	return key, r, true, err
 }
 func payloadForRun(r StoredRun, stream string) RunPayload {
@@ -596,7 +623,7 @@ func enqueueRunReminder(ctx context.Context, s Store, intent RunIntent) (deliver
 	}
 	old := cloneShard(sh)
 	raw, _ := json.Marshal(intent.Payload.Locator)
-	d := delivery{Body: bindBody(intent.Body, e), PairID: e.PairID, EventID: e.EventID, Kind: e.Kind, LocatorHash: digest(string(raw)), Created: intent.Payload.OccurredAt, Expires: e.ExpiresAt, State: "pending", Envelope: &e, Approval: intent.Payload.Approval}
+	d := delivery{Reply: bindReply(intent.Reply, e), Body: bindBody(intent.Body, e), PairID: e.PairID, EventID: e.EventID, Kind: e.Kind, LocatorHash: digest(string(raw)), Created: intent.Payload.OccurredAt, Expires: e.ExpiresAt, State: "pending", Envelope: &e, Approval: intent.Payload.Approval}
 	sh.Records[key] = d
 	idx, err := s.outboxLoad(true)
 	if err != nil {
@@ -714,7 +741,7 @@ func flushRunIntents(ctx context.Context, s Store, api API, states bool) error {
 			}
 			if !c.Enabled || !c.States || !c.Inbox {
 				if intent.Kind == "turn_completed" || intent.Kind == "needs_input" {
-					d, e := enqueueBodyDelivery(ctx, s, p, intent.Kind, intent.Occurrence, intent.Payload.Locator, intent.Payload.Agent, intent.Payload.Summary, intent.Body, nil)
+					d, e := enqueueBoundDelivery(ctx, s, p, intent.Kind, intent.Occurrence, intent.Payload.Locator, intent.Payload.Agent, intent.Payload.Summary, intent.Body, nil, intent.Reply)
 					if e != nil {
 						last = e
 						continue

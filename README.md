@@ -130,10 +130,10 @@ environment variables, a URL, terminal input, or a log. A packet contains secret
 
 Install hooks after checking the [version compatibility](docs/compatibility.md):
 Codex >=0.100.0, Claude Code >=2.0.36, OpenCode >=2.0.0, or Pi coding-agent
-(`@earendil-works/pi-coding-agent`) >=1.1.0, stable releases only. `status --json` reports
+(`@earendil-works/pi-coding-agent`) >=1.1.0, compared using SemVer precedence. `status --json` reports
 the detected version, minimum and refusal reason. Its `supported` flag means the
-version policy passes; it does not establish live notification delivery. Future
-stable versions have no mechanical upper limit but are not automatically verified.
+version policy passes; it does not establish live notification delivery. Each active host must still provide the required event schema. For ordinary message
+replies, see the [per-action minimum versions and host loading instructions](docs/native-interactions.md).
 
 Before pairing, `status --agents-json` can discover the four Agents without
 creating Mobterm state or contacting the notification API. It distinguishes a

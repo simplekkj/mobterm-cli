@@ -1,0 +1,5 @@
+{
+  "name": "mobterm-message-reply",
+  "version": "1.0.0",
+  "description": "Reply to the original interactive Claude Code turn from MobTerm."
+}
