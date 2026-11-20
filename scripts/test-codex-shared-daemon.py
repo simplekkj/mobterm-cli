@@ -31,7 +31,9 @@ parser.add_argument("mux", choices=("tmux", "herdr"))
 parser.add_argument("--cli", type=Path, required=True)
 parser.add_argument("--codex", type=Path, required=True)
 parser.add_argument("--herdr", type=Path)
-parser.add_argument("--no-daemon", action="store_true", help="Probe an embedded TUI with a separate stdio app-server")
+mode = parser.add_mutually_exclusive_group()
+mode.add_argument("--first-registration", action="store_true", help="Hold the first notify until the next turn reaches the local inbox")
+mode.add_argument("--no-daemon", action="store_true", help="Probe an embedded TUI with a separate stdio app-server")
 args = parser.parse_args()
 kind = args.mux
 if kind == "herdr" and args.herdr is None:
@@ -192,6 +194,13 @@ sk = base64.b64encode(os.urandom(32)).decode()
         }
     )
 )
+gate = None
+gate_path = root / "first-notify.sock"
+if args.first_registration:
+    gate = socket.socket(socket.AF_UNIX)
+    gate.bind(str(gate_path))
+    gate.listen(1)
+    gate.settimeout(20)
 helper = root / "notify.py"
 helper.write_text("""import os
 import sys
@@ -205,6 +214,14 @@ record.update(tmux=os.getenv("TMUX_PANE"), herdr=os.getenv("HERDR_PANE_ID"), ppi
 out = root / (payload["turn-id"] + ".new")
 out.write_text(json.dumps(record))
 out.rename(out.with_suffix(".seen"))
+gate_path = root / "first-notify.sock"
+if gate_path.exists() and (record["input-messages"] or []) == ["mobile-probe-first"]:
+    import socket
+    with socket.socket(socket.AF_UNIX) as gate:
+        gate.settimeout(55)
+        gate.connect(str(gate_path))
+        if gate.recv(1) != b"1":
+            sys.exit("missing test release")
 os.environ["MOBTERM_CONFIG_DIR"] = str(root / "store")
 with out.with_suffix(".diag").open("w") as output:
     os.dup2(output.fileno(), 1)
@@ -587,6 +604,24 @@ try:
         ready(a)
     enter(a, "mobile-probe-first")
     first = notice("mobile-probe-first")
+    if args.first_registration:
+        with gate.accept()[0] as paused:
+            enter(a, "mobile-probe-next")
+            second = notice("mobile-probe-next")
+            assert second["thread-id"] == first["thread-id"] and second["turn-id"] != first["turn-id"]
+            until(lambda: list(root.glob("*.delivery")))
+            paused.sendall(b"1")
+        diag = root / (first["turn-id"] + ".diag")
+        until(lambda: diag.exists() and "codex_completion_turn_unconfirmed" in diag.read_text())
+        db = json.loads((store / "runs-v2.json").read_text())
+        [run] = db["runs"].values()
+        [head] = db["visible"].values()
+        event = hashlib.sha256((run["first_occurrence"] + "\x00" + pair).encode()).hexdigest()
+        assert run["run"] == second["turn-id"] and run["codex_runtime"]["peer_pid"] == second["ppid"]
+        assert head["event"] == event and head["run_order"] == 1
+        assert [f.stem for f in root.glob("*.delivery")] == [event]
+        log(b_first=True, stale_first_callback_rejected=True, durable_b_head=True, encrypted_events=1)
+        sys.exit(0)
     if args.no_daemon:
         embedded_probe(a, first)
         sys.exit(0)
@@ -708,6 +743,8 @@ try:
     )
 finally:
     release.set()
+    if gate:
+        gate.close()
     if c:
         c.close()
     if kind == "tmux":

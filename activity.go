@@ -591,22 +591,25 @@ func fitRunDisplayBudget(p RunPayload) RunPayload {
 	return p
 }
 func publishActivity(ctx context.Context, s Store, api API, l Locator, a Activity) error {
-	return publishActivityWithBudget(ctx, s, api, l, a, 0)
+	return publishRegisteredActivity(ctx, s, api, func() error {
+		_, _, _, err := applyActivity(ctx, s, l, a)
+		return err
+	})
 }
 
-func publishActivityWithBudget(ctx context.Context, s Store, api API, l Locator, a Activity, budget time.Duration) error {
-	if _, _, _, err := applyActivity(ctx, s, l, a); err != nil {
+func publishRegisteredActivity(ctx context.Context, s Store, api API, register func() error) error {
+	if err := register(); err != nil {
 		if err.Error() != "run_capacity_retry_after_flush" && err.Error() != "activity_pending_capacity" && err.Error() != "run_store_capacity" {
 			return err
 		}
 		// Capacity is recoverable: hand off pending responsibility before one retry.
 		// Failure leaves the prior readable store and outbox untouched.
-		_ = flushRunSnapshotsWithBudget(ctx, s, api, budget)
-		if _, _, _, retryErr := applyActivity(ctx, s, l, a); retryErr != nil {
+		_ = flushRunSnapshots(ctx, s, api)
+		if retryErr := register(); retryErr != nil {
 			return retryErr
 		}
 	}
-	return flushRunSnapshotsWithBudget(ctx, s, api, budget)
+	return flushRunSnapshots(ctx, s, api)
 }
 func removeRunIntent(ctx context.Context, s Store, key, occurrence string) error {
 	unlock, err := s.lock(ctx)

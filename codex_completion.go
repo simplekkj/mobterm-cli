@@ -37,9 +37,6 @@ func publishUnboundCodexCompletion(ctx context.Context, s Store, api API, instal
 	if client.peerPID != os.Getppid() || !codexDaemonImage(ctx, client.peerPID) {
 		return errors.New("codex_notification_owner_mismatch")
 	}
-	if err := client.confirmCompletion(ctx, activity.Session, activity.Run); err != nil {
-		return err
-	}
 	config, err := configPath("codex")
 	if err != nil {
 		return err
@@ -49,20 +46,49 @@ func publishUnboundCodexCompletion(ctx context.Context, s Store, api API, instal
 	if err != nil {
 		return err
 	}
-	birth, err := processIdentity(client.peerPID)
-	if err != nil || birth != client.peerBirth || client.peerPID != os.Getppid() {
-		return errors.New("codex_notification_owner_changed")
-	}
 	activity.CodexRoot = true
 	activity.CodexRuntime = &codexRuntimeSource{
 		Installation: installation, Home: home, Socket: physical,
-		UID: os.Geteuid(), PeerPID: client.peerPID, PeerBirth: birth,
+		UID: os.Geteuid(), PeerPID: client.peerPID, PeerBirth: client.peerBirth,
 	}
 	// A different CODEX_HOME may have its own copy of the same persistent
 	// thread and turn. Distinguish the sources before store/outbox deduplication.
 	activity.Instance = digest(home + "\x00" + activity.Session)
 	activity.Occurrence = digest(home + "\x00" + activity.Occurrence)
-	return publishActivity(ctx, s, api, Locator{}, activity)
+	confirm := func() error {
+		if err := client.confirmCompletion(ctx, activity.Session, activity.Run); err != nil {
+			return err
+		}
+		birth, err := processIdentity(client.peerPID)
+		if err != nil || birth != client.peerBirth || client.peerPID != os.Getppid() {
+			return errors.New("codex_notification_owner_changed")
+		}
+		return nil
+	}
+	return publishRegisteredActivity(ctx, s, api, func() error {
+		return registerCodexCompletion(ctx, s, activity, confirm)
+	})
+}
+
+func registerCodexCompletion(ctx context.Context, s Store, activity Activity, confirm func() error) error {
+	// Shared daemons spawn notify children independently. Hold the same
+	// cross-process lock from the native current-turn read through the
+	// durable run/order write. Bucket the private locks to bound files and
+	// keep RPC waits outside the general Store lock and network fan-out.
+	if err := ensureDir(s.Dir, true); err != nil {
+		return err
+	}
+	bucket := digest(activity.LogicalSession)[:2]
+	unlock, err := lockFileWait(ctx, filepath.Join(s.Dir, ".codex-completion-"+bucket+".lock"), true)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := confirm(); err != nil {
+		return err
+	}
+	_, _, _, err = applyActivity(ctx, s, Locator{}, activity)
+	return err
 }
 
 func (c *codexRPC) confirmCompletion(ctx context.Context, thread, turn string) error {
