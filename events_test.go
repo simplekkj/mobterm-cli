@@ -17,11 +17,12 @@ import (
 )
 
 const waitSession = "session-with-private-content"
+const waitTranscript = "/PRIVATE_TRANSCRIPT/not-readable"
 
 func claudeWaitPayload(notification string) []byte {
 	b, _ := json.Marshal(map[string]any{
 		"session_id": waitSession, "hook_event_name": "Notification", "notification_type": notification,
-		"message": "PRIVATE_MESSAGE", "transcript_path": "/PRIVATE_TRANSCRIPT/not-readable",
+		"message": "PRIVATE_MESSAGE", "transcript_path": waitTranscript,
 		"tool_input": map[string]string{"content": "PRIVATE_TOOL_INPUT"},
 	})
 	return b
@@ -36,7 +37,7 @@ func seedClaudeCycle(t *testing.T, s Store, state string) {
 	if state == "expired" {
 		updated -= 86401
 	}
-	logical, err := logicalSession("claude", waitSession)
+	logical, err := claudeCycleKey(waitSession, waitTranscript)
 	if err != nil {
 		t.Fatal(err)
 	}
