@@ -18,22 +18,24 @@ const outboxByteLimit = 80 * 1024 * 1024
 const outboxShardLimit = 2 * 1024 * 1024
 
 type delivery struct {
-	Reply       *replyBinding `json:"reply,omitempty"`
-	Body        *bodyBinding  `json:"message_body,omitempty"`
-	Approval    *ApprovalHint `json:"approval,omitempty"`
-	PairID      string        `json:"pair_id"`
-	EventID     string        `json:"event_id"`
-	Kind        string        `json:"kind"`
-	LocatorHash string        `json:"locator_hash"`
-	Created     int64         `json:"created"`
-	Expires     int64         `json:"expires_at"`
-	State       string        `json:"state"`
-	Error       string        `json:"error,omitempty"`
-	Next        int64         `json:"next_attempt_at,omitempty"`
-	Posts       int           `json:"posts"`
-	Owner       string        `json:"owner,omitempty"`
-	Lease       int64         `json:"lease_until,omitempty"`
-	Envelope    *Envelope     `json:"envelope,omitempty"`
+	Navigation     *navigationOwner `json:"navigation,omitempty"`
+	VisibleSession string           `json:"visible_session,omitempty"`
+	Reply          *replyBinding    `json:"reply,omitempty"`
+	Body           *bodyBinding     `json:"message_body,omitempty"`
+	Approval       *ApprovalHint    `json:"approval,omitempty"`
+	PairID         string           `json:"pair_id"`
+	EventID        string           `json:"event_id"`
+	Kind           string           `json:"kind"`
+	LocatorHash    string           `json:"locator_hash"`
+	Created        int64            `json:"created"`
+	Expires        int64            `json:"expires_at"`
+	State          string           `json:"state"`
+	Error          string           `json:"error,omitempty"`
+	Next           int64            `json:"next_attempt_at,omitempty"`
+	Posts          int              `json:"posts"`
+	Owner          string           `json:"owner,omitempty"`
+	Lease          int64            `json:"lease_until,omitempty"`
+	Envelope       *Envelope        `json:"envelope,omitempty"`
 }
 type outboxCount struct {
 	Records    int `json:"records"`

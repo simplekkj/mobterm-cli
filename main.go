@@ -158,6 +158,9 @@ func commandTimeout(args []string) time.Duration {
 	case "approval":
 		return 125 * time.Second
 	case "reply":
+		if len(args) > 1 && args[1] == "reopen" {
+			return 61 * time.Second
+		}
 		if len(args) > 1 && args[1] == "wait" {
 			return 301 * time.Second
 		}
@@ -202,7 +205,7 @@ func commandTimeout(args []string) time.Duration {
 
 func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "mobterm-cli setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | reply inspect|send|status|configure|configuration --stdin-frame | message read --stdin-frame | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | pairs retire --stdin-frame --json | upgrade --version vX.Y.Z | version")
+		fmt.Fprintln(out, "mobterm-cli setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | reply inspect|send|status|latest|configure|configuration --stdin-frame | message read --stdin-frame | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | pairs retire --stdin-frame --json | upgrade --version vX.Y.Z | version")
 		return 0
 	}
 	if args[0] == "version" || args[0] == "--version" {

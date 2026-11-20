@@ -48,10 +48,10 @@ async function deliver($, candidate, decision) {
     {env,stdin:frame({...tuple,state}),timeoutMs:5000});
 }
 
-async function waitForDecision($, candidate) {
+async function waitForDecision($, candidate, registration) {
   const child = $.process.spawn({
-    argv:[executable,"reply","wait","--source","claude"], env:candidate.env,
-    input:JSON.stringify({runtime_version:candidate.version,session_id:candidate.session,
+    argv:registration ? [executable,"reply","reopen","--stdin-frame"] : [executable,"reply","wait","--source","claude"], env:candidate.env,
+    input:registration ? frame(registration) : JSON.stringify({renewable:true,runtime_version:candidate.version,session_id:candidate.session,
       run_id:candidate.prompt,event_id:candidate.prompt,instance_id:candidate.instance,
       expires_at:candidate.expires}),
   });
@@ -63,18 +63,74 @@ async function waitForDecision($, candidate) {
       output += piece.text;
       if (output.length > 128 * 1024) return;
     }
-    if ((await child.result).code === 0 && output) await deliver($, candidate, JSON.parse(output));
+    if ((await child.result).code !== 0 || !output) return;
+    const result = JSON.parse(output);
+    if (result?.wake === true) {
+      if (turn === candidate && /^[a-f0-9]{64}$/.test(result.source_id) &&
+          typeof result.owner_token === "string" && result.owner_token.length <= 256) {
+        candidate.registration = {v:1, source_id:result.source_id, owner_token:result.owner_token};
+      }
+    } else {
+      await deliver($, candidate, result);
+    }
   } finally {
     if (stream === child) stream = undefined;
   }
 }
 
+async function checkWake($) {
+  const candidate = turn;
+  if (!candidate?.registration || candidate.checking || stream || !interactive) return;
+  candidate.checking = true;
+  try {
+    const file = store + "/reply-wake-" + candidate.registration.source_id + ".json";
+    if (!await $.fs.exists(file)) return;
+    const info = await $.fs.stat(file);
+    if (info.isLink || info.kind !== "file" || info.size > 32 || candidate.lastWake === info.mtimeMs) return;
+    candidate.lastWake = info.mtimeMs;
+    const session = await $.session.id(), prompt = (await $.session.info()).promptId;
+    const surfaces = await $.session.surfaces();
+    const now = await $.clock.now();
+    if (turn !== candidate || session !== candidate.session || prompt !== candidate.prompt ||
+        !Array.isArray(surfaces) || !surfaces.includes("terminal")) return;
+    candidate.expires = Math.floor(now / 1000) + 60;
+    await waitForDecision($, candidate, candidate.registration);
+  } finally { candidate.checking = false; }
+}
+
+let navigationNonce;
+async function checkNavigation($) {
+  if (!interactive) return;
+  const path = store + "/navigation-request.json";
+  if (!await $.fs.exists(path)) return;
+  const file = await $.fs.stat(path);
+  if (file.isLink || file.kind !== "file" || file.size > 256) return;
+  const request = JSON.parse(await $.fs.read(path));
+  if (!/^[A-Za-z0-9_-]{43}$/.test(request.nonce) || navigationNonce === request.nonce ||
+      request.until * 1000 <= await $.clock.now()) return;
+  const env = await $.process.hookEnv();
+  if (request.pid !== Number(env.CLAUDE_PID)) return;
+  navigationNonce = request.nonce;
+  const activation = generation, session = await $.session.id();
+  if (!session || session !== env.CLAUDE_CODE_SESSION_ID || !(await $.session.surfaces()).includes("terminal")) return;
+  const options = {env:{...env,MOBTERM_CONFIG_DIR:store}, timeoutMs:3000,
+    stdin:frame({v:1,agent:"claude",nonce:request.nonce,session_id:session})};
+  const result = await $.process.run([executable,"reply","navigation-observe","--stdin-frame"],options);
+  if (result.exitCode === 0 && !result.isStdoutTruncated && JSON.parse(result.stdout).ok &&
+      interactive && generation === activation && await $.session.id() === session &&
+      (await $.session.surfaces()).includes("terminal") && generation === activation) {
+    await $.process.run([executable,"reply","navigation-confirm","--stdin-frame"],options);
+  }
+}
+
 export function register(on) {
-  let instance, endedSession;
+  let instance, endedSession, timer;
   on("session.start", ($, e, next) => {
     invalidate();
     endedSession = undefined;
     interactive = e.isInteractive === true && e.surface === "terminal";
+    timer?.cancel();
+    if (interactive) timer = $.clock.every(1000, () => Promise.all([checkWake($),checkNavigation($)].map(task=>task.catch(()=>{}))));
     instance = crypto.randomUUID();
     return next(e);
   });
@@ -84,6 +140,7 @@ export function register(on) {
     // clear and resume replace the conversation inside the same interactive host.
     interactive = interactive && (e.reason === "clear" || e.reason === "resume") &&
       typeof endedSession === "string" && endedSession.length > 0;
+    if (!interactive) { timer?.cancel(); timer = undefined; }
     instance = crypto.randomUUID();
     return next(e);
   });
@@ -120,7 +177,7 @@ export function register(on) {
         const session = await $.session.id();
         const now = await $.clock.now();
         if (turn === candidate && session === candidate.session && info.promptId === candidate.prompt) {
-          candidate.expires = Math.floor(now / 1000) + 300;
+          candidate.expires = Math.floor(now / 1000) + 15;
           void waitForDecision($, candidate).catch(() => {});
         }
       } catch { /* No matching runtime observation; keep terminal handling. */ }

@@ -69,6 +69,7 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 		return a, p, errors.New("invalid_session")
 	}
 	a.Session = p.SessionID
+
 	a.Run = p.TurnID
 	a.Instance = p.SessionID
 	if (source == "codex" || source == "claude") && p.AgentID != "" {
@@ -86,6 +87,11 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 			return a, p, nil
 		}
 	}
+	logical, scopeErr := logicalSession(source, a.Session)
+	if scopeErr != nil {
+		return a, p, scopeErr
+	}
+	a.LogicalSession = logical
 	if source == "opencode" || source == "pi" {
 		decoder := json.NewDecoder(bytes.NewReader(raw))
 		decoder.DisallowUnknownFields()
@@ -341,7 +347,10 @@ func claudeCycleEvent(ctx context.Context, s Store, session, action, summary, pr
 	if err = s.readJSON("claude-cycles.json", &cycles); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", false, "", err
 	}
-	key := digest(session)
+	key, err := logicalSession("claude", session)
+	if err != nil {
+		return "", false, "", err
+	}
 	cycle := cycles[key]
 	if cycle.Cycle == "" || cycle.Updated < time.Now().Unix()-86400 {
 		return "", false, "", nil
@@ -423,6 +432,9 @@ func observe(ctx context.Context, s Store, api API, source string, raw []byte) (
 		return nil, err
 	}
 	l, err := captureHookTarget(ctx, id, source, input.Type != "agent-turn-complete")
+	if err != nil && source == "codex" && input.Type == "agent-turn-complete" && input.AgentID == "" {
+		return nil, publishUnboundCodexCompletion(ctx, s, api, id, a, err)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -450,7 +462,7 @@ func observe(ctx context.Context, s Store, api API, source string, raw []byte) (
 		}
 	}
 	if source == "opencode" || source == "pi" {
-		a.Occurrence = nativeTargetIdentity(a.Occurrence, l)
+		a.Occurrence = digest(a.LogicalSession + "\x00" + a.Occurrence)
 	}
 	if source == "codex" {
 		allowed, e := admitCodexActivity(ctx, s, l, &a, input)
@@ -520,7 +532,7 @@ type claudeBodyCapture struct {
 func (s Store) claudeBodies(a Activity, l Locator) map[string]*bodyRef {
 	var cycles map[string]claudeCycle
 	var stops map[string]string
-	key := digest(a.Session)
+	key := a.LogicalSession
 	if s.readJSON("claude-cycles.json", &cycles) != nil || s.readJSON("claude-stops-v2.json", &stops) != nil {
 		return nil
 	}

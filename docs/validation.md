@@ -2127,3 +2127,99 @@ were outside these CLI runs.
   encrypted event identity. Their 0.100.0 output came from controlled fixtures.
   No old-certificate macOS Codex was launched. The executable behind the
   originally reported system alert has not been identified.
+
+## 2026-11-20 — Default Codex completion and queue race (D01/D03/D05)
+
+The executable probe builds on a fresh checkout of this delivery. Run from the
+CLI repository with Python 3.11+, the official Darwin x86_64 standalone Codex
+0.171.0, and the indicated multiplexer. The script checks the selected binary's
+SHA-256, notarized Developer ID and Gatekeeper assessment before the first
+execution. It creates new private agent, multiplexer and pairing state for each
+run. All prompts and replies are synthetic, and both model and notification
+receiver listen on loopback. The script simulates human input solely in panes
+it created. Production reply/navigation code never types into panes.
+
+```sh
+go build -trimpath -o mobterm-cli .
+python3 scripts/test-codex-shared-daemon.py tmux --codex "$(command -v codex)" --cli ./mobterm-cli
+python3 scripts/test-codex-shared-daemon.py herdr --codex "$(command -v codex)" --cli ./mobterm-cli --herdr "$(command -v herdr)"
+go test -run 'TestCodexCompletionMetadata|TestUnboundCodexPayload' .
+```
+
+- Real tmux 3.7c and Herdr 0.9.5 (protocol 22), two default no-argument TUIs
+  per backend, identical working directory and profile. Both tmux callbacks
+  inherited `%0` with the TUIs in `%0` and `%1`. Both Herdr callbacks inherited
+  `w1:p1` with the TUIs in `w1:p1` and `w1:p2`. Each pair shared a daemon PID.
+  The CLI authenticated each main completion via the actual daemon socket.
+  The local API received encrypted notices for both threads. The private
+  source record contained the exact native thread, completed turn and peer birth.
+- Independent native probe: for each pane, `thread/read`, `thread/loaded/list`,
+  `thread/turns/list` and `thread/queue/list` showed the matching loaded, idle,
+  direct-input main thread and completed turn with an empty queue. A single
+  `thread/queue/add` addressed to that exact thread produced a matched queue
+  receipt and a new turn displayed only in the original pane on both backends.
+  These direct RPCs bypass App/SSH grants; this demonstrates the upstream
+  mechanism, not a successful Mobterm mobile reply.
+- Controlled stale-turn race on both backends: the simulated sender completed
+  its final checks, then the fixture submitted a new terminal input. The local
+  model held the new response at a barrier. A separate RPC connection confirmed
+  a different `inProgress` turn. Sending the old instruction with the public
+  add API still succeeded, appeared in the queue during that turn, and was
+  actually consumed after the barrier opened. The sender that observed the
+  new input in its own final check made zero native mutations. Queue/add in
+  0.171.0 has no expected-turn guard. The CLI keeps ordinary Codex writes closed.
+- `/new` in the second pane created a new thread while callbacks still named the
+  first pane. With the other TUI open, the daemon remained reachable after
+  replacing the tmux TUI with a shell or quitting the Herdr TUI. The most
+  recently displayed thread was still loaded on the immediate post-exit
+  sample. We found no current TUI-to-thread binding in this runtime that
+  authenticates default navigation across a switch or pane reuse. No iPhone,
+  APNs, deployed API or actual mobile navigation was exercised here.
+
+## 2026-11-20 — Multiplexer release minima
+
+The target verifier samples the tmux client's `-V` and the running server's `#{version}` on the named socket. Each structured pane sample still verifies membership and process birth. The Herdr raw socket path reads the server SemVer and required snapshot fields. Both reject unrecognized versions distinctly from a release below the floor. Validation used the current D11 working tree based on `ff3e7a1e77fdc8c632fb92bf7d4e52999083e5de`.
+
+- `MOBTERM_REQUIRE_TMUX=1 go test -count=1 -run 'Test(MultiplexerReleaseFloors|LiveTmux|Herdr|ReadOnlyTargetServerExit|TargetStructuredFailure|RangeNotifyEncryptedIdentity)' .` passed with Go 1.27.1 and real tmux 3.7c. The live sockets covered capture, rename, move, replacement, removal and read-only resolution. Fixtures cover tmux 3.1/3.2/3.2a/3.7c/4.0 and Herdr 0.9.0/0.9.1/0.9.3/0.9.5/1.0.0, malformed versions, prereleases and protocol 23.
+- Built with `go build -trimpath -o mobterm-cli .`. On macOS, a separate private HOME, XDG tree and Mobterm store hosted a checksum-verified Herdr 0.9.3 server with one synthetic workspace. `target verify --stdin-frame` and `target resolve --stdin-frame` each returned `status:valid` and the exact original locator. Future versions were exercised through fixtures.
+
+### Embedded Codex (`--no-daemon`) and independent profiles (A3, A7–A10)
+
+Using the same signed Codex 0.171.0, isolated loopback model/API and notification callback as the default-launch D01 probe, run each command above with `--no-daemon`. This variant also requires Node.js on PATH to authenticate and decode the synthetic AES-GCM envelope. The independently started native `app-server --listen stdio://` only exists inside the disposable probe. The shipping CLI does not start an app-server to obtain write access.
+
+| Observation | Real tmux 3.7c | Real Herdr 0.9.5, protocol 22 |
+| --- | --- | --- |
+| First terminal completion | The notification for the exact thread and turn reached the paired fixture API. Its decrypted locator named `%0`; `target resolve --stdin-frame --read-only` returned valid. | Exact completion delivered; authenticated locator named `w1:p1` and resolved successfully. |
+| Runtime and namespace | An independent app-server using another private CODEX_HOME could not read the thread. In the source profile it read the exact completed turn, but its loaded-thread list omitted the running TUI's thread. | Same results. |
+| Queue acceptance and P6 | An independent same-profile queue/add produced a matched receipt and a new turn visible in the original TUI. While a later user turn was held inside the local model, the independent reader reported a different turn (its status was `interrupted`); the deliberately stale add still succeeded and was consumed. | Same results. |
+| Terminal navigation boundary | `/new` created a different thread at the same pane; resolving the old locator still succeeded. Replacing the TUI process with a shell using `respawn-pane` made the old tmux locator fail. | `/new` produced the same mismatch. After the TUI quit back to its original pane shell, the Herdr terminal identifier still resolved. |
+| Persistence after TUI exit | The old native thread's metadata remained readable via the independent app-server. | The old native thread remained readable too. |
+
+The branch exercises `thread/read` metadata-only, exact turn/queue APIs, authenticated source decryption and actual CLI target resolution. It does not read the user's profiles, issue a restore, authorize a reply, or attach a phone. Embedded persistence and a live multiplexer target cannot establish the current displayed thread or an atomic expected-turn write. Same-tree child exclusion is covered separately by the CLI's source-origin tests; this embedded probe did not launch a real child Agent.
+
+## 2026-11-20 — Source-bound wake after the ordinary reply helper exits (D01/D02/D06)
+
+| Command and scope | Observed result |
+| --- | --- |
+| `python3 scripts/test-claude-native-reply.py "$CLAUDE_BINARY" "$CLI"` with Claude Code 2.1.328 | PASS. The official plugin validator accepted the generated Mod. A real interactive TUI changed session, prompt and generation on `/clear`. After the registration process exited, the same Mod timer observed the private marker without another user input or Mod restart. The new conversation's synthetic model input contained the exact reply. The Mod reported `native_accepted`. |
+| `python3 scripts/test-plugin-native-reply.py opencode "$OPENCODE_BINARY" "$CLI"` with OpenCode V2 2.3.2 | PASS. The real TUI plugin woke after registration helper exit. A matching prompt admission and inbox delivery produced `native_accepted` and `native_consumed`. The loopback provider received both literal messages in the same history. |
+| `python3 scripts/test-plugin-native-reply.py pi "$PI_BINARY" "$CLI"` with Pi 1.5.2 | PASS. Observed input during the first turn prevented its late settled event from reopening a source. The next valid source woke after its helper exited. The original TUI received the exact reply once, including whitespace, Unicode and literal template characters. The extension reported `delivery_unknown` because its public call returns no matching input ID. |
+| `node scripts/test-native-adapters.mjs` | PASS. The shipped modules exercised source changes, pending requests, cleanup, late authorizations, original request ownership and delivery evidence. |
+| `go test -race -count=1 -run 'TestReply(ReopenAfterHalfHour\|RegistrationHandsOffToRunningHost\|CrossPairClaimAndReceipts\|WatermarkFollowsSessionAcrossPanesAndSSHProfiles)\|TestClaudePromptCycleStaysInOriginatingNamespace' ./...` (focused runs) | PASS. The CLI registration entry point returned its private wake handle and exited. A record with a departed helper and a deadline 30 minutes in the past required a new grant and host lease. Incorrect owner and duplicate wake were rejected, and a single claim removed the literal text before dispatch. A legacy frozen decision survived outbox removal, parent exit and missing logical-scope metadata. The exact native run could not register again with a new source key. A fresh input in a different pane advanced the original session watermark. An identical native session ID in a separate tested configuration retained an independent watermark, and an SSH caller with another configuration still consulted the stored source. |
+
+All three host scripts used isolated configurations and a loopback synthetic
+model. Their decision helper supplied a synthetic authorized decision and had to
+exit before the fixture wrote the wake marker. The Go tests separately exercised
+the actual CLI store, grant and claim machinery with local fixtures and a
+controlled expired timestamp. This separates the observed original host
+lifecycle from the 30-minute expiry calculation. These checks did not observe
+30 minutes of real elapsed host time, an iPhone or a deployed service.
+
+
+### Live navigation on the original strong terminal
+
+Build `go build -trimpath -o "$CLI" .` and run `PI_BINARY="$PI_BINARY" MOBTERM_NAV_CLI="$CLI" go test -count=1 -v -run '^TestLivePiNavigation$' .` with an absolute Pi executable and CLI path. The opt-in fixture uses a private tmux server, temporary home and a real Pi TUI. An independent witness submits one synthetic reminder using the native session ID and actual parent PID. A local TLS fixture authenticates the signed Pair-status lookup. The installed production adapter and CLI handle the challenge. On tmux 3.7c, both Pi 1.5.0 and 1.5.2 returned a fresh strong locator for the original notification and the new window after moving its pane within the original tmux session. After `/new` in the same pane and foreground PID, another signed request for the same Pair, event and envelope returned `navigation_binding_unconfirmed` with no locator. No model, production Pair, phone or Apple service was involved.
+
+The installed-adapter scripts above also issue read-only navigation challenges to the real OpenCode 2.3.2 and Pi 1.5.2 TUIs. Claude 2.1.328’s real Mod confirmed two distinct native sessions in the same foreground host around `/clear`. They validate the current native session and the direct parent of both child commands with a private fixture helper. The Go fixture exercises that helper boundary with the actual CLI. The tests do not establish navigation after a move to a different strong terminal.
+
+Final integrated checks on Go 1.27.1, darwin/amd64, with real tmux required: `MOBTERM_REQUIRE_TMUX=1 GOFLAGS=-timeout=35m go test ./...` passed in 692.235s and `MOBTERM_REQUIRE_TMUX=1 GOFLAGS=-timeout=35m go test -race ./...` passed in 878.887s. Formatting, `go vet ./...`, the trimmed macOS build and a linux/amd64 cross-build passed. The macOS binary created and re-read the same installation identity in an isolated store, and rejected an invalid framed `reply latest` request. The final native adapter contract suite also passed. The ordinary Codex product reply and navigation to a different strong terminal remain open.

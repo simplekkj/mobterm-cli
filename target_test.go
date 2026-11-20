@@ -90,7 +90,7 @@ func TestHerdrNamespaceSocketReplacementAndMembership(t *testing.T) {
 		}
 		defer c.Close()
 		_, _ = bufio.NewReader(c).ReadString('\n')
-		printJSON(c, map[string]any{"id": "mobterm_snapshot", "result": map[string]any{"type": "session_snapshot", "snapshot": herdrSnapshot{Version: "0.9.3", Protocol: 22, Panes: []herdrPaneRecord{{PaneID: "w1:p1", TerminalID: "term_123", WorkspaceID: "w1", TabID: "w1:t1"}}}}})
+		printJSON(c, map[string]any{"id": "mobterm_snapshot", "result": map[string]any{"type": "session_snapshot", "snapshot": herdrSnapshot{Version: "0.9.3", Protocol: new(uint32(22)), Panes: []herdrPaneRecord{{PaneID: "w1:p1", TerminalID: "term_123", WorkspaceID: "w1", TabID: "w1:t1"}}}}})
 	}
 	go serve()
 	l, err := captureHerdr(context.Background(), fixtureLocator().InstallationID, "work", "w1:p1")
@@ -121,14 +121,14 @@ func TestHerdrNamespaceSocketReplacementAndMembership(t *testing.T) {
 	if second == first {
 		t.Fatal("socket replacement not detected")
 	}
-	snapshot := herdrSnapshot{Version: "0.9.3", Protocol: 22, Panes: []herdrPaneRecord{{"w1:p1", "term_123", "w1", "w1:t1"}, {"w1:p2", "term_123", "w1", "w1:t1"}}}
+	snapshot := herdrSnapshot{Version: "0.9.3", Protocol: new(uint32(22)), Panes: []herdrPaneRecord{{"w1:p1", "term_123", "w1", "w1:t1"}, {"w1:p2", "term_123", "w1", "w1:t1"}}}
 	if _, err = locatorFromHerdr(l.InstallationID, "work", "w1:p1", first, snapshot); err == nil {
 		t.Fatal("duplicated occupant accepted")
 	}
-	snapshot.Version = "0.9.2"
+	snapshot.Version = "0.9.0"
 	snapshot.Panes = snapshot.Panes[:1]
 	if _, err = locatorFromHerdr(l.InstallationID, "work", "w1:p1", first, snapshot); err == nil {
-		t.Fatal("unverified version accepted")
+		t.Fatal("below-minimum version accepted")
 	}
 }
 
@@ -225,9 +225,32 @@ func TestLiveTmuxMoveRespawnAndProcessProof(t *testing.T) {
 		t.Fatal("legacy identity upgraded from live state")
 	}
 }
+func TestMultiplexerReleaseFloors(t *testing.T) {
+	for token, code := range map[string]string{
+		"3.1": "target_version_below_minimum", "3.2": "", "3.2a": "", "3.7c": "", "4.0": "", "10.0": "",
+		"3.2.0": "target_version_unknown", "3.2bad": "target_version_unknown",
+	} {
+		err := checkTmuxVersion(token)
+		if (err == nil) != (code == "") || err != nil && targetErrorCode(err) != code {
+			t.Errorf("tmux %q: %v, want %q", token, err, code)
+		}
+	}
+	for token, code := range map[string]string{
+		"0.9.0": "target_version_below_minimum", "0.9.1-rc.1": "target_version_below_minimum",
+		"0.9.1": "", "0.9.3": "", "0.9.5": "", "1.0.0": "", "1.0.0-rc.1+fixture": "",
+		"0.9": "target_version_unknown", "0.09.1": "target_version_unknown", "0.9.5-beta.01": "target_version_unknown",
+	} {
+		s := herdrSnapshot{Version: token, Protocol: new(uint32(23)), Panes: []herdrPaneRecord{{"p1", "term_fixture", "w1", "view1"}}}
+		_, err := locateHerdr(fixtureLocator().InstallationID, "work", "p1", "", "socket-v1:instance", s)
+		if (err == nil) != (code == "") || err != nil && targetErrorCode(err) != code {
+			t.Errorf("herdr %q: %v, want %q", token, err, code)
+		}
+	}
+}
+
 func TestHerdrTerminalMoveAndDuplicate(t *testing.T) {
 	id := fixtureLocator().InstallationID
-	s := herdrSnapshot{Version: "0.9.3", Protocol: 22, Panes: []herdrPaneRecord{{PaneID: "new:p", TerminalID: "term_123", WorkspaceID: "new", TabID: "new:t"}}}
+	s := herdrSnapshot{Version: "0.9.3", Protocol: new(uint32(22)), Panes: []herdrPaneRecord{{PaneID: "new:p", TerminalID: "term_123", WorkspaceID: "new", TabID: "new:t"}}}
 	moved, err := locateHerdr(id, "work", "old:p", "term_123", "socket-v1:instance", s)
 	if err != nil || moved.WorkspaceID != "new" || moved.TerminalID != "term_123" {
 		t.Fatal("terminal relocation failed", err)

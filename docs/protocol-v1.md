@@ -815,6 +815,7 @@ local implementation or by source commit/push.
 
 Target commands on failure return nonzero with
 `{v:1,ok:false,error:CODE}`. Codes are `target_upgrade_required` (old tmux proof),
+`target_version_below_minimum` (tmux <3.2 or Herdr <0.9.1), `target_version_unknown` (unrecognized version),
 `installation_replaced`, `target_invalid` (definite missing/replaced/ambiguous
 identity), and `target_query_unavailable` (query, permission or unavailable birth
 proof). Temporary inability to query does not prove the terminal was replaced.

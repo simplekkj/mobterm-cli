@@ -1,5 +1,6 @@
 // Installed by mobterm-cli. No event content is persisted or printed.
 import { spawn } from "node:child_process";
+import { watch as watchReplyStore, lstatSync as wakeStat, openSync, fstatSync, readSync, closeSync, constants as fsFlags } from "node:fs";
 import { randomUUID } from "node:crypto";
 const executable = __MOBTERM_CLI_JSON__;
 const store = __MOBTERM_STORE_JSON__;
@@ -154,6 +155,8 @@ export default Plugin.define({
     });
     let alive = true, routeEpoch = 0, previousRoute, previousLocation;
     const activation = randomUUID();
+    const mailbox = replyWakeMailbox("opencode", () => alive ? {id:route(), epoch:routeEpoch} : undefined);
+    mailbox.start();
     const lifecycles = new Map();
     let stopReply, replySession;
     const inputReceipts = new Map();
@@ -391,7 +394,7 @@ export default Plugin.define({
           locationKey(session.location) === location && active && typeof active === "object" && !Array.isArray(active) && !(sessionID in active) &&
           [inbox, forms, permissions].every(list => Array.isArray(list) && list.length === 0);
       };
-      stopReply = replyOpportunity("opencode", payload, current, preflight, async (decision, tuple) => {
+      stopReply = replyOpportunity(mailbox, "opencode", payload, current, preflight, async (decision, tuple) => {
         const id = "msg_mobterm_" + decision.source_id;
         // A delivery event may arrive before the admission promise resolves.
         // Retain only identity and receipt proof; never retain the reply text.
@@ -469,7 +472,7 @@ export default Plugin.define({
     let disposeRoute;
     const cleanup = () => {
       if (!alive) return;
-      invalidateReply(); inputReceipts.clear(); alive = false; routeEpoch++; transport.stop(); pendingObservations.clear(); questionReceipts.clear();
+      mailbox.stop(); invalidateReply(); inputReceipts.clear(); alive = false; routeEpoch++; transport.stop(); pendingObservations.clear(); questionReceipts.clear();
       for(const child of approvalChildren.values())child.kill("SIGTERM"); approvalChildren.clear();
       disposeRoute?.();
       for (const unsubscribe of dispose.splice(0).reverse()) {

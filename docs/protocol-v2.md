@@ -47,12 +47,16 @@ cryptographically random and stored only locally. Locator identity includes
 installation, backend, namespace/incarnation, workspace and strong occupant.
 
 Envelope event IDs are stable SHA-256 hex of `source_occurrence + NUL + pair_id`.
-Codex completion uses the same notify-derived occurrence as v1. Native sources
-include source/event/session/event ID/instance and the existing normalized strong
-target identity. Retrying an accepted/unknown v2 delivery never creates a second
+Terminal-bound Codex completion uses the same notify-derived occurrence as v1. A verified shared-daemon completion without a pane additionally scopes the stable occurrence to its native storage home before deduplication. OpenCode and Pi v2 occurrences bind the native event, session, event ID, adapter instance and logical storage/configuration namespace. The same event keeps its identity when its pane moves. Retrying an accepted/unknown v2 delivery never creates a second
 v1 format. Stored envelope ID, nonce, ciphertext, kind and expiry are immutable;
 incompatible generations fail closed. Deliberate downgrade requires disabling
 capabilities and draining/terminating in-flight v2 deliveries first.
+
+## Latest visible notice
+
+New activity carries an encrypted `source` object with an opaque audience-specific `session` digest and positive `run_order`. A host assigns the order when it first records the run under its store lock. Within that run, `revision` orders events. An observed older run that finishes late retains its original order. The pair's visible head advances when a business reminder is frozen for that audience after policy negotiation. State-only activity, including a suppressed reminder, leaves it alone. The CLI checks the original event and envelope digest on new ordinary sends. The App retains the head independently of the archived row, including after the user deletes it. Old frozen decisions remain queryable.
+
+Use the matching App and CLI together. Install the updated CLI and refresh its managed Agent integrations, then use the updated App. The API's outer encrypted relay requires no migration. Shared-daemon Codex completions can carry only the installation and the authenticated logical session when no terminal is bound. Such a notice has no terminal destination.
 
 ## Envelope and authenticated plaintext
 
@@ -95,9 +99,9 @@ integers. All indexing/conditional-write metadata is authenticated. Independent
 purposes get independent nonces. A reminder itself supplies the recoverable
 latest snapshot, so the CLI does not send another snapshot at that revision.
 
-Plaintext is `{v:2,locator,agent,session_id,run_id,stream_id,revision,state,
+Plaintext is `{v:2,locator?,installation_id?,source?,agent,session_id,run_id,stream_id,revision,state,
 occurred_at,tools,active_tool_count,tools_truncated,approval?,interaction?,summary?}`. `locator` is the
-existing strong locator. Agent is codex/claude/opencode/pi. State is starting,
+existing strong locator. A verified Codex shared-daemon completion with no current terminal binding omits `locator` and carries the Pair installation ID in `installation_id` instead. Its `source` includes an opaque Pair-scoped logical session and integer run order. The wire never includes the native store path, runtime socket or peer PID. This representation requires v2 inbox negotiation. It also applies when policy reduces the completion to state; it carries neither request nor approval authority. The CLI will not manufacture a v1 target if v2 is disabled. Agent is codex/claude/opencode/pi. State is starting,
 running, tool_pending, tool_running, waiting_input, waiting_approval,
 turn_completed, failed or interrupted. `occurred_at` is Unix seconds. Session,
 run and tool identities are bounded to 256 bytes by adapters. `tools` has at most

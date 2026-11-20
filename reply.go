@@ -247,7 +247,7 @@ func verifyReply(op string, f replyFrame, p Pair) error {
 	if (RetirePacket{f.V, f.Origin, f.Pair, f.Installation}).validate() != nil || f.Origin != strings.TrimSuffix(p.APIURL, "/") || strings.HasSuffix(f.Origin, "/") || f.Installation != p.InstallationID || f.Pair != p.PairID || !opaqueID.MatchString(f.Event) || !bodyHashPattern.MatchString(f.Envelope) || !opaqueID.MatchString(f.Nonce) || f.Expires <= now || f.Expires > now+60 {
 		return errors.New("invalid_reply_identity")
 	}
-	if op == "inspect" {
+	if op == "inspect" || op == "latest" {
 		if f.SourceID != "" || f.Agent != "" || f.Cursor != "" || f.Action != "" || f.ResponseDigest != "" || f.DecisionID != "" || f.Text != "" || f.PolicyGeneration != 0 {
 			return errors.New("invalid_reply_inspect")
 		}
@@ -272,17 +272,18 @@ func verifyReply(op string, f replyFrame, p Pair) error {
 
 type replyResult struct {
 	bodyIdentity
-	SourceID           string `json:"source_id,omitempty"`
-	Cursor             string `json:"cursor,omitempty"`
-	Agent              string `json:"agent,omitempty"`
-	State              string `json:"state"`
-	Reason             string `json:"reason,omitempty"`
-	Expires            int64  `json:"expires_at"`
-	OpportunityExpires int64  `json:"opportunity_expires_at,omitempty"`
-	Generation         int64  `json:"policy_generation"`
-	Decision           string `json:"decision_id,omitempty"`
-	Action             string `json:"action,omitempty"`
-	Digest             string `json:"response_digest,omitempty"`
+	Locator            *Locator `json:"locator,omitempty"`
+	SourceID           string   `json:"source_id,omitempty"`
+	Cursor             string   `json:"cursor,omitempty"`
+	Agent              string   `json:"agent,omitempty"`
+	State              string   `json:"state"`
+	Reason             string   `json:"reason,omitempty"`
+	Expires            int64    `json:"expires_at"`
+	OpportunityExpires int64    `json:"opportunity_expires_at,omitempty"`
+	Generation         int64    `json:"policy_generation"`
+	Decision           string   `json:"decision_id,omitempty"`
+	Action             string   `json:"action,omitempty"`
+	Digest             string   `json:"response_digest,omitempty"`
 }
 
 func replyReceipt(result replyResult, r replyRecord, f replyFrame, op string) (replyResult, error) {
@@ -403,9 +404,13 @@ func replyCommand(ctx context.Context, s Store, api API, op string, in io.Reader
 	switch op {
 	case "configure", "configuration":
 		return replyConfiguration(ctx, s, api, op, in)
+	case "navigation-observe", "navigation-confirm":
+		return observeNavigation(ctx, s, op, in)
+	case "reopen":
+		return reopenReply(ctx, s, api, in)
 	case "authorize", "receipt":
 		return replyNativeCommand(ctx, s, api, op, in)
-	case "inspect", "send", "status":
+	case "inspect", "send", "status", "latest":
 	default:
 		return nil, errors.New("invalid_reply_command")
 	}
@@ -445,6 +450,24 @@ func replyCommand(ctx context.Context, s Store, api API, op string, in io.Reader
 		return nil, err
 	}
 	d, ok := sh.Records[k]
+	if op == "latest" {
+		if ok && d.PairID == p.PairID && d.EventID == f.Event && visibleSourceCurrent(s, f.bodyIdentity, d.VisibleSession) {
+			if err := checkRemoteReplyPair(ctx, s, api, p); err != nil {
+				return nil, err
+			}
+			target, bindingErr := confirmNavigation(ctx, s, p, d, f.Expires)
+			if bindingErr != nil {
+				result.Reason = "navigation_binding_unconfirmed"
+				return result, nil
+			}
+			local, pairErr := replyPair(s, p.PairID)
+			if pairErr == nil && local == p && visibleSourceCurrent(s, f.bodyIdentity, d.VisibleSession) {
+				result.Locator = &target
+				result.State, result.Reason, result.Expires = "current", "", min(f.Expires, time.Now().Unix()+5)
+			}
+		}
+		return result, nil
+	}
 	if !ok || d.Reply == nil {
 		return result, nil
 	}
@@ -498,13 +521,28 @@ func replyCommand(ctx context.Context, s Store, api API, op string, in io.Reader
 		result.Reason = reason
 		return result, nil
 	}
+	if !visibleSourceCurrent(s, f.bodyIdentity, d.VisibleSession) {
+		result.Reason = "source_changed"
+		return result, nil
+	}
+	if r.Renewable && r.Frame == nil && (r.State == "expired" || !r.alive(true) || r.Expires <= time.Now().Unix()) {
+		r, err = wakeReply(ctx, s, r, min(f.Expires, grant.ExpiresAt))
+		if err != nil {
+			result.Reason = safeCode(err.Error())
+			return result, nil
+		}
+		result.OpportunityExpires = r.Expires
+		result.Expires = min(grant.ExpiresAt, r.Expires)
+	}
 	if reason := replyOpportunityReason(s, r, true); reason != "" {
 		result.Reason = reason
 		return result, nil
 	}
-	if err = approvalTarget(ctx, s, r.Locator); err != nil {
-		result.Reason = "target_unconfirmed"
-		return result, nil
+	if !r.Renewable {
+		if err = approvalTarget(ctx, s, r.Locator); err != nil {
+			result.Reason = "target_unconfirmed"
+			return result, nil
+		}
 	}
 	unlock, err = s.lock(ctx)
 	if err != nil {
@@ -524,6 +562,10 @@ func replyCommand(ctx context.Context, s Store, api API, op string, in io.Reader
 	}
 	if reason := replyGrantReason(s, r, p, grant); reason != "" {
 		result.Reason = reason
+		return result, nil
+	}
+	if !visibleSourceCurrent(s, f.bodyIdentity, d.VisibleSession) {
+		result.Reason = "source_changed"
 		return result, nil
 	}
 	if reason := replyOpportunityReason(s, r, true); reason != "" {
@@ -546,6 +588,7 @@ func replyCommand(ctx context.Context, s Store, api API, op string, in io.Reader
 	}
 	r.State = "decision_recorded"
 	f.Proof = ""
+	r.VisibleSession = d.VisibleSession
 	r.Frame = &f
 	if err = saveReply(s, r); err != nil {
 		return nil, err

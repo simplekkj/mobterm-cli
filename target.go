@@ -22,7 +22,44 @@ import (
 var tmuxPane = regexp.MustCompile(`^%[0-9]+$`)
 var tmuxSession = regexp.MustCompile(`^\$[0-9]+$`)
 var tmuxWindow = regexp.MustCompile(`^@[0-9]+$`)
+
+const tmuxMinimumVersion = "3.2"
+
+var herdrMinimumVersion = stableVersion{0, 9, 1}
+var tmuxVersionToken = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)[a-z]?$`)
 var herdrSession = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+
+// tmux release letters are patch revisions of the numeric major.minor release.
+func checkTmuxVersion(token string) error {
+	m := tmuxVersionToken.FindStringSubmatch(token)
+	if m == nil {
+		return targetFailure{"target_version_unknown", "unrecognized tmux version"}
+	}
+	minimum := strings.Split(tmuxMinimumVersion, ".")
+	for i, floor := range minimum {
+		n := m[i+1]
+		if len(n) < len(floor) || len(n) == len(floor) && n < floor {
+			return targetFailure{"target_version_below_minimum", "tmux " + tmuxMinimumVersion + " or later is required"}
+		}
+		if n != floor {
+			break
+		}
+	}
+	return nil
+}
+
+func checkHerdrVersion(token string) error {
+	m := agentVersionToken.FindStringSubmatch(token)
+	if m != nil && !strings.HasPrefix(token, "v") {
+		switch compareMinimum(m, herdrMinimumVersion) {
+		case "":
+			return nil
+		case "below_minimum":
+			return targetFailure{"target_version_below_minimum", "Herdr " + herdrMinimumVersion.String() + " or later is required"}
+		}
+	}
+	return targetFailure{"target_version_unknown", "unrecognized Herdr version"}
+}
 
 type targetFailure struct{ code, reason string }
 
@@ -143,8 +180,19 @@ func captureTmuxProcess(ctx context.Context, id, socket, pane string, birth func
 	if !filepath.IsAbs(socket) || strings.ContainsAny(socket, "\r\n\t\x00") || !tmuxPane.MatchString(pane) {
 		return Locator{}, 0, errors.New("invalid tmux environment")
 	}
+	clientVersion, err := commandOutput(ctx, "tmux", "-V")
+	if err != nil {
+		return Locator{}, 0, errors.New("could not check tmux version")
+	}
+	token, ok := strings.CutPrefix(strings.TrimSpace(string(clientVersion)), "tmux ")
+	if !ok {
+		return Locator{}, 0, targetFailure{"target_version_unknown", "unrecognized tmux version"}
+	}
+	if err := checkTmuxVersion(token); err != nil {
+		return Locator{}, 0, err
+	}
 	query := func() (Locator, int, error) {
-		out, err := commandOutput(ctx, "tmux", "-u", "-S", socket, "list-panes", "-a", "-F", "#{socket_path}\t#{pid}:#{start_time}:#{session_created}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}")
+		out, err := commandOutput(ctx, "tmux", "-u", "-S", socket, "list-panes", "-a", "-F", "#{socket_path}\t#{pid}:#{start_time}:#{session_created}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{version}")
 		if err != nil {
 			if errors.Is(err, errTmuxQuery) {
 				if _, socketErr := targetSocketInfo(socket); socketErr != nil {
@@ -157,8 +205,11 @@ func captureTmuxProcess(ctx context.Context, id, socket, pane string, birth func
 		pid := 0
 		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 			f := strings.Split(line, "\t")
-			if len(f) != 6 {
+			if len(f) != 7 {
 				return Locator{}, 0, errors.New("malformed tmux process query")
+			}
+			if err := checkTmuxVersion(f[6]); err != nil {
+				return Locator{}, 0, err
 			}
 			if f[4] == pane {
 				pid, err = strconv.Atoi(f[5])
@@ -247,7 +298,7 @@ type herdrPaneRecord struct {
 }
 type herdrSnapshot struct {
 	Version  string            `json:"version"`
-	Protocol int               `json:"protocol"`
+	Protocol *uint32           `json:"protocol"`
 	Panes    []herdrPaneRecord `json:"panes"`
 }
 
@@ -350,10 +401,10 @@ func locatorFromHerdr(id, ns, pane, instance string, s herdrSnapshot) (Locator, 
 	return locateHerdr(id, ns, pane, "", instance, s)
 }
 func locateHerdr(id, ns, pane, terminal, instance string, s herdrSnapshot) (Locator, error) {
-	if (s.Version != "0.9.3" && s.Version != "0.9.1") || s.Protocol != 22 {
-		return Locator{}, errors.New("Herdr notification locator requires verified 0.9.1 or 0.9.3 protocol 22")
+	if err := checkHerdrVersion(s.Version); err != nil {
+		return Locator{}, err
 	}
-	if s.Panes == nil {
+	if s.Panes == nil || s.Protocol == nil {
 		return Locator{}, errors.New("incomplete Herdr snapshot")
 	}
 	var found []Locator

@@ -9,7 +9,7 @@ import (
 // It must never initialize installation identity or access pairs, outbox or API.
 func agentDiagnostics(ctx context.Context, s Store) map[string]any {
 	result := map[string]any{}
-	result["capabilities"] = map[string]any{"codex": map[string]any{"turn_completed": "agent-turn-complete", "needs_input": false, "reason": "PermissionRequest is pre-decision; no verified external human-wait event"}, "claude": map[string]any{"turn_completed": "native idle_prompt after user prompt; delayed by Claude", "needs_input": []string{"permission_prompt", "elicitation_dialog"}}, "herdr": map[string]any{"versions": []string{"0.9.1", "0.9.3"}, "source": "native Agent hooks only", "protocol": 22}}
+	result["capabilities"] = map[string]any{"codex": map[string]any{"turn_completed": "agent-turn-complete", "needs_input": false, "reason": "PermissionRequest is pre-decision; no verified external human-wait event"}, "claude": map[string]any{"turn_completed": "native idle_prompt after user prompt; delayed by Claude", "needs_input": []string{"permission_prompt", "elicitation_dialog"}}, "herdr": map[string]any{"minimum_version": herdrMinimumVersion.String(), "source": "native Agent hooks only"}, "tmux": map[string]any{"minimum_version": tmuxMinimumVersion}}
 	type probeResult struct {
 		agent string
 		probe agentProbe
@@ -77,6 +77,7 @@ func discoverAgents(ctx context.Context, s Store) (map[string]any, error) {
 	}
 	capabilities := result["capabilities"].(map[string]any)
 	delete(capabilities, "herdr")
+	delete(capabilities, "tmux")
 	delete(capabilities, "target")
 	result["v"] = 1
 	result["scope"] = "agents"

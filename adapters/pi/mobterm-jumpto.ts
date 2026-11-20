@@ -1,6 +1,7 @@
 // @ts-nocheck -- shipped as standalone host extension; contract tested by endpoint fixtures.
 // Installed by mobterm-cli. No event content is persisted or printed.
 import { spawn } from "node:child_process";
+import { watch as watchReplyStore, lstatSync as wakeStat, openSync, fstatSync, readSync, closeSync, constants as fsFlags } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -146,6 +147,9 @@ import { VERSION } from "@earendil-works/pi-coding-agent";
 export default function mobtermJumpTo(pi) {
   let alive = true, epoch = 0, round, context;
   const instance = randomUUID();
+  let navigatingSession = false;
+  const mailbox = replyWakeMailbox("pi", () => alive && !navigatingSession && context?.mode === "tui"
+    ? {id:session(context), epoch} : undefined);
   let stopReply;
   const invalidateReply = () => { stopReply?.(); stopReply = undefined; };
   const pendingGates = new Map();
@@ -174,10 +178,11 @@ export default function mobtermJumpTo(pi) {
   });
   const session = (ctx) => ctx.sessionManager.getSessionId();
   const reset = (ctx) => { invalidateReply(); openPrompts.clear(); context = ctx; epoch++; round = undefined; transport.cancel(); settleGates(); };
-  pi.on("session_start", (_event, ctx) => { alive = true; reset(ctx); });
-  pi.on("session_shutdown", (_event, ctx) => { alive = false; reset(ctx); });
+  pi.on("session_start", (_event, ctx) => { alive = true; navigatingSession = false; reset(ctx); if (ctx.mode === "tui") mailbox.start(); });
+  pi.on("session_shutdown", (_event, ctx) => { alive = false; reset(ctx); mailbox.stop(); });
   for (const event of ["input", "session_before_switch", "session_before_fork", "session_before_tree", "session_before_compact"]) {
     pi.on(event, () => {
+      if (event === "session_before_switch" || event === "session_before_fork") navigatingSession = true;
       invalidateReply();
       if (round) round.replyInvalidated = true;
     });
@@ -316,7 +321,7 @@ export default function mobtermJumpTo(pi) {
         && ctx.isIdle() === true && ctx.hasPendingMessages() === false;
       if (valid()) {
         invalidateReply();
-        stopReply = replyOpportunity("pi", source, valid, () => true, decision => {
+        stopReply = replyOpportunity(mailbox, "pi", source, valid, () => true, decision => {
           pi.sendUserMessage(decision.text, {expandPromptTemplates:false});
           // The host exposes no receipt or caller-supplied native input ID.
           return "delivery_unknown";

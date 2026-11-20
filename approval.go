@@ -20,6 +20,7 @@ import (
 )
 
 type ApprovalRequest struct {
+	LogicalSession string           `json:"logical_session,omitempty"`
 	Session        string           `json:"session,omitempty"`
 	Run            string           `json:"run,omitempty"`
 	Instance       string           `json:"instance,omitempty"`
@@ -261,7 +262,7 @@ func approvalCommand(ctx context.Context, s Store, api API, command string, in i
 	if command == "inspect" {
 		return approvalResult(r, f.PairID, generation, true), nil
 	}
-	if command == "decide" && !nativeRequestCurrent(s, r.Agent, r.Session, r.RequestID, r.Locator) {
+	if command == "decide" && !nativeRequestCurrent(s, r.Agent, r.Session, r.RequestID, r.Locator, r.LogicalSession) {
 		return nil, errors.New("approval_source_changed")
 	}
 	r.DecisionID = f.DecisionID
@@ -429,7 +430,11 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 	if err != nil {
 		return nil, nil
 	}
-	r := ApprovalRequest{Session: a.Session, Run: a.Run, Instance: a.Instance, V: 3, RequestID: id, Digest: digest(string(raw)), Agent: a.Agent, OperationJSON: string(raw), Locator: l, ExpiresAt: expires, CreatedAt: created, PID: os.Getpid(), Birth: birth, ParentPID: os.Getppid(), ParentBirth: parentBirth, State: "pending", Pairs: map[string]int64{}}
+	a.LogicalSession, err = logicalSession(a.Agent, a.Session)
+	if err != nil {
+		return nil, err
+	}
+	r := ApprovalRequest{LogicalSession: a.LogicalSession, Session: a.Session, Run: a.Run, Instance: a.Instance, V: 3, RequestID: id, Digest: digest(string(raw)), Agent: a.Agent, OperationJSON: string(raw), Locator: l, ExpiresAt: expires, CreatedAt: created, PID: os.Getpid(), Birth: birth, ParentPID: os.Getppid(), ParentBirth: parentBirth, State: "pending", Pairs: map[string]int64{}}
 	if input.ToolUseID != "" {
 		r.NativeIdentity = digest(a.Agent + "\x00" + a.Session + "\x00" + a.Run + "\x00" + input.ToolUseID + "\x00" + l.InstallationID + "\x00" + l.OccupantID)
 	}
@@ -616,7 +621,7 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 			return nil, e
 		}
 		again, e := approvalRead(s, id)
-		if e == nil && again.State == "decision_recorded" && again.DecisionID == current.DecisionID && time.Now().Unix() < expires && approvalAlive(again) && approvalRunWaiting(s, again) && nativeRequestCurrent(s, again.Agent, again.Session, again.RequestID, again.Locator) {
+		if e == nil && again.State == "decision_recorded" && again.DecisionID == current.DecisionID && time.Now().Unix() < expires && approvalAlive(again) && approvalRunWaiting(s, again) && nativeRequestCurrent(s, again.Agent, again.Session, again.RequestID, again.Locator, again.LogicalSession) {
 			again.State = "consumed"
 			again.OperationJSON = ""
 			e = s.writeJSON("approval-"+id+".json", again)
@@ -713,7 +718,7 @@ func resolveApprovalActivityLocked(s Store, r ApprovalRequest) error {
 	if r.Session == "" || r.Run == "" || r.Instance == "" {
 		return nil
 	}
-	_, _, _, err := applyActivityLocked(s, r.Locator, Activity{Agent: r.Agent, Session: r.Session, Run: r.Run, Instance: r.Instance, RequestID: r.RequestID, ResolveRequest: true, State: "running", Occurrence: digest("approval-resolved\x00" + r.RequestID)})
+	_, _, _, err := applyActivityLocked(s, r.Locator, Activity{LogicalSession: r.LogicalSession, Agent: r.Agent, Session: r.Session, Run: r.Run, Instance: r.Instance, RequestID: r.RequestID, ResolveRequest: true, State: "running", Occurrence: digest("approval-resolved\x00" + r.RequestID)})
 	return err
 }
 
@@ -792,8 +797,7 @@ func approvalRunWaiting(s Store, r ApprovalRequest) bool {
 	if err != nil {
 		return false
 	}
-	target, _ := json.Marshal(r.Locator)
-	instance := digest(r.Agent + "\x00" + r.Session + "\x00" + r.Instance + "\x00" + string(target))
+	instance := activityInstanceKey(r.Agent, r.Session, r.Instance, r.LogicalSession, r.Locator)
 	run, ok := db.Runs[digest(instance+"\x00"+r.Run)]
 	request := run.Requests[r.RequestID]
 	return ok && !terminalRun(run.State) && request.Approval != nil && request.Approval.Digest == r.Digest

@@ -45,8 +45,7 @@ func bindClaudeChildWait(a *Activity, p activityInput, l Locator) error {
 }
 
 func childRunKey(a Activity, l Locator) string {
-	target, _ := json.Marshal(l)
-	instance := digest(a.Agent + "\x00" + a.Session + "\x00" + a.Instance + "\x00" + string(target))
+	instance := activityInstanceKey(a.Agent, a.Session, a.Instance, "", l)
 	return digest(instance + "\x00" + a.Run)
 }
 
@@ -158,7 +157,7 @@ func cancelChildInteractionLocked(s Store, r InteractionRecord) error {
 }
 
 func settleChildRequestLocked(s Store, run StoredRun, id, state string) error {
-	activity := Activity{Agent: run.Agent, Session: run.Session, Instance: run.Instance, Run: run.Run, RequestID: id, ResolveRequest: true,
+	activity := Activity{LogicalSession: run.LogicalSession, ChildWait: run.ChildWait, Agent: run.Agent, Session: run.Session, Instance: run.Instance, Run: run.Run, RequestID: id, ResolveRequest: true,
 		State: state, Occurrence: digest(run.Run + "\x00end\x00" + id)}
 	if tool, ok := run.Tools[id]; ok {
 		activity.ToolID, activity.ToolCategory, activity.ToolStatus = id, tool.Category, "interrupted"

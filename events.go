@@ -83,7 +83,10 @@ func parseEvent(ctx context.Context, s Store, source string, payload []byte) (ki
 		if p.AgentID != "" && (p.HookEventName == "UserPromptSubmit" || p.NotificationType == "idle_prompt") {
 			return "", "", nil
 		}
-		key := digest(p.SessionID)
+		key, err := logicalSession("claude", p.SessionID)
+		if err != nil {
+			return "", "", err
+		}
 		if p.HookEventName == "Notification" {
 			switch p.NotificationType {
 			case "permission_prompt", "elicitation_dialog":
@@ -190,6 +193,13 @@ func notify(ctx context.Context, s Store, a API, source string, payload []byte, 
 	l := Locator{V: 1, InstallationID: id, Backend: "test"}
 	if !test {
 		l, err = captureHookTarget(ctx, id, source, false)
+		if err != nil && source == "codex" && kind == "turn_completed" {
+			activity, _, parseErr := parseActivity(ctx, s, source, payload)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			return nil, publishUnboundCodexCompletion(ctx, s, a, id, activity, err)
+		}
 		if err != nil {
 			return nil, err
 		}

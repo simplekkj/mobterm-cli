@@ -20,7 +20,7 @@ type replyWaitInput struct {
 	Expires  int64  `json:"expires_at"`
 }
 
-func replyRegistration(s Store, agent string, f replyWaitInput, l Locator) (replyRecord, error) {
+func replyRegistration(s Store, agent string, f replyWaitInput, l Locator, renewable bool) (replyRecord, error) {
 	now := time.Now().Unix()
 	if f.Expires <= now || f.Expires > now+300 || !ordinaryReplyVersion(agent, f.Version) || l.validate() != nil || l.OccupantID == "" {
 		return replyRecord{}, errors.New("reply_opportunity_unavailable")
@@ -30,8 +30,12 @@ func replyRegistration(s Store, agent string, f replyWaitInput, l Locator) (repl
 			return replyRecord{}, errors.New("invalid_native_reply_identity")
 		}
 	}
-	r := replyRecord{V: 1, Agent: agent, Session: f.Session, Run: f.Run, Instance: f.Instance, Locator: l, PID: os.Getpid(), ParentPID: replyParent(agent), Expires: f.Expires, State: "pending", OwnerToken: randomID(), Pairs: map[string]string{}}
+	r := replyRecord{V: 1, Renewable: renewable, Agent: agent, Session: f.Session, Run: f.Run, Instance: f.Instance, Locator: l, PID: os.Getpid(), ParentPID: replyParent(agent), Expires: f.Expires, State: "pending", OwnerToken: randomID(), Pairs: map[string]string{}}
 	var err error
+	r.LogicalSession, err = logicalSession(agent, f.Session)
+	if err != nil {
+		return r, err
+	}
 	if r.ParentBirth, err = processIdentity(r.ParentPID); err != nil {
 		return r, err
 	}
@@ -45,13 +49,13 @@ func replyRegistration(s Store, agent string, f replyWaitInput, l Locator) (repl
 		if agent == "opencode" {
 			event = "session.execution.succeeded"
 		}
-		r.Cursor = nativeTargetIdentity(newReplyOccurrence(agent, event, f.Session, f.Event, f.Instance), l)
+		r.Cursor = digest(r.LogicalSession + "\x00" + newReplyOccurrence(agent, event, f.Session, f.Event, f.Instance))
 	case "claude":
 		var cycles map[string]claudeCycle
 		if err = s.readJSON("claude-cycles.json", &cycles); err != nil {
 			return r, err
 		}
-		c := cycles[digest(f.Session)]
+		c := cycles[r.LogicalSession]
 		if c.Cycle == "" || c.PromptID != f.Event || f.Run != f.Event {
 			return r, errors.New("reply_prompt_changed")
 		}
@@ -63,7 +67,7 @@ func replyRegistration(s Store, agent string, f replyWaitInput, l Locator) (repl
 	default:
 		return r, errors.New("ordinary_reply_unavailable")
 	}
-	r.SourceID = replySourceID(agent, f.Session, r.Run, sourceInstance, r.Cursor, r.ParentBirth, l)
+	r.SourceID = replySourceID(replyScope(l.InstallationID, r.LogicalSession), r.Run, sourceInstance, r.Cursor, r.ParentBirth)
 	m, err := localReplyActivations(s)
 	if err != nil {
 		return r, err
@@ -100,8 +104,10 @@ func replyCheckNative(ctx context.Context, s Store, api API, r replyRecord) (Pai
 	if c.PolicyGeneration != r.Frame.PolicyGeneration {
 		return p, c, errors.New("reply_policy_changed")
 	}
-	if err = approvalTarget(ctx, s, r.Locator); err != nil {
-		return p, c, err
+	if !r.Renewable {
+		if err = approvalTarget(ctx, s, r.Locator); err != nil {
+			return p, c, err
+		}
 	}
 	return p, c, nil
 }
@@ -113,7 +119,10 @@ func replyWait(ctx context.Context, s Store, api API, agent string, in io.Reader
 	if err != nil || len(raw) > 8192 {
 		return nil, errors.New("invalid_native_reply")
 	}
-	var f replyWaitInput
+	var f struct {
+		replyWaitInput
+		Renewable bool `json:"renewable,omitempty"`
+	}
 	if interactionJSON(raw, &f) != nil {
 		return nil, errors.New("invalid_native_reply")
 	}
@@ -129,11 +138,15 @@ func replyWait(ctx context.Context, s Store, api API, agent string, in io.Reader
 	if err != nil {
 		return nil, err
 	}
-	r, err := replyRegistration(s, agent, f, l)
+	r, err := replyRegistration(s, agent, f.replyWaitInput, l, f.Renewable)
 	unlock()
 	if err != nil {
 		return nil, err
 	}
+	return waitForReplyDecision(ctx, s, api, r)
+}
+
+func waitForReplyDecision(ctx context.Context, s Store, api API, r replyRecord) (any, error) {
 	defer finishUnclaimedReply(s, r)
 	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
@@ -144,6 +157,9 @@ func replyWait(ctx context.Context, s Store, api API, agent string, in io.Reader
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-deadline.C:
+			if r.Renewable {
+				return map[string]any{"v": 1, "source_id": r.SourceID, "owner_token": r.OwnerToken, "wake": true}, nil
+			}
 			return nil, errors.New("opportunity_expired")
 		case <-ticker.C:
 		}
@@ -164,7 +180,7 @@ func replyWait(ctx context.Context, s Store, api API, agent string, in io.Reader
 		if err != nil {
 			return nil, err
 		}
-		unlock, err = s.lock(ctx)
+		unlock, err := s.lock(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -209,7 +225,7 @@ func finishUnclaimedReply(s Store, expected replyRecord) {
 	}
 	defer unlock()
 	r, err := readReply(s, expected.SourceID)
-	if err != nil || r.OwnerToken != expected.OwnerToken {
+	if err != nil || r.OwnerToken != expected.OwnerToken || r.Birth != expected.Birth {
 		return
 	}
 	switch r.State {

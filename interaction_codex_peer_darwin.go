@@ -47,6 +47,13 @@ func codexProcessParent(pid int) (int, error) {
 
 // ps emits argv only. KERN_PROCARGS2 also returns the process environment.
 // Inspect only a positively identified Codex image and never retain ps output.
+func codexDaemonImage(ctx context.Context, pid int) bool {
+	cmd := exec.CommandContext(ctx, "/bin/ps", "-ww", "-p", strconv.Itoa(pid), "-o", "comm=")
+	output := &limitBuffer{limit: 4096}
+	cmd.Stdout = output
+	return cmd.Run() == nil && codexExecutable(string(bytes.TrimSpace(output.Bytes())))
+}
+
 func codexProcessRole(ctx context.Context, pid int) (known, terminal bool) {
 	p, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	if err != nil || p == nil || p.Proc.P_pid != int32(pid) {

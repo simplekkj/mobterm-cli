@@ -21,11 +21,12 @@ type replyBinding struct {
 }
 
 type replyHead struct {
-	Run      string `json:"run,omitempty"`
-	Instance string `json:"instance,omitempty"`
-	Cursor   string `json:"cursor"`
-	Request  string `json:"request,omitempty"`
-	Until    int64  `json:"until"`
+	SessionHint string `json:"session_hint,omitempty"`
+	Run         string `json:"run,omitempty"`
+	Instance    string `json:"instance,omitempty"`
+	Cursor      string `json:"cursor"`
+	Request     string `json:"request,omitempty"`
+	Until       int64  `json:"until"`
 }
 
 // Classic Hooks may run below a shell while Mod process.spawn is a direct
@@ -40,19 +41,21 @@ func replyParent(agent string) int {
 	return os.Getppid()
 }
 
-func replyScope(agent, session string, l Locator) string {
-	return nativeTargetIdentity(agent+"\x00"+session, l)
+// The scope is captured in the Agent process environment before persisting a
+// source. A later SSH command may use an entirely different HOME or profile.
+func replyScope(installation, session string) string {
+	return digest(installation + "\x00" + session)
 }
 
-func replySourceID(agent, session, run, instance, cursor, owner string, l Locator) string {
-	parts, _ := json.Marshal([]string{agent, session, run, instance, cursor, owner, replyScope(agent, session, l)})
+func replySourceID(scope, run, instance, cursor, owner string) string {
+	parts, _ := json.Marshal([]string{scope, run, instance, cursor, owner})
 	return digest(string(parts))
 }
 
 // Only native input/turn boundaries and actionable events advance the cursor.
 // For an ambiguous or evicted old scope, a helper can never synthesize a head.
-func advanceReplyHead(db *RunStore, a Activity, l Locator, now int64) bool {
-	if a.ChildWait != nil || a.Agent == "codex" || l.OccupantID == "" || a.Occurrence == "" {
+func advanceReplyHead(db *RunStore, a Activity, scope string, now int64) bool {
+	if a.ChildWait != nil || a.Agent == "codex" || scope == "" || a.Occurrence == "" {
 		return false
 	}
 	if a.Reminder == "" && a.State != "starting" && !(a.State == "running" && a.ToolID == "" && !a.ResolveRequest && a.ToolStatus == "") {
@@ -61,7 +64,6 @@ func advanceReplyHead(db *RunStore, a Activity, l Locator, now int64) bool {
 	if db.ReplyHeads == nil {
 		db.ReplyHeads = map[string]replyHead{}
 	}
-	scope := replyScope(a.Agent, a.Session, l)
 	if len(db.ReplyHeads) >= 1024 {
 		for key, head := range db.ReplyHeads {
 			if head.Until <= now {
@@ -85,7 +87,7 @@ func advanceReplyHead(db *RunStore, a Activity, l Locator, now int64) bool {
 	if a.Reminder == "turn_completed" && old.Run != "" && (old.Run != a.Run || old.Instance != a.Instance) {
 		return false
 	}
-	db.ReplyHeads[scope] = replyHead{Run: a.Run, Instance: a.Instance, Cursor: a.Occurrence, Request: request, Until: now + 86400}
+	db.ReplyHeads[scope] = replyHead{SessionHint: digest(a.Agent + "\x00" + a.Session), Run: a.Run, Instance: a.Instance, Cursor: a.Occurrence, Request: request, Until: now + 86400}
 	return true
 }
 
@@ -96,7 +98,15 @@ func replyIntentBinding(a Activity, l Locator, pair Pair, parentBirth string) *r
 	if a.Agent != "codex" && parentBirth == "" {
 		return nil
 	}
-	return &replyBinding{Agent: a.Agent, SourceID: replySourceID(a.Agent, a.Session, a.Run, a.Instance, a.Occurrence, parentBirth, l), Cursor: a.Occurrence, Origin: strings.TrimSuffix(pair.APIURL, "/"), Installation: pair.InstallationID}
+	logical := a.LogicalSession
+	if logical == "" {
+		var err error
+		logical, err = logicalSession(a.Agent, a.Session)
+		if err != nil {
+			return nil
+		}
+	}
+	return &replyBinding{Agent: a.Agent, SourceID: replySourceID(replyScope(l.InstallationID, logical), a.Run, a.Instance, a.Occurrence, parentBirth), Cursor: a.Occurrence, Origin: strings.TrimSuffix(pair.APIURL, "/"), Installation: pair.InstallationID}
 }
 func bindReply(ref *replyBinding, e Envelope) *replyBinding {
 	if ref == nil || e.Kind != "turn_completed" {
@@ -116,24 +126,27 @@ func claudeCompletionOccurrence(session, cycle string) string {
 }
 
 type replyRecord struct {
-	V           int               `json:"v"`
-	SourceID    string            `json:"source_id"`
-	Cursor      string            `json:"cursor"`
-	Agent       string            `json:"agent"`
-	Session     string            `json:"session_id"`
-	Run         string            `json:"run_id"`
-	Instance    string            `json:"instance_id"`
-	Locator     Locator           `json:"locator"`
-	PID         int               `json:"pid"`
-	Birth       string            `json:"birth"`
-	ParentPID   int               `json:"parent_pid"`
-	ParentBirth string            `json:"parent_birth"`
-	Pairs       map[string]string `json:"pairs"`
-	OwnerToken  string            `json:"owner_token"`
-	Expires     int64             `json:"expires_at"`
-	State       string            `json:"state"`
-	Authorized  bool              `json:"native_authorized,omitempty"`
-	Frame       *replyFrame       `json:"frame,omitempty"`
+	LogicalSession string            `json:"logical_session,omitempty"`
+	Renewable      bool              `json:"renewable,omitempty"`
+	VisibleSession string            `json:"visible_session,omitempty"`
+	V              int               `json:"v"`
+	SourceID       string            `json:"source_id"`
+	Cursor         string            `json:"cursor"`
+	Agent          string            `json:"agent"`
+	Session        string            `json:"session_id"`
+	Run            string            `json:"run_id"`
+	Instance       string            `json:"instance_id"`
+	Locator        Locator           `json:"locator"`
+	PID            int               `json:"pid"`
+	Birth          string            `json:"birth"`
+	ParentPID      int               `json:"parent_pid"`
+	ParentBirth    string            `json:"parent_birth"`
+	Pairs          map[string]string `json:"pairs"`
+	OwnerToken     string            `json:"owner_token"`
+	Expires        int64             `json:"expires_at"`
+	State          string            `json:"state"`
+	Authorized     bool              `json:"native_authorized,omitempty"`
+	Frame          *replyFrame       `json:"frame,omitempty"`
 }
 
 func (r replyRecord) alive(wait bool) bool {
@@ -177,6 +190,9 @@ func readReply(s Store, id string) (replyRecord, error) {
 func saveReply(s Store, r replyRecord) error { return s.writeJSON(replyFile(r.SourceID), r) }
 
 func replyOpportunityReason(s Store, r replyRecord, waiting bool) string {
+	if r.Frame != nil && !visibleSourceCurrent(s, r.Frame.bodyIdentity, r.VisibleSession) {
+		return "source_changed"
+	}
 	if r.Expires <= time.Now().Unix() {
 		return "opportunity_expired"
 	}
@@ -186,11 +202,18 @@ func replyOpportunityReason(s Store, r replyRecord, waiting bool) string {
 	if waiting && !r.alive(true) {
 		return "reply_channel_unavailable"
 	}
+	return replyCursorReason(s, r)
+}
+
+func replyCursorReason(s Store, r replyRecord) string {
 	db, err := loadRuns(s)
 	if err != nil {
 		return "source_unconfirmed"
 	}
-	if db.ReplyHeads[replyScope(r.Agent, r.Session, r.Locator)].Cursor != r.Cursor {
+	if r.LogicalSession == "" {
+		return "source_unconfirmed"
+	}
+	if db.ReplyHeads[replyScope(r.Locator.InstallationID, r.LogicalSession)].Cursor != r.Cursor {
 		return "source_changed"
 	}
 	return ""
@@ -198,7 +221,7 @@ func replyOpportunityReason(s Store, r replyRecord, waiting bool) string {
 
 // A legacy caller retains its own waiter and release semantics. A known later
 // ordinary source cannot be answered through an old native request ID.
-func nativeRequestCurrent(s Store, agent, session, id string, l Locator) bool {
+func nativeRequestCurrent(s Store, agent, session, id string, l Locator, logical string) bool {
 	if agent == "codex" || session == "" {
 		return true
 	}
@@ -206,7 +229,18 @@ func nativeRequestCurrent(s Store, agent, session, id string, l Locator) bool {
 	if err != nil {
 		return false
 	}
-	h, ok := db.ReplyHeads[replyScope(agent, session, l)]
+	if logical == "" {
+		// Pre-upgrade records only attest the old pane-bound source. New
+		// observations of that native ID cannot safely be assigned to it.
+		for _, head := range db.ReplyHeads {
+			if head.SessionHint == digest(agent+"\x00"+session) && head.Request != id {
+				return false
+			}
+		}
+		h, ok := db.ReplyHeads[nativeTargetIdentity(agent+"\x00"+session, l)]
+		return !ok || h.Request == id
+	}
+	h, ok := db.ReplyHeads[replyScope(l.InstallationID, logical)]
 	return !ok || h.Request == id
 }
 
@@ -217,6 +251,13 @@ func registerReplyLocked(s Store, r replyRecord) error {
 		}
 		return errors.New("reply_already_registered")
 	}
+	if err := replyCapacityLocked(s, &r); err != nil {
+		return err
+	}
+	return saveReply(s, r)
+}
+
+func replyCapacityLocked(s Store, registration *replyRecord) error {
 	entries, err := os.ReadDir(s.Dir)
 	if err != nil {
 		return err
@@ -233,7 +274,20 @@ func registerReplyLocked(s Store, r replyRecord) error {
 		if err != nil {
 			return err
 		}
+		// The old key included the pane. A repeated completion after upgrading
+		// cannot open a fresh slot for an already registered native run.
+		if registration != nil && old.LogicalSession == "" && old.Agent == registration.Agent &&
+			old.Session == registration.Session && old.Run == registration.Run &&
+			old.Instance == registration.Instance &&
+			old.Locator.InstallationID == registration.Locator.InstallationID {
+			return errors.New("reply_already_registered")
+		}
 		if old.Expires+86400 < now && !old.alive(false) {
+			if old.Renewable {
+				if err = os.Remove(filepath.Join(s.Dir, wakeFile(id))); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return err
+				}
+			}
 			if err = os.Remove(filepath.Join(s.Dir, name)); err != nil {
 				return err
 			}
@@ -251,10 +305,10 @@ func registerReplyLocked(s Store, r replyRecord) error {
 			active++
 		}
 	}
-	if active >= 8 || count >= 1024 {
+	if active >= 8 || registration != nil && count >= 1024 {
 		return errors.New("reply_capacity")
 	}
-	return saveReply(s, r)
+	return nil
 }
 
 func interactionSourceCurrent(s Store, r InteractionRecord) bool {
@@ -268,5 +322,5 @@ func interactionSourceCurrent(s Store, r InteractionRecord) bool {
 	if interactionJSON([]byte(r.RequestJSON), &spec) != nil {
 		return false
 	}
-	return nativeRequestCurrent(s, r.Agent, spec.SessionID, r.RequestID, r.Locator)
+	return nativeRequestCurrent(s, r.Agent, spec.SessionID, r.RequestID, r.Locator, r.LogicalSession)
 }

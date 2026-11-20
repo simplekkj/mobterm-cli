@@ -50,6 +50,11 @@ func codexProcessParent(pid int) (int, error) {
 	return strconv.Atoi(fields[1])
 }
 
+func codexDaemonImage(_ context.Context, pid int) bool {
+	image, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe")
+	return err == nil && codexExecutable(image)
+}
+
 func codexProcessRole(_ context.Context, pid int) (known, terminal bool) {
 	path := "/proc/" + strconv.Itoa(pid)
 	image, err := os.Readlink(path + "/exe")

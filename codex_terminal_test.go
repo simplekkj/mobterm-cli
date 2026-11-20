@@ -104,7 +104,7 @@ func TestCodexHerdrRechecksOccupantAfterProcessQuery(t *testing.T) {
 			switch req.Method {
 			case "session.snapshot":
 				result = map[string]any{"type": "session_snapshot", "snapshot": herdrSnapshot{
-					Version: "0.9.3", Protocol: 22, Panes: []herdrPaneRecord{{"w1:p1", terminal, "w1", "w1:t1"}},
+					Version: "0.9.3", Protocol: new(uint32(22)), Panes: []herdrPaneRecord{{"w1:p1", terminal, "w1", "w1:t1"}},
 				}}
 			case "pane.process_info":
 				result = map[string]any{"type": "pane_process_info", "process_info": map[string]any{"pane_id": "w1:p1", "shell_pid": os.Getpid()}}

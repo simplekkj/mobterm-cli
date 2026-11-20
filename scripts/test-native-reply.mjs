@@ -52,7 +52,7 @@ async function claudeFixture(change) {
   const mod = await adapter("claude/register.js", {});
   mod.register((name, f) => hooks.set(name, f));
   const $ = {
-    clock:{now:async () => Date.now()},
+    clock:{now:async () => Date.now(), every:() => ({cancel(){}})},
     session:{id:async () => host.session, info:async () => ({promptId:host.prompt}),
       version:async () => ({version:"2.1.328"}), surfaces:async () => host.surfaces},
     process:{

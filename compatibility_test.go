@@ -595,7 +595,7 @@ func TestRangeNotifyEncryptedIdentity(t *testing.T) {
 	t.Setenv("TMUX_PANE", "%3")
 	t.Setenv("HERDR_PANE_ID", "")
 	t.Setenv("FIXTURE_PANE_PID", fmt.Sprint(os.Getpid()))
-	tmux := "#!/bin/sh\nprintf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' /fixture/tmux.sock 123:456:789 '$1' '@2' '%3' \"$FIXTURE_PANE_PID\"\n"
+	tmux := "#!/bin/sh\nif [ \"$1\" = -V ]; then echo 'tmux 3.2'; exit 0; fi\nprintf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t3.2\\n' /fixture/tmux.sock 123:456:789 '$1' '@2' '%3' \"$FIXTURE_PANE_PID\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(tmux), 0700); err != nil {
 		t.Fatal(err)
 	}

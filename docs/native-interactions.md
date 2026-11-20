@@ -13,8 +13,10 @@ action API, host mode and source binding.
 | Pi | 1.4.0 extension-owned gate | 1.5.1, same idle extension, session and settled run |
 
 For an ordinary message follow [reply wire v1](reply-v1.md). A real host event
-may register one opportunity for up to 300 seconds. Inspecting it never starts
-a process or extends that deadline. The source notification and completion
+registers one source. After its initial helper exits, an authorized inspection
+can wake the same host to create a fresh short lease. Claude uses one Mod timer,
+OpenCode watches the private store during plugin setup/cleanup, and Pi watches
+from session start to shutdown. The source notification and completion
 remain the existing event, independently of body-cache success.
 
 `hooks install --agent claude` prepares the classic Hooks and, on a compatible

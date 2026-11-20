@@ -13,6 +13,7 @@ import (
 )
 
 type RunCapabilities struct {
+	NotificationsEnabled *bool           `json:"notifications_enabled,omitempty"`
 	V                    int             `json:"v"`
 	Enabled              bool            `json:"enabled"`
 	States               bool            `json:"states"`
@@ -84,6 +85,8 @@ type PendingRequest struct {
 }
 
 type Activity struct {
+	LogicalSession string
+	CodexRuntime   *codexRuntimeSource
 	Body           assistantBody `json:"-"`
 	ClaudeStop     string        `json:"-"`
 	ChildWait      *claudeChildWait
@@ -105,6 +108,10 @@ type Activity struct {
 	Approval       *ApprovalHint
 }
 type StoredRun struct {
+	InstanceKey     string                    `json:"instance_key,omitempty"`
+	CodexRuntime    *codexRuntimeSource       `json:"codex_runtime,omitempty"`
+	SourceOrder     int64                     `json:"source_order,omitempty"`
+	LogicalSession  string                    `json:"logical_session,omitempty"`
 	ChildWait       *claudeChildWait          `json:"claude_child_wait,omitempty"`
 	Summary         string                    `json:"summary,omitempty"`
 	CodexRoot       bool                      `json:"codex_root_verified,omitempty"`
@@ -126,24 +133,27 @@ type StoredRun struct {
 	Approval        *ApprovalHint             `json:"approval,omitempty"`
 }
 type RunIntent struct {
-	Reply      *replyBinding `json:"reply,omitempty"`
-	Body       *bodyRef      `json:"body,omitempty"`
-	PairID     string        `json:"pair_id"`
-	Key        string        `json:"key"`
-	Occurrence string        `json:"occurrence"`
-	Kind       string        `json:"kind"`
-	Payload    RunPayload    `json:"payload"`
-	ExpiresAt  int64         `json:"expires_at"`
-	Envelope   *Envelope     `json:"envelope,omitempty"`
+	Navigation *navigationOwner `json:"navigation,omitempty"`
+	Reply      *replyBinding    `json:"reply,omitempty"`
+	Body       *bodyRef         `json:"body,omitempty"`
+	PairID     string           `json:"pair_id"`
+	Key        string           `json:"key"`
+	Occurrence string           `json:"occurrence"`
+	Kind       string           `json:"kind"`
+	Payload    RunPayload       `json:"payload"`
+	ExpiresAt  int64            `json:"expires_at"`
+	Envelope   *Envelope        `json:"envelope,omitempty"`
 }
 type RunStore struct {
-	ReplyHeads map[string]replyHead `json:"reply_heads,omitempty"`
-	LastPair   [2]string            `json:"last_pair,omitempty"`
-	Retired    map[string]int64     `json:"retired,omitempty"`
-	NextState  map[string]int64     `json:"next_state"`
-	Intents    map[string]RunIntent `json:"intents"`
-	Runs       map[string]StoredRun `json:"runs"`
-	Current    map[string]string    `json:"current"`
+	LastSourceOrder int64                    `json:"last_source_order,omitempty"`
+	Visible         map[string]visibleNotice `json:"visible,omitempty"`
+	ReplyHeads      map[string]replyHead     `json:"reply_heads,omitempty"`
+	LastPair        [2]string                `json:"last_pair,omitempty"`
+	Retired         map[string]int64         `json:"retired,omitempty"`
+	NextState       map[string]int64         `json:"next_state"`
+	Intents         map[string]RunIntent     `json:"intents"`
+	Runs            map[string]StoredRun     `json:"runs"`
+	Current         map[string]string        `json:"current"`
 }
 
 func loadRuns(s Store) (RunStore, error) {
@@ -222,8 +232,10 @@ func reclaimRuns(db *RunStore, now int64, needSlot bool) {
 		}
 		db.Retired[key] = now + 86400
 		if run.FirstOccurrence != "" {
-			target, _ := json.Marshal(run.Locator)
-			instance := digest(run.Agent + "\x00" + run.Session + "\x00" + run.Instance + "\x00" + string(target))
+			instance := run.InstanceKey
+			if instance == "" {
+				instance = activityInstanceKey(run.Agent, run.Session, run.Instance, "", run.Locator)
+			}
 			db.Retired[digest(instance+"\x00occurrence\x00"+run.FirstOccurrence)] = now + 86400
 		}
 		delete(db.Runs, key)
@@ -257,20 +269,39 @@ func applyActivity(ctx context.Context, s Store, l Locator, a Activity) (string,
 	return applyActivityLocked(s, l, a)
 }
 
+// Root input and visible-notice order follow the logical Agent session. Child
+// waiters and old records retain their original terminal-bound instance key.
+func activityInstanceKey(agent, session, instance, logical string, l Locator) string {
+	if logical != "" && agent != "codex" {
+		return digest(replyScope(l.InstallationID, logical) + "\x00" + instance)
+	}
+	target, _ := json.Marshal(l)
+	return digest(agent + "\x00" + session + "\x00" + instance + "\x00" + string(target))
+}
+
 // Caller owns Store.lock, including when persisting an approval lifecycle change.
 func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, bool, error) {
 	db, err := loadRuns(s)
 	if err != nil {
 		return "", StoredRun{}, false, err
 	}
-	target, _ := json.Marshal(l)
-	instance := digest(a.Agent + "\x00" + a.Session + "\x00" + a.Instance + "\x00" + string(target))
+	if a.LogicalSession == "" {
+		a.LogicalSession, err = logicalSession(a.Agent, a.Session)
+		if err != nil {
+			return "", StoredRun{}, false, err
+		}
+	}
+	scope := a.LogicalSession
+	if a.ChildWait != nil {
+		scope = ""
+	}
+	instance := activityInstanceKey(a.Agent, a.Session, a.Instance, scope, l)
 	if a.Run == "" {
 		if db.Retired[digest(instance+"\x00occurrence\x00"+a.Occurrence)] > time.Now().Unix() {
 			return "", StoredRun{}, false, nil
 		}
 		for key, r := range db.Runs {
-			if r.Agent == a.Agent && r.Session == a.Session && r.Instance == a.Instance && r.Locator == l {
+			if r.Agent == a.Agent && r.Session == a.Session && r.Instance == a.Instance && (r.InstanceKey == instance || r.InstanceKey == "" && r.Locator == l) {
 				for _, occurrence := range r.Seen {
 					if occurrence == a.Occurrence {
 						return key, r, false, nil
@@ -301,7 +332,7 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 		if len(db.Runs) >= 128 && a.Reminder == "" || len(db.Runs) >= 512 {
 			return "", r, false, errors.New("run_capacity_retry_after_flush")
 		}
-		r = StoredRun{ChildWait: a.ChildWait, FirstOccurrence: a.Occurrence, Agent: a.Agent, Session: a.Session, Run: a.Run, Instance: a.Instance, Locator: l, Tools: map[string]RunTool{}, Streams: map[string]string{}, Pending: map[string]Envelope{}}
+		r = StoredRun{InstanceKey: instance, ChildWait: a.ChildWait, FirstOccurrence: a.Occurrence, Agent: a.Agent, Session: a.Session, Run: a.Run, Instance: a.Instance, Locator: l, Tools: map[string]RunTool{}, Streams: map[string]string{}, Pending: map[string]Envelope{}}
 	}
 	for _, id := range r.Seen {
 		if id == a.Occurrence {
@@ -312,7 +343,7 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 		// A real native request can arrive after the completion for this same
 		// run. Keep its notification lifecycle closed, but revoke the ordinary
 		// source even when this activity cannot produce a new reminder.
-		scope := replyScope(a.Agent, a.Session, l)
+		scope := replyScope(l.InstallationID, a.LogicalSession)
 		if h, ok := db.ReplyHeads[scope]; ok && h.Run == a.Run && h.Instance == a.Instance && a.Reminder == "needs_input" && h.Cursor != a.Occurrence && h.Request == "" {
 			h.Cursor = a.Occurrence
 			db.ReplyHeads[scope] = h
@@ -332,6 +363,18 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 		r.ChildWait = a.ChildWait
 	}
 	r.CodexRoot = r.CodexRoot || a.CodexRoot
+	if a.CodexRuntime != nil {
+		r.CodexRuntime = a.CodexRuntime
+	}
+	if r.SourceOrder == 0 {
+		if db.LastSourceOrder < 0 || db.LastSourceOrder >= 1<<53-1 {
+			return key, r, false, errors.New("source_order_capacity")
+		}
+		db.LastSourceOrder++
+		r.SourceOrder = db.LastSourceOrder
+		r.LogicalSession = a.LogicalSession
+	}
+	r.Locator = l
 	r.Summary = cleanMessageSummary(a.Summary)
 	r.Revision++
 	r.Updated = now
@@ -420,13 +463,18 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 	if a.ClaudeStop != "" {
 		stoppedBodies = s.claudeBodies(a, l)
 	}
-	advanceReplyHead(&db, a, l, now)
+	advanceReplyHead(&db, a, replyScope(l.InstallationID, r.LogicalSession), now)
+	navigation := noticeNavigationOwner(a, l)
 	parentBirth := ""
 	if a.Reminder == "turn_completed" && a.Agent != "codex" {
 		parentBirth, _ = processIdentity(replyParent(a.Agent))
 	}
+	installation := l.InstallationID
+	if r.CodexRuntime != nil {
+		installation = r.CodexRuntime.Installation
+	}
 	for pid, pair := range pairs {
-		if pair.Status != "active" || pair.InstallationID != l.InstallationID {
+		if pair.Status != "active" || pair.InstallationID != installation {
 			continue
 		}
 		stream := r.Streams[pid]
@@ -457,6 +505,7 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 			}
 		}
 		payload := payloadForRun(r, stream)
+		payload.Source = &noticeSource{Session: audienceSession(pair, r.LogicalSession), RunOrder: r.SourceOrder}
 		if kind != "state" {
 			// A reminder belongs to the event that produced it, never the
 			// run's currently selected pending request.
@@ -477,7 +526,7 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 			// Record the original run identity even when negotiation later selects v1.
 			body.Source = digest(strings.Join([]string{key, a.Occurrence, stream, fmt.Sprint(r.Revision)}, "\x00"))
 		}
-		db.Intents[ik] = RunIntent{Reply: replyIntentBinding(a, l, pair, parentBirth), Body: body, PairID: pid, Key: key, Occurrence: a.Occurrence, Kind: kind, Payload: payload, ExpiresAt: now + 3600}
+		db.Intents[ik] = RunIntent{Navigation: navigation, Reply: replyIntentBinding(a, l, pair, parentBirth), Body: body, PairID: pid, Key: key, Occurrence: a.Occurrence, Kind: kind, Payload: payload, ExpiresAt: now + 3600}
 		if kind != "state" {
 			delete(db.Intents, digest(pid+"\x00state\x00"+key))
 		}
@@ -514,6 +563,9 @@ func payloadForRun(r StoredRun, stream string) RunPayload {
 		}
 	}
 	p := RunPayload{Summary: r.Summary, V: 2, Locator: r.Locator, Agent: r.Agent, SessionID: r.Session, RunID: r.Run, StreamID: stream, Revision: r.Revision, State: r.State, OccurredAt: r.Updated, Tools: tools, Approval: r.Approval, Interaction: r.Interaction, ActiveToolCount: active}
+	if r.CodexRuntime != nil && r.Locator == (Locator{}) {
+		p.InstallationID = r.CodexRuntime.Installation
+	}
 	return fitRunDisplayBudget(p)
 }
 
@@ -597,6 +649,12 @@ func encodeRunIntent(ctx context.Context, s Store, key string, intent RunIntent,
 	if err != nil {
 		return intent, err
 	}
+	if err := db.recordVisible(e, intent.Payload, time.Now().Unix()); err != nil {
+		if saveErr := saveRuns(s, db); saveErr != nil {
+			return current, saveErr
+		}
+		return current, err
+	}
 	current.Kind = intent.Kind
 	current.Payload = intent.Payload
 	current.Envelope = &e
@@ -623,7 +681,10 @@ func enqueueRunReminder(ctx context.Context, s Store, intent RunIntent) (deliver
 	}
 	old := cloneShard(sh)
 	raw, _ := json.Marshal(intent.Payload.Locator)
-	d := delivery{Reply: bindReply(intent.Reply, e), Body: bindBody(intent.Body, e), PairID: e.PairID, EventID: e.EventID, Kind: e.Kind, LocatorHash: digest(string(raw)), Created: intent.Payload.OccurredAt, Expires: e.ExpiresAt, State: "pending", Envelope: &e, Approval: intent.Payload.Approval}
+	d := delivery{Navigation: intent.Navigation, Reply: bindReply(intent.Reply, e), Body: bindBody(intent.Body, e), PairID: e.PairID, EventID: e.EventID, Kind: e.Kind, LocatorHash: digest(string(raw)), Created: intent.Payload.OccurredAt, Expires: e.ExpiresAt, State: "pending", Envelope: &e, Approval: intent.Payload.Approval}
+	if intent.Payload.Source != nil {
+		d.VisibleSession = intent.Payload.Source.Session
+	}
 	sh.Records[key] = d
 	idx, err := s.outboxLoad(true)
 	if err != nil {
@@ -740,6 +801,12 @@ func flushRunIntents(ctx context.Context, s Store, api API, states bool) error {
 				}
 			}
 			if !c.Enabled || !c.States || !c.Inbox {
+				if intent.Payload.InstallationID != "" {
+					// V1 encodes a terminal locator as the entire payload. Keep this
+					// intent for capability re-negotiation within its original expiry.
+					last = errors.New("unbound_completion_requires_v2_inbox")
+					continue
+				}
 				if intent.Kind == "turn_completed" || intent.Kind == "needs_input" {
 					d, e := enqueueBoundDelivery(ctx, s, p, intent.Kind, intent.Occurrence, intent.Payload.Locator, intent.Payload.Agent, intent.Payload.Summary, intent.Body, nil, intent.Reply)
 					if e != nil {
@@ -770,7 +837,7 @@ func flushRunIntents(ctx context.Context, s Store, api API, states bool) error {
 				}
 			}
 			allowed := intent.Kind == "state" || intent.Kind == "test" || intent.Kind == "turn_completed" && c.Policy.TurnCompleted || intent.Kind == "needs_input" && (c.Policy.NeedsInput || interactionAllowed || intent.Payload.Approval != nil && c.Approvals[intent.Payload.Agent]) || (intent.Kind == "failed" || intent.Kind == "interrupted") && c.Policy.AbnormalEnd
-			if !allowed {
+			if !allowed || c.NotificationsEnabled != nil && !*c.NotificationsEnabled {
 				intent.Kind = "state"
 			}
 			intent, e = encodeRunIntent(ctx, s, key, intent, c, p)

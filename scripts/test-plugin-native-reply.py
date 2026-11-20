@@ -99,7 +99,23 @@ if args[:2]==["reply","wait"]:
     try:
         with (root/"first-source").open("x") as out: out.write(session)
     except FileExistsError: sys.exit(0)
-    print(json.dumps({{"v":1,"source_id":"source","decision_id":"decision","owner_token":"owner","text":{text!r}}}))
+    assert source["renewable"]
+    (root/"registered-pid").write_text(str(os.getpid()))
+    (root/"host-pid").write_text(str(os.getppid()))
+    print(json.dumps({{"v":1,"source_id":"a"*64,"owner_token":"owner","wake":True}}))
+elif args[0]=="reply" and args[1] in ("navigation-observe", "navigation-confirm"):
+    assert int.from_bytes(raw[:4],"big")==len(raw)-4
+    challenge=json.loads(raw[4:])
+    assert challenge["nonce"]=="n"*43 and challenge["agent"]=={agent!r}
+    assert os.getppid()==int((root/"host-pid").read_text())
+    assert challenge["session_id"]==(root/"first-source").read_text()
+    (root/args[1]).touch()
+    print('{{"ok":true}}')
+elif args[:2]==["reply","reopen"]:
+    assert int.from_bytes(raw[:4],"big")==len(raw)-4
+    assert json.loads(raw[4:])=={{"v":1,"source_id":"a"*64,"owner_token":"owner"}}
+    with (root/"reopened").open("x"): pass
+    print(json.dumps({{"v":1,"source_id":"a"*64,"decision_id":"decision","owner_token":"owner","text":{text!r}}}))
 elif args[0]=="notify" and {agent!r}=="pi":
     event=json.loads(raw)
     if event["event"]=="agent_settled":
@@ -156,15 +172,28 @@ export default function(pi) {
                 entered_next = True
             if (root/"entered").exists():
                 release_first_response.set()
+            marker=store/("reply-wake-"+"a"*64+".json")
+            if (root/"registered-pid").exists() and not marker.exists():
+                try: os.kill(int((root/"registered-pid").read_text()),0)
+                except ProcessLookupError:
+                    marker.touch(mode=0o600)
+            navigation=store/"navigation-request.json"
+            if (root/"host-pid").exists() and not navigation.exists():
+                temporary=store/"navigation-new"
+                temporary.touch(mode=0o600)
+                temporary.write_text(json.dumps({"nonce":"n"*43,"pid":int((root/"host-pid").read_text()),"until":int(time.time())+20}))
+                temporary.replace(navigation)
             states=(root/"receipt").read_text().splitlines() if (root/"receipt").exists() else []
             notifications_ready = agent!="pi" or ((root/"settled").exists() and len((root/"settled").read_text().splitlines())>=2)
-            if notifications_ready and ("delivery_unknown" if agent=="pi" else "native_consumed") in states and any(text in history for history in calls):
+            if notifications_ready and (root/"navigation-confirm").exists() and ("delivery_unknown" if agent=="pi" else "native_consumed") in states and any(text in history for history in calls):
                 break
             if select.select([master], [], [], 0.2)[0]:
                 try: os.read(master, 65536)
                 except OSError: break
         assert (root/"first-source").exists(), f"{agent} never registered source; provider saw {len(calls)} calls"
         states=(root/"receipt").read_text().splitlines() if (root/"receipt").exists() else []
+        assert (root/"navigation-confirm").exists(),"production adapter failed to attest current native session"
+        assert (root/"reopened").exists(),"original host never consumed wake marker after registration helper exit"
         assert any(seed in history and text in history for history in calls), f"original provider history mismatch; receipt states {states}"
         if agent=="pi":
             assert states==["delivery_unknown"]
@@ -177,7 +206,7 @@ export default function(pi) {
             assert [row["matches"] for row in messages]==[False,False,True]
         else:
             assert "native_consumed" in states and "native_accepted" in states
-        print(f"PASS original {agent} TUI consumed unmodified ordinary reply; same session included both user messages in loopback synthetic provider input; receipt states: {states}")
+        print(f"PASS original {agent} TUI woke after its source helper exited and consumed unmodified ordinary reply; same session included both user messages in loopback synthetic provider input; live navigation challenge confirmed; receipt states: {states}")
     finally:
         release_first_response.set()
         if process.poll() is None: os.killpg(process.pid, signal.SIGTERM)

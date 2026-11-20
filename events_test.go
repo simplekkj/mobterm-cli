@@ -36,8 +36,12 @@ func seedClaudeCycle(t *testing.T, s Store, state string) {
 	if state == "expired" {
 		updated -= 86401
 	}
+	logical, err := logicalSession("claude", waitSession)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := s.writeJSON("claude-cycles.json", map[string]claudeCycle{
-		digest(waitSession): {Cycle: "existing-cycle", Updated: updated},
+		logical: {Cycle: "existing-cycle", Updated: updated},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +93,7 @@ func claudeNotifyEnvironment(t *testing.T) {
 	dir := t.TempDir()
 	for name, script := range map[string]string{
 		"claude": "#!/bin/sh\n[ \"$1\" = --version ] || exit 1\nprintf '%s\\n' \"$FIXTURE_CLAUDE_VERSION\"\n",
-		"tmux":   "#!/bin/sh\n[ \"$1\" = -u ] && [ \"$2\" = -S ] && [ \"$3\" = /fixture/tmux.sock ] && [ \"$4\" = list-panes ] || exit 1\nprintf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' /fixture/tmux.sock 123:456:789 '$1' '@2' '%3' \"$FIXTURE_PANE_PID\"\n",
+		"tmux":   "#!/bin/sh\nif [ \"$1\" = -V ]; then echo 'tmux 3.2'; exit 0; fi\n[ \"$1\" = -u ] && [ \"$2\" = -S ] && [ \"$3\" = /fixture/tmux.sock ] && [ \"$4\" = list-panes ] || exit 1\nprintf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t3.2\\n' /fixture/tmux.sock 123:456:789 '$1' '@2' '%3' \"$FIXTURE_PANE_PID\"\n",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0700); err != nil {
 			t.Fatal(err)

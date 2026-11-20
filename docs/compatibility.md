@@ -117,8 +117,10 @@ alone still does not prove either completion or an actionable human wait.
 | Claude Code >=2.0.36 | `UserPromptSubmit` then `Notification: idle_prompt` | `turn_completed`; requires a live prompt association and native delayed idle |
 | Claude Code >=2.0.36 | `Notification: permission_prompt`, `elicitation_dialog` | `needs_input`; independent of completion associations |
 | Claude Code | Other Notification/Stop/SubagentStop events | Ignored |
-| Herdr | 0.9.1, 0.9.3, protocol 22 | Same native Agent events plus snapshot/socket verification; terminal gate unchanged |
-| tmux | Structured `list-panes` support | Exact socket/server/session/window/pane; linked membership ambiguity rejected |
+| Herdr ≥0.9.1 | Server SemVer in the native snapshot | Verify the socket incarnation and explicit terminal membership. A new protocol number alone does not prevent resolution. |
+| tmux ≥3.2 | Client `-V` and server `#{version}` in structured `list-panes` | Exact socket/server/session/window/pane; linked membership ambiguity rejected |
+
+tmux release suffixes such as `3.2a` are patch revisions. Herdr prereleases sort below the corresponding release. A malformed version is reported separately from a version below the minimum. Both policies include future major releases.
 
 ## Minimum-version evidence
 
@@ -306,10 +308,10 @@ not an iPhone/SSH/APNs or controller-control integration.
 
 ## Codex terminal ownership
 
-When the Codex TUI supports a shared app server, launch it explicitly in the
-intended pane with `codex --no-daemon`. For example, use
-`codex --no-daemon resume` when resuming. Use the usual launcher for versions
-without the daemon option. Mobterm leaves launch commands and global settings
+Launch Codex normally with `codex`. A shared-daemon completion can reach
+the v2 inbox without a terminal binding on the verified 0.171.0 host.
+For supplementary embedded operation, `codex --no-daemon` and
+`codex --no-daemon resume` retain the existing pane-owner checks. Mobterm leaves launch commands and global settings
 under the operator's control. On Codex 0.170.0, specifying a profile also
 changes daemon selection, so `-p` is a separate configuration case.
 
@@ -325,12 +327,18 @@ only that one launch boundary is crossed. Legacy notify must already belong to
 the pane's process session. The actual dispatch host must be a terminal Codex
 process. Kernel process ancestry and birth plus a bounded command-role check
 also reject a foreground `codex app-server --listen …` serving a different TUI.
-Unreadable or ambiguous host evidence suppresses the event. No argument values,
+Unreadable or ambiguous pane-owner evidence suppresses capture of the target. No argument values,
 prompts or environment dump are recorded. Herdr process information is bracketed by matching
 snapshots on the same socket generation and occupant. No process command line is
 saved. A detached host cannot borrow its ancestor TUI's target.
 
-An unconfirmed owner suppresses publication and mobile action registration.
+For an unbound completion the CLI independently authenticates the private
+daemon endpoint and its directly spawned notify process, the same-user peer and
+process birth, canonical root metadata and an exact native completed turn. A
+user-created main thread from the Codex TUI is required. A conflicting newest
+turn, unverified origin or unavailable runtime fails closed. Successful
+verification publishes the encrypted business notice with no target. It grants
+neither mobile writes nor navigation. Other hook types retain their own gates.
 The original notifier still runs. Codex discards notify stderr, so Mobterm
 retains one local timestamp, exposed as `last_terminal_owner_refusal_at` in
 Codex hook health. It records a previous refusal and has no effect on the

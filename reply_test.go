@@ -130,7 +130,7 @@ func newReplyFixture(t *testing.T) replyFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fx.record, err = replyRegistration(s, "pi", input, l)
+	fx.record, err = replyRegistration(s, "pi", input, l, false)
 	unlock()
 	if err != nil {
 		t.Fatal(err)
@@ -271,6 +271,25 @@ func TestReplyCrossPairClaimAndReceipts(t *testing.T) {
 	}
 	fx.grant.Store(4)
 	f.Text = ""
+	// A pre-upgrade receipt has no logical scope. A status query still owns
+	// the frozen decision even when the original packet is gone.
+	r, err = readReply(fx.s, fx.record.SourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.LogicalSession = ""
+	r.VisibleSession = ""
+	if err = saveReply(fx.s, r); err != nil {
+		t.Fatal(err)
+	}
+	duplicate := fx.record
+	duplicate.SourceID = digest("registration-with-a-new-scope")
+	duplicate.State = "pending"
+	duplicate.Frame = nil
+	if err = registerReplyLocked(fx.s, duplicate); err == nil || err.Error() != "reply_already_registered" {
+		t.Fatal("legacy frozen decision did not block duplicate registration", err)
+	}
+
 	// Outbox expiry must not discard responsibility while its replay record survives.
 	if err = os.Rename(filepath.Join(fx.s.Dir, "outbox-v1"), filepath.Join(fx.s.Dir, "pruned-test-outbox")); err != nil {
 		t.Fatal(err)
@@ -304,14 +323,14 @@ func TestReplyGateTracksOriginalSourceAndNativeRequest(t *testing.T) {
 	}
 	db, _ := loadRuns(fx.s)
 	old := Activity{Agent: r.Agent, Session: r.Session, Instance: r.Instance, Run: r.Run, State: "turn_completed", Reminder: "turn_completed", Occurrence: r.Cursor}
-	if advanceReplyHead(&db, old, fx.l, time.Now().Unix()) {
+	if advanceReplyHead(&db, old, replyScope(fx.l.InstallationID, r.LogicalSession), time.Now().Unix()) {
 		t.Fatal("late completion reclaimed newer run")
 	}
 	tool := a
 	tool.State = "running"
 	tool.ToolID = "tool"
 	tool.Occurrence = digest("tool heartbeat")
-	if advanceReplyHead(&db, tool, fx.l, time.Now().Unix()) {
+	if advanceReplyHead(&db, tool, replyScope(fx.l.InstallationID, r.LogicalSession), time.Now().Unix()) {
 		t.Fatal("heartbeat became a source")
 	}
 	req := a
@@ -319,19 +338,19 @@ func TestReplyGateTracksOriginalSourceAndNativeRequest(t *testing.T) {
 	req.State = "waiting_input"
 	req.Interaction = &InteractionHint{RequestID: randomID()}
 	req.Occurrence = digest("question")
-	if !advanceReplyHead(&db, req, fx.l, time.Now().Unix()) || saveRuns(fx.s, db) != nil {
+	if !advanceReplyHead(&db, req, replyScope(fx.l.InstallationID, r.LogicalSession), time.Now().Unix()) || saveRuns(fx.s, db) != nil {
 		t.Fatal("request not registered")
 	}
-	if !nativeRequestCurrent(fx.s, r.Agent, r.Session, req.Interaction.RequestID, fx.l) {
+	if !nativeRequestCurrent(fx.s, r.Agent, r.Session, req.Interaction.RequestID, fx.l, r.LogicalSession) {
 		t.Fatal("current request blocked")
 	}
 	newer := old
 	newer.Run = req.Run
 	newer.Occurrence = digest("M2")
-	if !advanceReplyHead(&db, newer, fx.l, time.Now().Unix()) || saveRuns(fx.s, db) != nil {
+	if !advanceReplyHead(&db, newer, replyScope(fx.l.InstallationID, r.LogicalSession), time.Now().Unix()) || saveRuns(fx.s, db) != nil {
 		t.Fatal("new completion not registered")
 	}
-	if nativeRequestCurrent(fx.s, r.Agent, r.Session, req.Interaction.RequestID, fx.l) {
+	if nativeRequestCurrent(fx.s, r.Agent, r.Session, req.Interaction.RequestID, fx.l, r.LogicalSession) {
 		t.Fatal("old wire retained new decision authority")
 	}
 }
@@ -409,12 +428,16 @@ func TestReplyCommandsExerciseImmutableSourceAndNativeClaim(t *testing.T) {
 	input := replyWaitInput{"1.5.1", "second-session", "second-run", "second-event", "second-activation", time.Now().Unix() + 100}
 	p := fx.pairs[0]
 	l := fx.l
-	cursor := nativeTargetIdentity(newReplyOccurrence("pi", "agent_settled", input.Session, input.Event, input.Instance), l)
+	logical, err := logicalSession("pi", input.Session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := digest(logical + "\x00" + newReplyOccurrence("pi", "agent_settled", input.Session, input.Event, input.Instance))
 	parentBirth, err := processIdentity(os.Getppid())
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := replySourceID("pi", input.Session, input.Run, input.Instance, cursor, parentBirth, l)
+	source := replySourceID(replyScope(l.InstallationID, logical), input.Run, input.Instance, cursor, parentBirth)
 	raw, _ := json.Marshal(input)
 	done := make(chan struct{})
 	var decision any
@@ -699,7 +722,7 @@ func TestReplyNativeCompletionRendezvous(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			r, err := replyRegistration(s, tc.agent, f, l)
+			r, err := replyRegistration(s, tc.agent, f, l, false)
 			unlock()
 			if err != nil {
 				t.Fatal(err)
@@ -734,5 +757,42 @@ func TestReplyNativeCompletionRendezvous(t *testing.T) {
 				t.Fatal("Pair copies reused event IDs")
 			}
 		})
+	}
+}
+
+func TestVisibleNoticeOrderAndAudienceAtSSHEntry(t *testing.T) {
+	fx := newReplyFixture(t)
+	ctx := context.Background()
+	check := func(pairIndex int, want string) {
+		t.Helper()
+		result, err := replyRequest(ctx, fx.s, fx.api, fx.pairs[pairIndex], "latest", fx.frames[pairIndex])
+		if err != nil || result.State != "unavailable" || result.Reason != want {
+			t.Fatalf("pair %d: %s, %v", pairIndex, result.Reason, err)
+		}
+	}
+	check(0, "navigation_binding_unconfirmed")
+	check(1, "navigation_binding_unconfirmed")
+	p := fx.pairs[0]
+	a := Activity{Agent: "pi", Session: fx.record.Session, Instance: fx.record.Instance, Run: "later_run", Occurrence: "later_occurrence", State: "turn_completed", Reminder: "turn_completed"}
+	if _, _, _, err := applyActivity(ctx, fx.s, fx.l, a); err != nil {
+		t.Fatal(err)
+	}
+	db, err := loadRuns(fx.s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := digest(p.PairID + "\x00" + a.Occurrence)
+	intent := db.Intents[key]
+	// An observation awaiting audience policy cannot replace a visible reminder.
+	check(0, "navigation_binding_unconfirmed")
+	if _, err = encodeRunIntent(ctx, fx.s, key, intent, RunCapabilities{CapabilityGeneration: 1}, p); err != nil {
+		t.Fatal(err)
+	}
+	check(0, "source_binding_missing")
+	check(1, "navigation_binding_unconfirmed")
+	previous := fx.frames[0]
+	result, err := replyRequest(ctx, fx.s, fx.api, p, "inspect", previous)
+	if err != nil || result.State != "unavailable" {
+		t.Fatalf("old reply: %+v %v", result, err)
 	}
 }

@@ -24,12 +24,14 @@ type ApprovalHint struct {
 	ExpiresAt int64  `json:"expires_at"`
 }
 type RunPayload struct {
+	Source          *noticeSource    `json:"source,omitempty"`
 	Summary         string           `json:"summary,omitempty"`
 	Interaction     *InteractionHint `json:"interaction,omitempty"`
 	ActiveToolCount int              `json:"active_tool_count"`
 	ToolsTruncated  bool             `json:"tools_truncated"`
 	V               int              `json:"v"`
-	Locator         Locator          `json:"locator"`
+	Locator         Locator          `json:"locator,omitzero"`
+	InstallationID  string           `json:"installation_id,omitempty"`
 	Agent           string           `json:"agent"`
 	SessionID       string           `json:"session_id"`
 	RunID           string           `json:"run_id"`
@@ -52,7 +54,11 @@ func sealRun(key []byte, e Envelope, p RunPayload, nonce []byte) (Envelope, erro
 	if e.V != 2 || p.V != 2 || e.StreamID != p.StreamID || e.Revision != p.Revision || e.Revision <= 0 || e.CapabilityGeneration <= 0 || !opaqueID.MatchString(e.StreamID) {
 		return e, errors.New("invalid_v2_identity")
 	}
-	if err := p.Locator.validate(); err != nil {
+	if p.InstallationID != "" {
+		if !opaqueID.MatchString(p.InstallationID) || p.Locator != (Locator{}) || p.Agent != "codex" || p.State != "turn_completed" || (e.Kind != "turn_completed" && e.Kind != "state") || p.Source == nil || p.Interaction != nil || p.Approval != nil {
+			return e, errors.New("invalid_unbound_completion")
+		}
+	} else if err := p.Locator.validate(); err != nil {
 		return e, err
 	}
 	if len(key) != 32 {

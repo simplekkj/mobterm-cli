@@ -55,6 +55,7 @@ type InteractionOutput struct {
 	RequestID string
 }
 type InteractionRecord struct {
+	LogicalSession       string            `json:"logical_session,omitempty"`
 	ChildRunKey          string            `json:"claude_child_run_key,omitempty"`
 	ExpectedNativeID     string            `json:"expected_native_id,omitempty"`
 	ExpectedSession      string            `json:"expected_session,omitempty"`
@@ -656,7 +657,11 @@ func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a A
 		// the adapter must not retry arbitrary child failures after native I/O.
 		return nil, interactionUnavailable(ctx, s, api, l, a, spec, "interaction_request_too_large")
 	}
-	r := InteractionRecord{V: 1, RequestID: spec.RequestID, Digest: digest(string(raw)), Kind: spec.Kind, Agent: a.Agent, RequestJSON: string(raw), Locator: l, PID: os.Getpid(), Birth: birth, ParentPID: parentPID, ParentBirth: parent, CreatedAt: now, ExpiresAt: expires, Revision: 1, State: "pending", Pairs: map[string]int64{}, OwnerToken: randomID()}
+	logical, scopeErr := logicalSession(a.Agent, a.Session)
+	if scopeErr != nil {
+		return nil, scopeErr
+	}
+	r := InteractionRecord{LogicalSession: logical, V: 1, RequestID: spec.RequestID, Digest: digest(string(raw)), Kind: spec.Kind, Agent: a.Agent, RequestJSON: string(raw), Locator: l, PID: os.Getpid(), Birth: birth, ParentPID: parentPID, ParentBirth: parent, CreatedAt: now, ExpiresAt: expires, Revision: 1, State: "pending", Pairs: map[string]int64{}, OwnerToken: randomID()}
 	if a.ChildWait != nil {
 		r.ChildRunKey = childRunKey(a, l)
 		a.ChildWait.Until = expires
@@ -1268,7 +1273,7 @@ func interactionAuthorizeApproval(ctx context.Context, s Store, api API, in io.R
 	}
 	if allowed {
 		policy, e := localApprovals(s)
-		allowed = e == nil && policy[r.DecidingPair][r.Agent] > 0 && time.Now().Unix() < r.ExpiresAt && nativeRequestCurrent(s, r.Agent, r.Session, r.RequestID, r.Locator)
+		allowed = e == nil && policy[r.DecidingPair][r.Agent] > 0 && time.Now().Unix() < r.ExpiresAt && nativeRequestCurrent(s, r.Agent, r.Session, r.RequestID, r.Locator, r.LogicalSession)
 	}
 	return map[string]any{"v": 1, "allowed": allowed}, nil
 }

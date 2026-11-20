@@ -107,7 +107,20 @@ elif args[:2]==['reply','wait']:
     try:
         with (root/'wait').open('x') as f:print(json.dumps(owner),file=f)
     except FileExistsError:sys.exit(0)
-    print(json.dumps({{'v':1,'source_id':'source','owner_token':'token','decision_id':'decision','text':{reply!r}}}))
+    assert source['renewable']
+    (root/'registered-pid').write_text(str(os.getpid()))
+    print(json.dumps({{'v':1,'source_id':'a'*64,'owner_token':'token','wake':True}}))
+elif args[0]=='reply' and args[1] in ('navigation-observe','navigation-confirm'):
+    assert int.from_bytes(data[:4],'big')==len(data)-4
+    sample=json.loads(data[4:]);assert sample['agent']=='claude'
+    assert sample['session_id']==owner['session'] and owner['parent']==int(owner['host'])
+    (root/(sample['nonce'][0]+'-'+args[1])).write_text(sample['session_id'])
+    print('{{"ok":true}}')
+elif args[:2]==['reply','reopen']:
+    assert int.from_bytes(data[:4],'big')==len(data)-4
+    assert json.loads(data[4:])=={{'v':1,'source_id':'a'*64,'owner_token':'token'}}
+    with (root/'reopened').open('x'):pass
+    print(json.dumps({{'v':1,'source_id':'a'*64,'owner_token':'token','decision_id':'decision','text':{reply!r}}}))
 elif args[:2]==['reply','authorize']:
     assert int.from_bytes(data[:4],'big')==len(data)-4
     print('{{"allowed":true}}')
@@ -141,6 +154,12 @@ elif args[:2]==['reply','receipt']:
             time.sleep(.3)
             os.write(master,b"\r")
 
+        def challenge(tag):
+            marker=store/"navigation-new"
+            marker.touch(mode=0o600)
+            marker.write_text(json.dumps({"nonce":tag*43,"pid":proc.pid,"until":int(time.time())+20}))
+            marker.replace(store/"navigation-request.json")
+
         deadline=time.monotonic()+120;startup=None;stage="initial";screen=b"";key_at=time.monotonic()+4
         while time.monotonic()<deadline and proc.poll() is None:
             if select.select([master],[],[],.2)[0]:
@@ -151,31 +170,42 @@ elif args[:2]==['reply','receipt']:
                 if stage=="initial" and time.monotonic()>startup+3:
                     enter(before_clear);stage="old-turn"
                 elif stage=="old-turn" and (root/"old-wait").exists():
+                    challenge("a");stage="before-clear-navigation"
+                elif stage=="before-clear-navigation" and (root/"a-navigation-confirm").exists():
                     enter("/clear");stage="clearing"
                 elif stage=="clearing":
                     old=json.loads((root/"old-wait").read_text())
                     rows=(root/"classic").read_text().splitlines()
                     if any(r["event"]=="SessionStart" and r["session"]!=old["session"] for r in map(json.loads,rows)):
-                        enter(seed);stage="new-turn"
+                        challenge("b");stage="after-clear-navigation"
+                elif stage=="after-clear-navigation" and (root/"b-navigation-confirm").exists():
+                    enter(seed);stage="new-turn"
             elif time.monotonic()>key_at:
                 key_at=time.monotonic()+4
                 if b"trust" in screen.lower() and b"folder" in screen.lower():
                     os.write(master,b"\x1b[B");time.sleep(.2)
                 os.write(master,b"\r")
-            if (root/"receipt").exists() and any(reply in history for history in native_users):break
+            marker=store/("reply-wake-"+"a"*64+".json")
+            if (root/"registered-pid").exists() and not marker.exists():
+                try: os.kill(int((root/"registered-pid").read_text()),0)
+                except ProcessLookupError: marker.touch(mode=0o600)
+            if (root/"receipt").exists() and (root/"receipt").read_text() and any(reply in history for history in native_users):break
         assert (root/"startup").exists(),"Claude Mod did not load in isolated TUI"
         classic=[json.loads(row) for row in (root/"classic").read_text().splitlines()]
         assert (root/"wait").exists(),f"Claude produced no reply opportunity; classic events: {[r['event'] for r in classic]}; provider calls: {len(native_users)}"
+        assert (root/"reopened").exists(),"original host never consumed wake marker after registration helper exit"
         source=json.loads((root/"wait").read_text())
         old=json.loads((root/"old-wait").read_text())
+        assert (root/"a-navigation-confirm").read_text()==old["session"]
+        assert (root/"b-navigation-confirm").read_text()==source["session"]
         assert len((root/"startup").read_text().splitlines())==1
         assert old["host"]==source["host"]==str(proc.pid) and old["parent"]==source["parent"]==proc.pid
         assert all(old[field]!=source[field] for field in ("session","prompt","instance"))
         assert any(r["event"]=="UserPromptSubmit" and r["prompt"]==source["prompt"] and r["session"]==source["session"]
                    and r["host"]==source["host"] for r in classic)
-        assert (root/"receipt").read_text()=="native_accepted"
+        assert (root/"receipt").read_text()=="native_accepted",(root/"receipt").read_text()
         assert any(seed in history and reply in history and before_clear not in history for history in native_users),"original provider history missing correlated user input"
-        print("PASS Claude",source["runtime"],"official TUI Mod/classic prompt and owner rendezvous; /clear rotated session, prompt and instance without a second Mod start; exact reply consumed in new conversation; loopback synthetic provider and decision fixture.")
+        print("PASS Claude",source["runtime"],"official TUI Mod/classic prompt and owner rendezvous; /clear rotated session, prompt and instance without a second Mod start; fresh navigation challenges observed the two distinct current sessions; source helper exited before timer wake; exact reply consumed in new conversation; loopback synthetic provider and decision fixture.")
     finally:
         if proc.poll() is None:os.killpg(proc.pid,signal.SIGTERM)
         try:proc.wait(timeout=5)

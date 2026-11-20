@@ -22,6 +22,14 @@ only explicit SSH inspect reads it. It is never included in API/APNs, and termin
 request transitions scrub it. If a process is killed, the next local approval
 cleanup scrubs expired snapshots; no background cleanup daemon is promised.
 
+For a default Codex completion with no verified pane, the paired CLI checks the
+private Unix endpoint, kernel peer UID/PID, immediate callback parent and
+process birth. It reads canonical root metadata and asks that runtime for exact
+main thread metadata and the newest turn with items disabled. The private
+record stores its home, endpoint and process identity; no navigation locator
+or write grant is inferred. The ordinary follow-up write remains unavailable
+because queue/add has no expected-turn condition.
+
 The native Codex notify interface itself puts its JSON input in argv. The CLI
 cannot change that upstream contract and preserves it when composing a user's
 existing notifier. Mobterm pairing secrets never use argv or environment variables.
@@ -175,3 +183,10 @@ content. The adapter never sends reply text to an argv, shell, PTY, terminal
 clipboard, notification service or APNs. A matching durable receipt can
 advance evidence after delivery uncertainty; losing the result cannot create
 another dispatch. See [reply wire v1](reply-v1.md).
+
+A Codex completion produced by a shared daemon may have trustworthy thread and turn provenance but no current terminal binding. The paired host checks the callback parent, peer and birth, exact user thread, main-session metadata and completed turn before admitting that form. A queue write has no expected-turn precondition in Codex 0.171.0. Ordinary Codex sends remain unavailable because a competing terminal input can start a new task after the last read.
+
+
+## Navigation on a visible notice
+
+A signed SSH `reply latest` request names one Pair, event and envelope digest. Only its live native owner, verified as the foreground process-group leader, can return the current strong locator. A four-second nonce in the private store is addressed to the recorded host PID. A real child of that process must sample the native session, verify pane ancestry and controlling session, then confirm the same session after the sample. The requester checks the owner birth, foreground process group, Pair-scoped logical session and visible head again. The receipt is valid for at most five seconds. The marker contains no message body or reply decision. A changed logical session, stale host, different strong terminal, expired challenge or ambiguous default Codex session leaves navigation unavailable.
