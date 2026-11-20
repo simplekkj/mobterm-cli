@@ -72,6 +72,13 @@ func commandOutput(ctx context.Context, name string, args ...string) ([]byte, er
 	return out.Bytes(), nil
 }
 func captureTarget(ctx context.Context, id string) (Locator, error) {
+	return captureHookTarget(ctx, id, "", false)
+}
+
+// A legacy Codex notify runs directly under the Agent. Native command hooks can
+// have their own process session. Neither is allowed to inherit another TUI's
+// target from a detached shared app server.
+func captureHookTarget(ctx context.Context, id, source string, nativeCommand bool) (Locator, error) {
 	tm := os.Getenv("TMUX")
 	hp := os.Getenv("HERDR_PANE_ID")
 	if tm != "" && hp != "" {
@@ -89,9 +96,26 @@ func captureTarget(ctx context.Context, id string) (Locator, error) {
 		if inherited := os.Getenv("HERDR_SOCKET_PATH"); inherited != "" && filepath.Clean(inherited) != path {
 			return Locator{}, errors.New("custom Herdr socket cannot be mapped to a saved namespace")
 		}
-		return captureHerdr(ctx, id, ns, hp)
+		l, err := captureHerdr(ctx, id, ns, hp)
+		if err != nil || source != "codex" {
+			return l, err
+		}
+		pid, err := herdrShellPID(ctx, path, hp)
+		if err != nil || !codexPaneOwner(ctx, pid, nativeCommand) {
+			return Locator{}, errCodexPaneOwner
+		}
+		// process_info identifies a pane, not its occupant. Bracket it with the
+		// original socket incarnation and terminal membership.
+		after, err := queryHerdrTarget(ctx, id, ns, hp, "", l.ServerIdentity)
+		if err != nil || after != l {
+			return Locator{}, errCodexPaneOwner
+		}
+		return l, nil
 	}
 	if tm == "" || os.Getenv("TMUX_PANE") == "" {
+		if source == "codex" {
+			return Locator{}, errCodexPaneOwner
+		}
 		return Locator{}, errors.New("no unambiguous agent terminal environment")
 	}
 	parts := strings.Split(tm, ",")
@@ -99,7 +123,11 @@ func captureTarget(ctx context.Context, id string) (Locator, error) {
 		return Locator{}, errors.New("invalid tmux context")
 	}
 	socket := strings.Join(parts[:len(parts)-2], ",")
-	return captureTmux(ctx, id, socket, os.Getenv("TMUX_PANE"))
+	l, pid, err := captureTmuxProof(ctx, id, socket, os.Getenv("TMUX_PANE"))
+	if err == nil && source == "codex" && !codexPaneOwner(ctx, pid, nativeCommand) {
+		return Locator{}, errCodexPaneOwner
+	}
+	return l, err
 }
 func captureTmux(ctx context.Context, id, socket, pane string) (Locator, error) {
 	if !filepath.IsAbs(socket) || strings.ContainsAny(socket, "\r\n\t\x00") || !tmuxPane.MatchString(pane) {
@@ -244,24 +272,9 @@ func queryHerdrTarget(ctx context.Context, id, namespace, pane, terminal, expect
 	if expectedSocket != "" && before != expectedSocket {
 		return Locator{}, invalidTarget("Herdr instance changed")
 	}
-	d := net.Dialer{Timeout: 2 * time.Second}
-	conn, err := d.DialContext(ctx, "unix", path)
+	data, err := herdrQuery(ctx, path, []byte("{\"id\":\"mobterm_snapshot\",\"method\":\"session.snapshot\",\"params\":{}}\n"))
 	if err != nil {
-		return Locator{}, errors.New("Herdr namespace unavailable")
-	}
-	defer conn.Close()
-	deadline := time.Now().Add(2 * time.Second)
-	if end, ok := ctx.Deadline(); ok && end.Before(deadline) {
-		deadline = end
-	}
-	_ = conn.SetDeadline(deadline)
-	if _, err = io.WriteString(conn, "{\"id\":\"mobterm_snapshot\",\"method\":\"session.snapshot\",\"params\":{}}\n"); err != nil {
-		return Locator{}, errors.New("Herdr query failed")
-	}
-	reader := bufio.NewReader(io.LimitReader(conn, 2*1024*1024+1))
-	data, err := reader.ReadBytes('\n')
-	if err != nil || len(data) > 2*1024*1024 {
-		return Locator{}, errors.New("invalid Herdr response")
+		return Locator{}, err
 	}
 	var response struct {
 		ID     string `json:"id"`
@@ -282,6 +295,57 @@ func queryHerdrTarget(ctx context.Context, id, namespace, pane, terminal, expect
 	}
 	return locateHerdr(id, namespace, pane, terminal, before, response.Result.Snapshot)
 }
+func herdrQuery(ctx context.Context, path string, request []byte) ([]byte, error) {
+	d := net.Dialer{Timeout: 2 * time.Second}
+	conn, err := d.DialContext(ctx, "unix", path)
+	if err != nil {
+		return nil, errors.New("Herdr namespace unavailable")
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	if end, ok := ctx.Deadline(); ok && end.Before(deadline) {
+		deadline = end
+	}
+	_ = conn.SetDeadline(deadline)
+	if _, err = conn.Write(request); err != nil {
+		return nil, errors.New("Herdr query failed")
+	}
+	reader := bufio.NewReader(io.LimitReader(conn, 2*1024*1024+1))
+	data, err := reader.ReadBytes('\n')
+	if err != nil || len(data) > 2*1024*1024 {
+		return nil, errors.New("invalid Herdr response")
+	}
+	return data, nil
+}
+
+func herdrShellPID(ctx context.Context, path, pane string) (int, error) {
+	request, err := json.Marshal(map[string]any{
+		"id": "mobterm_process", "method": "pane.process_info", "params": map[string]string{"pane_id": pane},
+	})
+	if err != nil {
+		return 0, err
+	}
+	data, err := herdrQuery(ctx, path, append(request, '\n'))
+	if err != nil {
+		return 0, err
+	}
+	var response struct {
+		ID     string
+		Result struct {
+			Type string
+			Info struct {
+				PaneID   string `json:"pane_id"`
+				ShellPID int    `json:"shell_pid"`
+			} `json:"process_info"`
+		}
+	}
+	if json.Unmarshal(data, &response) != nil || response.ID != "mobterm_process" ||
+		response.Result.Type != "pane_process_info" || response.Result.Info.PaneID != pane || response.Result.Info.ShellPID <= 0 {
+		return 0, errCodexPaneOwner
+	}
+	return response.Result.Info.ShellPID, nil
+}
+
 func locatorFromHerdr(id, ns, pane, instance string, s herdrSnapshot) (Locator, error) {
 	return locateHerdr(id, ns, pane, "", instance, s)
 }

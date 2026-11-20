@@ -494,6 +494,9 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		if err == nil {
 			_, err = notify(ctx, s, a, source, payload, "", false)
 		}
+		if errors.Is(err, errCodexPaneOwner) && source == "codex" {
+			s.noteCodexTargetRefusal(ctx)
+		}
 		if err != nil {
 			fmt.Fprintln(diagnostic, "mobterm-cli: notification unavailable (agent continues):", safeCode(err.Error()))
 			if source == "opencode" || source == "pi" {

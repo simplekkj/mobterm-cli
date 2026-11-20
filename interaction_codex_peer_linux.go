@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"golang.org/x/sys/unix"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -45,4 +48,21 @@ func codexProcessParent(pid int) (int, error) {
 		return 0, errors.New("codex_parent_unavailable")
 	}
 	return strconv.Atoi(fields[1])
+}
+
+func codexProcessRole(_ context.Context, pid int) (known, terminal bool) {
+	path := "/proc/" + strconv.Itoa(pid)
+	image, err := os.Readlink(path + "/exe")
+	if err != nil {
+		return true, false
+	}
+	if !codexExecutable(image) {
+		return !codexHookShell(filepath.Base(image)), false
+	}
+	args, err := os.Open(path + "/cmdline")
+	if err != nil {
+		return true, false
+	}
+	defer args.Close()
+	return true, codexTerminalArgs(args, true)
 }

@@ -16,6 +16,8 @@ import math
 import os
 from pathlib import Path
 import platform
+import shlex
+import shutil
 import socketserver
 import subprocess
 import tempfile
@@ -35,8 +37,8 @@ def percentile(values, quantile):
 
 
 class Fixture:
-    def __init__(self, binary, root, mode='normal', pairs=1, tmux=False):
-        self.binary, self.root, self.mode = binary, root, mode
+    def __init__(self, binary, root, host, mode='normal', pairs=1, tmux=False):
+        self.binary, self.root, self.host, self.mode = binary, root, host, mode
         self.store = root / 'store'
         self.store.mkdir(mode=0o700)
         self.lock = threading.Lock()
@@ -47,7 +49,8 @@ class Fixture:
         self.env = dict(os.environ)
         for name in ('TMUX', 'TMUX_PANE', 'HERDR_PANE_ID', 'HERDR_SESSION', 'HERDR_SOCKET_PATH'):
             self.env.pop(name, None)
-        self.env.update(MOBTERM_CONFIG_DIR=str(self.store), XDG_CONFIG_HOME=str(root), MOBTERM_NETWORK_DIAGNOSTICS='1')
+        self.env.update(HOME=str(root), CODEX_HOME=str(root / 'codex'), MOBTERM_CONFIG_DIR=str(self.store),
+                        XDG_CONFIG_HOME=str(root), MOBTERM_NETWORK_DIAGNOSTICS='1', SHELL='/bin/sh')
         owner = self
 
         class API(http.server.BaseHTTPRequestHandler):
@@ -111,18 +114,22 @@ class Fixture:
         self.herdr = None
         if tmux:
             self.tmux_socket = root / 'tmux.sock'
-            pane = subprocess.check_output(['tmux', '-S', str(self.tmux_socket), 'new-session', '-d', '-s', 'measure', '-P', '-F', '#{pane_id}'], text=True).strip()
-            self.env.update(TMUX=f'{self.tmux_socket},0,0', TMUX_PANE=pane)
+            self.pane = subprocess.check_output(['tmux', '-f', '/dev/null', '-S', str(self.tmux_socket),
+                                                 'new-session', '-d', '-s', 'measure', '-P', '-F', '#{pane_id}',
+                                                 '/bin/sh'], env=self.env, text=True).strip()
         else:
             socket_dir = root / 'herdr'
             socket_dir.mkdir(mode=0o700)
             class Herdr(socketserver.StreamRequestHandler):
                 def handle(self):
-                    self.rfile.readline()
+                    request = json.loads(self.rfile.readline())
                     with owner.lock:
                         owner.target_queries += 1
                     response = dict(id='mobterm_snapshot', result=dict(type='session_snapshot', snapshot=dict(
                         version='0.9.3', protocol=22, panes=[dict(pane_id='w1:p1', terminal_id='term_measure', workspace_id='w1', tab_id='w1:t1')])))
+                    if request.get('method') == 'pane.process_info':
+                        response = dict(id='mobterm_process', result=dict(type='pane_process_info',
+                                        process_info=dict(pane_id='w1:p1', shell_pid=os.getpid())))
                     try:
                         self.wfile.write((json.dumps(response) + '\n').encode())
                     except (BrokenPipeError, ConnectionResetError):
@@ -138,8 +145,12 @@ class Fixture:
 
     def sample_workers(self):
         while not self.stop.wait(0.05):
-            output = subprocess.check_output(['ps', '-axo', 'command='], text=True)
-            # The binary is a task-specific path, so unrelated CLI processes are excluded.
+            # Only our uniquely named binary can produce these synthetic worker samples.
+            pids = subprocess.run(['pgrep', '-x', self.binary.name], capture_output=True, text=True).stdout.split()
+            if not pids:
+                continue
+            output = subprocess.run(['ps', '-ww', '-p', ','.join(pids), '-o', 'args='],
+                                    capture_output=True, text=True).stdout
             count = sum(line.strip() in (f'{self.binary} activity flush', f'{self.binary} activity dispatch') for line in output.splitlines())
             self.worker_max = max(self.worker_max, count)
 
@@ -152,8 +163,25 @@ class Fixture:
                        tool_name='exec_command', tool_input={'command': 'true'}, cwd=str(self.root))
         command = ['approval', 'wait'] if event == 'PermissionRequest' else ['observe']
         start = time.perf_counter_ns()
-        child = subprocess.run([str(self.binary), *command, '--source', 'codex'], input=json.dumps(payload).encode(),
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env, timeout=135)
+        args = [str(self.host), 'exec', str(self.binary), *command, '--source', 'codex']
+        if self.tmux:
+            # The actual pane shell must own the hook process. The real-tmux
+            # wall time includes the control command and completion signal.
+            with tempfile.TemporaryDirectory(dir=self.root) as directory:
+                io_dir = Path(directory)
+                (io_dir / 'input').write_text(json.dumps(payload))
+                tmux = ['tmux', '-S', str(self.tmux_socket)]
+                signal_name = io_dir.name
+                script = (f"cd {shlex.quote(directory)} && {shlex.join(args)} <input >out 2>err; "
+                          f"echo $? >exit; {shlex.join([*tmux, 'wait-for', '-S', signal_name])}")
+                subprocess.run([*tmux, 'send-keys', '-t', self.pane, '-l', script], check=True)
+                subprocess.run([*tmux, 'send-keys', '-t', self.pane, 'Enter'], check=True)
+                subprocess.run([*tmux, 'wait-for', signal_name], timeout=135, check=True)
+                child = subprocess.CompletedProcess(args, int((io_dir / 'exit').read_text()),
+                                                    (io_dir / 'out').read_bytes(), (io_dir / 'err').read_bytes())
+        else:
+            child = subprocess.run(args, input=json.dumps(payload).encode(), stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, env=self.env, timeout=135)
         elapsed = (time.perf_counter_ns() - start) / 1_000_000
         http = sum('"event":"network_request"' in line for line in child.stderr.decode().splitlines())
         persisted = None
@@ -200,14 +228,20 @@ def main():
     parser.add_argument('--samples', type=int, default=1000)
     parser.add_argument('--scenarios', nargs='+', choices=['normal-sequential', 'normal-concurrent8', 'cold-cache', 'slow-api', 'offline-api', 'history-multipair', 'real-tmux', 'installed-UserPromptSubmit', 'installed-PermissionRequest', 'installed-Interrupt', 'installed-SessionStart', 'installed-SessionEnd'], help='Run only these scenarios; omitted means the full matrix')
     args = parser.parse_args()
-    binary = args.binary.resolve()
+    host_dir = tempfile.TemporaryDirectory(prefix='mt-fixture-host-', dir='/tmp')
+    host_root = Path(host_dir.name).resolve()
+    binary = host_root / ('mtcli-' + host_root.name[-8:])
+    shutil.copy2(args.binary, binary)
+    host = host_root / 'codex'
+    repo = Path(__file__).resolve().parents[1]
+    subprocess.run(['go', 'build', '-o', host, './testdata/codex-hook-host'], cwd=repo, check=True)
     args.output.mkdir(parents=True, exist_ok=True)
     metadata = dict(label=args.label, source=args.source, harness_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
                     binary_version=subprocess.check_output([str(binary), 'version'], text=True).strip(),
                     platform=platform.platform(), machine=platform.machine(), python=platform.python_version(),
                     go=subprocess.check_output(['go', 'version'], text=True).strip(),
                     cpu=subprocess.check_output(['sysctl', '-n', 'machdep.cpu.brand_string'], text=True).strip() if platform.system() == 'Darwin' else platform.processor(),
-                    wall_clock='perf_counter_ns around subprocess.run; includes launch, stdin/stdout, target, locks, persistence, foreground exit',
+                    wall_clock='perf_counter_ns around synthetic Codex host and CLI child; includes launch, stdin/stdout, target, locks, persistence, foreground exit; real tmux also includes pane dispatch and completion signal',
                     sample_percentiles='nearest rank; no removed outliers', model_calls=0, real_apns=False,
                     lock_wait_ms=None, fsync_count=None, worker_sampling_interval_ms=50, scenarios={})
     all_rows = []
@@ -222,7 +256,7 @@ def main():
         if args.scenarios and name not in args.scenarios:
             continue
         with tempfile.TemporaryDirectory(prefix='mt-measure-', dir='/tmp') as directory:
-            f = Fixture(binary, Path(directory), mode, pairs, tmux)
+            f = Fixture(binary, Path(directory), host, mode, pairs, tmux)
             try:
                 if name == 'history-multipair':
                     for i in range(16):
@@ -249,7 +283,7 @@ def main():
         if args.scenarios and name not in args.scenarios:
             continue
         with tempfile.TemporaryDirectory(prefix='mt-measure-', dir='/tmp') as directory:
-            f = Fixture(binary, Path(directory))
+            f = Fixture(binary, Path(directory), host)
             try:
                 for i in range(min(args.samples, 32)):
                     f.invoke(event, i)
@@ -257,6 +291,7 @@ def main():
             finally:
                 f.close()
             metadata['scenarios'][name]['max_sampled_worker_processes'] = f.worker_max
+    host_dir.cleanup()
     with (args.output / (args.label + '.csv')).open('w', newline='') as stream:
         writer = csv.DictWriter(stream, lineterminator='\n', fieldnames=['scenario', 'event', 'index', 'lane', 'elapsed_ms', 'synchronous_http', 'persisted', 'returncode', 'stdout_bytes'])
         writer.writeheader()

@@ -177,6 +177,16 @@ The same repair state upgrades legacy notify-only installs on Codex >=0.166.0.
 No discovery/status command performs a migration. Restart Codex and review the
 result in `/hooks`; moving a hook source does not grant trust.
 
+For Codex versions with a shared app server, start a terminal-owned TUI in the
+desired Herdr or tmux pane with `codex --no-daemon` (or
+`codex --no-daemon resume`). A shared server's hooks cannot identify which
+attached TUI owns the turn. Mobterm requires the hook host to belong to the
+captured pane before recording state, a reminder or an action.
+`status --json` reports the latest refused Codex completion in the Codex hook
+health field `last_terminal_owner_refusal_at` (Unix seconds), when available.
+Hook installation, trust review and the user's chained notifier keep their
+existing behavior. See [Codex terminal ownership](docs/compatibility.md#codex-terminal-ownership).
+
 Migration journals cover both files and ownership. The old source is removed
 before the new source is written, so interrupted migrations can temporarily omit
 Mobterm native handlers until the same operation is resumed, without duplicating

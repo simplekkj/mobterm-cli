@@ -402,7 +402,7 @@ func interactionObserve(ctx context.Context, s Store, api API, source string, ra
 	if err != nil {
 		return nil, err
 	}
-	l, err := captureTarget(ctx, id)
+	l, err := captureHookTarget(ctx, id, source, true)
 	if err != nil {
 		return nil, err
 	}

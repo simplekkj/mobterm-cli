@@ -84,6 +84,7 @@ func TestClaudeWaitWithoutCompletionAssociation(t *testing.T) {
 // These command fixtures exercise notify's actual version and target checks;
 // the separate live-tmux test verifies the real terminal command contract.
 func claudeNotifyEnvironment(t *testing.T) {
+	fixtureCodexHost(t)
 	t.Helper()
 	dir := t.TempDir()
 	for name, script := range map[string]string{

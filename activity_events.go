@@ -422,7 +422,7 @@ func observe(ctx context.Context, s Store, api API, source string, raw []byte) (
 	if err != nil {
 		return nil, err
 	}
-	l, err := captureTarget(ctx, id)
+	l, err := captureHookTarget(ctx, id, source, input.Type != "agent-turn-complete")
 	if err != nil {
 		return nil, err
 	}

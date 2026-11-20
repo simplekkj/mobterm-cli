@@ -189,7 +189,7 @@ func notify(ctx context.Context, s Store, a API, source string, payload []byte, 
 	}
 	l := Locator{V: 1, InstallationID: id, Backend: "test"}
 	if !test {
-		l, err = captureTarget(ctx, id)
+		l, err = captureHookTarget(ctx, id, source, false)
 		if err != nil {
 			return nil, err
 		}

@@ -21,6 +21,7 @@ const (
 )
 
 func codexMetadataFixture(t *testing.T, thread string, fields map[string]any) string {
+	fixtureCodexHost(t)
 	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {

@@ -282,6 +282,41 @@ servers: raw `session.snapshot` target verification succeeded and stopped-server
 verification failed. This proves the actual socket request/response contract,
 not an iPhone/SSH/APNs or controller-control integration.
 
+## Codex terminal ownership
+
+When the Codex TUI supports a shared app server, launch it explicitly in the
+intended pane with `codex --no-daemon`. For example, use
+`codex --no-daemon resume` when resuming. Use the usual launcher for versions
+without the daemon option. Mobterm leaves launch commands and global settings
+under the operator's control. On Codex 0.170.0, specifying a profile also
+changes daemon selection, so `-p` is a separate configuration case.
+
+Codex's [0.170.0 legacy completion callback](https://github.com/openai/codex/blob/29eb79e9866b3262a777fdf8195c1b9e63684c91/codex-rs/hooks/src/legacy_notify.rs)
+carries a thread and turn but no per-client pane identity. Reconnecting another
+TUI to a shared server can leave its hooks with the first pane's environment,
+even while that pane and its original occupant remain live. The existing
+snapshot, socket and occupant checks still run. For Codex, Mobterm also obtains
+the pane's shell process from tmux or Herdr, verifies its kernel ancestry, and
+compares its process session with the hook host's. For a native command hook,
+Codex can [start the managed shell in a new session](https://github.com/openai/codex/blob/29eb79e9866b3262a777fdf8195c1b9e63684c91/codex-rs/hooks/src/engine/command_runner.rs);
+only that one launch boundary is crossed. Legacy notify must already belong to
+the pane's process session. The actual dispatch host must be a terminal Codex
+process. Kernel process ancestry and birth plus a bounded command-role check
+also reject a foreground `codex app-server --listen …` serving a different TUI.
+Unreadable or ambiguous host evidence suppresses the event. No argument values,
+prompts or environment dump are recorded. Herdr process information is bracketed by matching
+snapshots on the same socket generation and occupant. No process command line is
+saved. A detached host cannot borrow its ancestor TUI's target.
+
+An unconfirmed owner suppresses publication and mobile action registration.
+The original notifier still runs. Codex discards notify stderr, so Mobterm
+retains one local timestamp, exposed as `last_terminal_owner_refusal_at` in
+Codex hook health. It records a previous refusal and has no effect on the
+configuration or trust state. Check it alongside `outbox status --json` and
+the effective root `notify` when troubleshooting. With shared mode, an
+unattributable event is never queued for later delivery to another terminal.
+Other agents continue to use their existing verified terminal and source rules.
+
 ## OpenCode / Pi TUI adapters (2026-10-20)
 
 OpenCode 2.0.0 (`63f7ceecbed2d7d9a627518d935dd963b9d4ac9f`) and 2.1.0

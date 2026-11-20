@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"time"
 )
 
 type healthIssue struct {
@@ -16,7 +18,30 @@ type healthIssue struct {
 	Event      string `json:"event"`
 	Capability string `json:"capability"`
 }
+
+// No source IDs, hook input or terminal information is retained. Upstream
+// discards notify stderr, so status needs one bounded indicator for this stage.
+const codexTargetRefusalFile = "codex-terminal-owner-unconfirmed.json"
+
+func (s Store) noteCodexTargetRefusal(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return
+	}
+	defer unlock()
+	now := time.Now().Unix()
+	var previous int64
+	if s.readJSON(codexTargetRefusalFile, &previous) == nil && previous == now {
+		return
+	}
+	// Best effort: a diagnostic write must not affect the chained notifier.
+	_ = s.writeJSON(codexTargetRefusalFile, now)
+}
+
 type agentHealth struct {
+	OwnerRefusalAt     int64         `json:"last_terminal_owner_refusal_at,omitempty"`
 	State              string        `json:"state"`
 	ConfigurationState string        `json:"configuration_state"`
 	Issues             []healthIssue `json:"issues"`
@@ -80,6 +105,9 @@ func hookHealth(s Store, capabilities map[string]any) map[string]agentHealth {
 }
 func inspectHook(s Store, agent string) agentHealth {
 	h := agentHealth{State: "complete", ConfigurationState: "complete", Issues: []healthIssue{}, Loaded: "unknown"}
+	if agent == "codex" {
+		_ = s.readJSON(codexTargetRefusalFile, &h.OwnerRefusalAt)
+	}
 	if agent == "claude" {
 		h.ReplyAdapter = "not_configured"
 		if nativeHooksInstalled(s, agent) {

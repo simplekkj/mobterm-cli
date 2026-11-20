@@ -2067,3 +2067,38 @@ Two isolated official TUI runs exercised the assets installed by the built CLI:
 These runs used a local synthetic model and a fixture authorization decision.
 An isolated reinstall from the Review binary verified both rendered asset
 fingerprints, repeat installation, and preservation of locally edited assets.
+
+## Codex TUI terminal ownership and Herdr completion entries (2026-11-20)
+
+The comparison used Intel macOS, the official Codex 0.170.0 executable, tmux
+3.7c, and the previously checksum-pinned Herdr 0.9.1 and 0.9.3 binaries
+(protocol 22). All configuration roots, sockets, model Responses and API
+receipts were local fixtures. No personal login or model provider was used.
+The baseline CLI was built from
+`184f8dce25c122a33fe9b8c7fb7bbebd39ac820f` (v0.1.17). Each TUI started
+in a real multiplexer pane, after the normal hook installer merged a root
+notifier and a third-party SessionStart command in its isolated configuration.
+
+| Launch and observation | Result |
+| --- | --- |
+| Baseline, two ordinary Codex TUIs using one managed daemon in two live Herdr panes, same cwd | Two native completions reached the local receiver. Both persisted locators named the first pane and its occupant. |
+| Updated CLI, same two-panes shared case | Two completed TUI turns; the chained notifier still ran. Zero Mobterm snapshots, deliveries and pending events. The Codex health reported a prior terminal-owner refusal while configuration remained complete and loaded remained unknown. |
+| Foreground `codex app-server --listen unix://…` in one pane, `codex --remote unix://…` in another | Confirmed local response, native callback and chained notifier; zero Mobterm events, snapshots and pending events. A shared server staying inside a pane's process session did not acquire that TUI's authority. |
+| `codex --no-daemon` in Herdr and in tmux | Confirmed root turn, native notify and matching persisted terminal locator. The normal callback passed both with native hook trust skipped in the isolated review UI and with those fixture hooks approved there. The original chained command remained active in both cases. |
+| Historical official Codex 0.162.1 binary, explicit embedded launch in Herdr 0.9.3 | The unchanged root callback reached the local receiver, retained the chained notifier and finished with one handoff and zero pending. |
+| Four sources on one actual Herdr terminal, 0.9.3/default and 0.9.1/named | The Codex TUI generated its own root callback. Claude fixture UserPromptSubmit → Stop → idle, OpenCode `session.execution.succeeded` and Pi non-aborted `agent_settled` used their managed CLI commands. Each set produced four distinct deliveries to the same verified occupant and four byte-identical 53-byte synthetic Markdown bodies, including Chinese text, emoji, a fence and indentation. Four unique local handoffs were confirmed per set. |
+| Recovery when a short native hook exhausted its time budget | Two durable deliveries remained pending. After the original lease elapsed, an explicit outbox flush transferred exactly two different event IDs to the same local API origin. Final counts were four handed off, zero pending. |
+
+The operator-facing launch and diagnostic fields are documented under
+[Codex terminal ownership](compatibility.md#codex-terminal-ownership).
+Kernel-session, foreground/daemon role, changed-occupant and bounded diagnostic
+regressions live in `codex_terminal_test.go`. The hook measurement harness
+launches its synthetic dispatch process inside its real tmux pane and answers
+process-info queries on its synthetic Herdr socket. Its current wall-clock
+figures include the explicitly named fixture host.
+
+These runs exercised the actual Codex TUI and multiplexer processes with
+controlled provider responses. The other three Agent completion inputs were
+adapter-shaped fixtures; native adapter filtering was also tested separately.
+The user’s server, production API, APNs acceptance, phone display and navigation
+were outside these CLI runs.

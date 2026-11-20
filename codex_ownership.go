@@ -15,6 +15,38 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var errCodexPaneOwner = errors.New("codex_terminal_owner_unconfirmed")
+
+// The process-role reader is replaced only by in-process native callback
+// fixtures, which have no Codex host. Kernel session ownership still runs.
+var terminalCodexHost = codexTerminalHost
+
+func codexPaneOwner(ctx context.Context, panePID int, nativeCommand bool) bool {
+	paneSession, err := unix.Getsid(panePID)
+	if err != nil || panePID <= 0 || !codexIsAncestor(panePID) {
+		return false
+	}
+	hookSession, err := unix.Getsid(0)
+	if err != nil {
+		return false
+	}
+	if hookSession == paneSession {
+		return terminalCodexHost(ctx, os.Getppid(), panePID)
+	}
+	if !nativeCommand || !codexIsAncestor(hookSession) {
+		return false
+	}
+	// Codex launches native shell hooks with ProcessMode::NewSession. Check
+	// the launching host just outside this one boundary. Walking further
+	// would admit a detached daemon started from the first still-live pane.
+	host, err := codexProcessParent(hookSession)
+	if err != nil || host <= 1 {
+		return false
+	}
+	hostSession, err := unix.Getsid(host)
+	return err == nil && hostSession == paneSession && terminalCodexHost(ctx, host, panePID)
+}
+
 type codexOrigin uint8
 
 const (
