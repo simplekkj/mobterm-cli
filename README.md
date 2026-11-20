@@ -388,30 +388,48 @@ archives without network access. With `--dist`, they additionally install and
 check all four real packages and run the native installed binary's `version`;
 this is not a download test against a public Release.
 
-The eight native CI jobs retain the historical Codex 0.162.1 / Claude Code
-2.1.282 regression pair. Two focused Linux jobs additionally execute the minimum
-and current endpoints from `testdata/compatibility-samples.json`. Samples are
-also checked at the minimum endpoint on a native macOS Intel runner. They are
-fixed for reproducibility; they are not the production allowlist. Go tests check
-the manifest against the policy and compatibility document. Node.js 22 and
-Python 3.12 are used. The runner requires explicit expected versions to verify
-binary provenance, then checks support through the real CLI. Linux runs all 11
-black-box lifecycle checks; macOS runs the 10 configuration checks with
-`--config-only`. These include native configuration loading before and after
-hook/executable removal. The Linux HTTPS fixture uses `SSL_CERT_FILE` without
-changing system certificate trust.
+The eight native CI jobs use historical Codex 0.162.1 / Claude Code 2.1.282.
+Linux also runs the real minimum and current endpoint suites. The macOS Intel
+`macos-config` job uses Codex 0.163.0 with minimum Claude Code 2.0.36,
+OpenCode 2.0.0 and Pi 1.1.0. Each job selects its exact versions from
+`testdata/compatibility-samples.json` before npm installation. Go fixtures
+exercise the Codex notification floor of 0.100.0 on both systems.
 
-Locally, install a selected manifest pair in an isolated npm prefix, then run
-against a built executable (example: current endpoints):
+With Node.js 22 and Python 3.12 available, run this from the repository root.
+It selects the Linux minimum lifecycle suite or the macOS real configuration
+suite, including native configuration loading before and after hook removal.
+Linux also exercises the loopback HTTPS setup.
 
 ```sh
-npm install --global --prefix /tmp/mobterm-agents --no-audit --no-fund \
-  @openai/codex@0.163.0 @anthropic-ai/claude-code@2.1.301
-PATH="/tmp/mobterm-agents/bin:$PATH" python3 tests/linux_lifecycle_test.py \
-  --binary ./mobterm-cli --expect-codex-version 0.163.0 \
-  --expect-claude-version 2.1.301 -v
-# On macOS add --config-only; repeat with the manifest minimum/historical pair.
+(
+  set -eu
+  work=$(mktemp -d)
+  trap 'rm -rf "$work"' EXIT
+  mkdir -p "$work/home"
+  go build -trimpath -o "$work/mobterm-cli" .
+  case "$(uname -s)" in
+    Darwin) sample=macos-config; set -- --config-only --agent-prefix "$work/agents" ;;
+    Linux)  sample=minimum; set -- ;;
+    *) exit 1 ;;
+  esac
+  python3.12 tests/select_agent_samples.py "$sample" > "$work/versions.env"
+  . "$work/versions.env"
+  HOME="$work/home" npm install --global --prefix "$work/agents" --no-audit --no-fund \
+    "@openai/codex@$CODEX_TEST_VERSION" "@anthropic-ai/claude-code@$CLAUDE_TEST_VERSION"
+  PATH="$work/agents/bin:$PATH" python3.12 tests/linux_lifecycle_test.py \
+    --binary "$work/mobterm-cli" "$@" --expect-codex-version "$CODEX_TEST_VERSION" \
+    --expect-claude-version "$CLAUDE_TEST_VERSION" -v
+)
 ```
+
+Use `sample=current` for the other Linux endpoint, or `sample=historical` on
+either platform. On macOS the selector refuses Codex packages older than 0.119.0.
+The runner checks the selected prefix, package and native executable, including
+its signature and macOS execution policy, before any version probe. A refusal
+ends the run. For a stale or mismatched PATH/package, run the block with a fresh
+prefix and the fixed `macos-config` sample. If system policy rejects that
+sample or cannot assess it, record the diagnostic and use a host where the
+same official sample passes its system checks. Keep system protections enabled.
 
 These checks create disposable HOME/config directories, disable Claude updates
 and nonessential traffic, and use no Agent login credentials or real model/APNs

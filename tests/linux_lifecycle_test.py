@@ -4,8 +4,9 @@
 Run as an ordinary user with --binary PATH. No Agent credentials are read:
 each test has a disposable HOME. Pairing uses a loopback HTTPS fixture, not APNs.
 Requires Python 3.11+, openssl and explicitly selected real Agents on PATH.
-Pass --expect-codex-version and --expect-claude-version for package provenance;
-production compatibility is checked by CLI status and hook installation.
+Pass exact expected versions for both Agents. On macOS, --agent-prefix must
+name the isolated npm prefix selected on PATH. The runner verifies its native
+Codex before any Agent command. CLI status and hooks check product compatibility.
 The full suite requires Linux; --config-only also runs on macOS and excludes
 the HTTPS fixture, which relies on Linux's SSL_CERT_FILE trust loading.
 """
@@ -28,6 +29,8 @@ import tempfile
 import threading
 import tomllib
 import unittest
+
+from darwin_codex import pin_codex
 
 BINARY = None
 AGENT_PATH = None
@@ -324,9 +327,11 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(json.loads(self.claude.read_bytes()), self.original_claude)
 
 
-if __name__ == '__main__':
+def main():
+    global BINARY, AGENT_PATH, CLAUDE_NATIVE_HOOKS
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', required=True)
+    parser.add_argument('--agent-prefix', type=Path, help='isolated global npm prefix (required on macOS)')
     parser.add_argument('--expect-codex-version', required=True)
     parser.add_argument('--expect-claude-version', required=True)
     parser.add_argument('--config-only', action='store_true',
@@ -340,17 +345,33 @@ if __name__ == '__main__':
     AGENT_PATH = os.environ['PATH']
     CLAUDE_NATIVE_HOOKS = tuple(map(int, args.expect_claude_version.split('.'))) >= (2, 1, 301)
     with tempfile.TemporaryDirectory(prefix='mobterm-agent-versions-') as home:
+        if platform.system() == 'Darwin':
+            try:
+                bindir = Path(home) / 'checked-bin'
+                bindir.mkdir(mode=0o700)
+                AGENT_PATH = pin_codex(args.agent_prefix, args.expect_codex_version, AGENT_PATH, bindir)
+            except (OSError, ValueError) as error:
+                parser.exit(1, f'Codex preflight stopped: {error}. See README Build and verify.\n')
         env = dict(PATH=AGENT_PATH, HOME=home, CODEX_HOME=home + '/.codex',
                    CLAUDE_CONFIG_DIR=home + '/.claude', DISABLE_UPDATES='1',
                    DISABLE_AUTOUPDATER='1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1')
         for agent, expected in (('codex', 'codex-cli ' + args.expect_codex_version),
                                 ('claude', args.expect_claude_version + ' (Claude Code)')):
-            result = subprocess.run([agent, '--version'], env=env,
-                                    capture_output=True, text=True, timeout=20, cwd=home)
-            if result.returncode or result.stdout.strip() != expected:
-                parser.error('Selected real Agent version required: ' + expected)
-    tests = unittest.defaultTestLoader.getTestCaseNames(LifecycleTests)
-    if args.config_only:
-        tests.remove('test_setup_https_repeat_failure_and_credentials_retained_on_hook_removal')
-    unittest.main(argv=[__file__, *remaining],
-                  defaultTest=['LifecycleTests.' + name for name in tests])
+            try:
+                result = subprocess.run([agent, '--version'], env=env,
+                                        capture_output=True, text=True, timeout=20, cwd=home)
+            except (subprocess.TimeoutExpired, OSError) as error:
+                parser.exit(1, f'{agent} --version failed: {error}\n')
+            if result.returncode:
+                parser.exit(1, f'{agent} --version failed (exit {result.returncode})\n')
+            if result.stdout.strip() != expected:
+                parser.exit(1, f'{agent} --version mismatch: expected {expected}\n')
+        tests = unittest.defaultTestLoader.getTestCaseNames(LifecycleTests)
+        if args.config_only:
+            tests.remove('test_setup_https_repeat_failure_and_credentials_retained_on_hook_removal')
+        unittest.main(argv=[__file__, *remaining],
+                      defaultTest=['LifecycleTests.' + name for name in tests])
+
+
+if __name__ == '__main__':
+    main()

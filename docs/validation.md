@@ -2102,3 +2102,28 @@ controlled provider responses. The other three Agent completion inputs were
 adapter-shaped fixtures; native adapter filtering was also tested separately.
 The user’s server, production API, APNs acceptance, phone display and navigation
 were outside these CLI runs.
+
+## macOS Codex compatibility test selection (2026-11-20)
+
+- On Intel macOS 15.8.1, the four `select_agent_samples_test.py` regressions
+  checked the installation inputs. A Darwin request for the semantic minimum
+  failed before emitting any install variables. Linux still selected 0.100.0.
+  The six `darwin_codex_test.py` regressions exercised the lifecycle entry
+  with counted targets. Old or mismatched packages, substituted files and
+  wrappers, and denied or inconclusive system checks produced zero target
+  invocations. Substitution after admission also stopped before execution.
+  An admitted test program returning the wrong version or exit 7 failed.
+- The [README configuration command](../README.md#build-and-verify) ran
+  with Node 22.22.2, Python 3.12 and Go 1.27.1 in a fresh global npm prefix.
+  The selected `@openai/codex-darwin-x64/vendor/x86_64-apple-darwin/bin/codex`
+  matched the 0.163.0 SHA-256
+  `73697f229103f463acaafd8659976caaa4892ec11e2c246c7fa97f93d523f90e`.
+  Developer ID, notarization and Gatekeeper accepted the actual native target
+  before its first invocation. All ten real configuration tests passed with
+  Codex 0.163.0 and Claude Code 2.0.36, including native configuration loading
+  after hook installation and after removal. The runner used disposable homes.
+- Local Go tests passed for the sample manifest, stable and rejected versions,
+  asdf launcher selection, probe isolation/failures, notifier preservation and
+  encrypted event identity. Their 0.100.0 output came from controlled fixtures.
+  No old-certificate macOS Codex was launched. The executable behind the
+  originally reported system alert has not been identified.

@@ -32,6 +32,22 @@ this document; CI reads that manifest. Change these together when intentionally
 changing the minimum or recording a new validation reference. No CLI release is
 needed merely to unlock a higher stable Agent version using the same contract.
 
+For real npm tests, Linux exercises the semantic minimum and current endpoints.
+The macOS Intel `macos-config` sample overrides only Codex to 0.163.0. The eight
+native jobs on Linux and macOS use the historical pair. OpenAI identifies
+0.119.0 as the first Codex CLI with the updated macOS signing certificate,
+and May 8, 2026 as the revocation date for the old certificate. macOS real
+test selection rejects all earlier versions before installation. The runner
+also verifies the selected native file and requires macOS to accept it
+before running even `--version`. The 0.100.0 notification floor and its
+resume-safe thread/turn requirements apply across platforms.
+[OpenAI certificate incident report](https://openai.com/index/axios-developer-tool-compromise/)
+
+When replacing a macOS execution sample, update the matching npm launcher and
+native SHA-256 pins in [the lifecycle guard](../tests/darwin_codex.py) from the
+official platform tarballs for each tested architecture. Gatekeeper assesses
+the selected file on the host at test time.
+
 Only whole official output forms `codex-cli X.Y.Z`, `X.Y.Z (Claude Code)`,
 `opencode vX.Y.Z`, and Pi plain `X.Y.Z` are
 recognized. Outer whitespace, an optional `v` immediately before the number and
@@ -210,6 +226,12 @@ GitHub tar executables with signal 9 before version/config loading. This is a re
 failed execution, not a passing configuration test. No system security setting
 was changed. Linux endpoint CI is required to establish its real configuration
 path; the local failure and final CI result are recorded separately in validation.
+
+For a new validation, use the [platform-specific real test command](../README.md#build-and-verify).
+The macOS configuration result covers the actual accepted package, with its
+version and digest recorded by the runner. The Go launcher and version
+fixtures retain controlled coverage for 0.100.0, below-floor versions and
+malformed output without launching a historical macOS executable.
 
 ## Event semantics and terminal boundaries
 

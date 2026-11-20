@@ -108,13 +108,7 @@ jobs:
       - name: Select reproducible historical Agent samples
         shell: bash
         run: |
-          python3 - <<'PYTHON'
-          import json, os
-          samples = json.load(open('testdata/compatibility-samples.json'))['historical']
-          with open(os.environ['GITHUB_ENV'], 'a') as out:
-              for agent, version in samples.items():
-                  print(f'{agent.upper()}_TEST_VERSION={version}', file=out)
-          PYTHON
+          python3 tests/select_agent_samples.py historical >> "$GITHUB_ENV"
       - name: Install pinned native Agents in an isolated prefix
         shell: bash
         env:
@@ -135,7 +129,7 @@ jobs:
             python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli \
               --expect-codex-version "$CODEX_TEST_VERSION" --expect-claude-version "$CLAUDE_TEST_VERSION" -v
           else
-            python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli --config-only \
+            python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli --config-only --agent-prefix "$RUNNER_TEMP/mobterm-agents" \
               --expect-codex-version "$CODEX_TEST_VERSION" --expect-claude-version "$CLAUDE_TEST_VERSION" -v
           fi
       - run: sh -n install.sh
@@ -155,7 +149,7 @@ jobs:
             runner: ubuntu-24.04
           - sample: current
             runner: ubuntu-24.04
-          - sample: minimum
+          - sample: macos-config
             runner: macos-15-intel
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -168,17 +162,15 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
+      - name: Check sample selection and macOS preflight regressions
+        run: |
+          python3 tests/select_agent_samples_test.py -v
+          python3 tests/darwin_codex_test.py -v
       - name: Select fixed compatibility endpoints
         env:
           SAMPLE: ${{ matrix.sample }}
         run: |
-          python3 - <<'PYTHON'
-          import json, os
-          samples = json.load(open('testdata/compatibility-samples.json'))[os.environ['SAMPLE']]
-          with open(os.environ['GITHUB_ENV'], 'a') as out:
-              for agent, version in samples.items():
-                  print(f'{agent.upper()}_TEST_VERSION={version}', file=out)
-          PYTHON
+          python3 tests/select_agent_samples.py "$SAMPLE" >> "$GITHUB_ENV"
       - name: Check sample consistency and build
         run: |
           go test -count=1 -run TestCompatibilitySamplesMatchPolicy ./...
@@ -200,7 +192,7 @@ jobs:
         run: |
           args=()
           if [[ "$RUNNER_OS" == macOS ]]; then
-            args+=(--config-only)
+            args+=(--config-only --agent-prefix "$RUNNER_TEMP/mobterm-agents")
           fi
           python3 tests/linux_lifecycle_test.py --binary ./mobterm-cli "${args[@]}" \
             --expect-codex-version "$CODEX_TEST_VERSION" --expect-claude-version "$CLAUDE_TEST_VERSION" -v
