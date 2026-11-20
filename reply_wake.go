@@ -44,7 +44,7 @@ func wakeReply(ctx context.Context, s Store, r replyRecord, until int64) (replyR
 		switch {
 		case current.Frame != nil:
 			err = errors.New("reply_decision_conflict")
-		case !current.Renewable || !current.alive(false):
+		case !current.Renewable || !current.alive(false) && current.NativeTurn == "":
 			err = errors.New("native_session_unavailable")
 		case replyCursorReason(s, current) != "":
 			err = errors.New("source_changed")
@@ -114,6 +114,10 @@ func renewReplyLocked(s Store, r *replyRecord, version int, owner string, now ti
 		!hmac.Equal([]byte(r.OwnerToken), []byte(owner)) || replyCursorReason(s, *r) != "" {
 		return errors.New("reply_owner_mismatch")
 	}
+	return claimReplyWakeLocked(s, r, now)
+}
+
+func claimReplyWakeLocked(s Store, r *replyRecord, now time.Time) error {
 	if r.State != "expired" && (r.State != "pending" || r.Expires > now.Unix() && r.alive(true)) {
 		return errors.New("reply_claim_conflict")
 	}

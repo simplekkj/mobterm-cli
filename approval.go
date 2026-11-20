@@ -430,8 +430,7 @@ func approvalWait(ctx context.Context, s Store, api API, l Locator, a Activity, 
 	if err != nil {
 		return nil, nil
 	}
-	a.LogicalSession, err = logicalSession(a.Agent, a.Session)
-	if err != nil {
+	if err = a.identifySession(); err != nil {
 		return nil, err
 	}
 	r := ApprovalRequest{LogicalSession: a.LogicalSession, Session: a.Session, Run: a.Run, Instance: a.Instance, V: 3, RequestID: id, Digest: digest(string(raw)), Agent: a.Agent, OperationJSON: string(raw), Locator: l, ExpiresAt: expires, CreatedAt: created, PID: os.Getpid(), Birth: birth, ParentPID: os.Getppid(), ParentBirth: parentBirth, State: "pending", Pairs: map[string]int64{}}

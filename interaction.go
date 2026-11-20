@@ -657,11 +657,10 @@ func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a A
 		// the adapter must not retry arbitrary child failures after native I/O.
 		return nil, interactionUnavailable(ctx, s, api, l, a, spec, "interaction_request_too_large")
 	}
-	logical, scopeErr := logicalSession(a.Agent, a.Session)
-	if scopeErr != nil {
-		return nil, scopeErr
+	if err := a.identifySession(); err != nil {
+		return nil, err
 	}
-	r := InteractionRecord{LogicalSession: logical, V: 1, RequestID: spec.RequestID, Digest: digest(string(raw)), Kind: spec.Kind, Agent: a.Agent, RequestJSON: string(raw), Locator: l, PID: os.Getpid(), Birth: birth, ParentPID: parentPID, ParentBirth: parent, CreatedAt: now, ExpiresAt: expires, Revision: 1, State: "pending", Pairs: map[string]int64{}, OwnerToken: randomID()}
+	r := InteractionRecord{LogicalSession: a.LogicalSession, V: 1, RequestID: spec.RequestID, Digest: digest(string(raw)), Kind: spec.Kind, Agent: a.Agent, RequestJSON: string(raw), Locator: l, PID: os.Getpid(), Birth: birth, ParentPID: parentPID, ParentBirth: parent, CreatedAt: now, ExpiresAt: expires, Revision: 1, State: "pending", Pairs: map[string]int64{}, OwnerToken: randomID()}
 	if a.ChildWait != nil {
 		r.ChildRunKey = childRunKey(a, l)
 		a.ChildWait.Until = expires

@@ -1,6 +1,8 @@
 // Installed by mobterm-cli. No event content is persisted or printed.
 import { spawn } from "node:child_process";
 import { watch as watchReplyStore, lstatSync as wakeStat, openSync, fstatSync, readSync, closeSync, constants as fsFlags } from "node:fs";
+import { resolve as resolvePath } from "node:path";
+import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 const executable = __MOBTERM_CLI_JSON__;
 const store = __MOBTERM_STORE_JSON__;
@@ -62,18 +64,19 @@ const completionBody = (parts) => {
 };
 
 // One child and at most eight queued jobs; callbacks never await remote HTTP.
-function bridge(source, warn) {
-  let stopped = false, active, warned = false;
+function bridge(source, warn, storage) {
+  let stopped = false, active, preparing, warned = false;
   const queue = [];
   const diagnostic = () => { if (!warned && !stopped) { warned = true; try { warn(); } catch {} } };
   const drain = () => {
-    if (stopped || active || !queue.length) return;
+    if (stopped || active || preparing || !queue.length) return;
     const job = queue.shift();
     try {
       if (!job.valid()) { queueMicrotask(drain); return; }
-      let body = JSON.stringify(job.payload);
+      const payload = {...job.payload,native_storage:storage()};
+      let body = JSON.stringify(payload);
       if (Buffer.byteLength(body) > 4096 && job.payload.summary) {
-        const {summary, ...required} = job.payload; body = JSON.stringify(required);
+        const {summary, ...required} = payload; body = JSON.stringify(required);
       }
       if (Buffer.byteLength(body) > 4096) { diagnostic(); queueMicrotask(drain); return; }
       const child = spawn(executable, ["notify", "--source", source], {
@@ -123,6 +126,10 @@ function bridge(source, warn) {
     } catch { active = undefined; diagnostic(); queueMicrotask(drain); }
   };
   return {
+    prepare(promise) {
+      preparing=promise;
+      void promise.finally(()=>{if(preparing===promise){preparing=undefined;queueMicrotask(drain);}});
+    },
     enqueue(payload, valid, extension) {
       if (stopped) return;
       const critical = ["session.execution.succeeded","session.execution.failed","session.execution.interrupted","permission.asked","form.created","agent_settled","ui_prompt_start","permission.replied","form.replied","form.cancelled"].includes(payload.event);
@@ -155,12 +162,21 @@ export default Plugin.define({
     });
     let alive = true, routeEpoch = 0, previousRoute, previousLocation;
     const activation = randomUUID();
-    const mailbox = replyWakeMailbox("opencode", () => alive ? {id:route(), epoch:routeEpoch} : undefined);
+    let hostStorage, hostServer, hostReady = Promise.resolve(), inputEpoch = 0;
+    const mailbox = replyWakeMailbox("opencode", async () => {
+      if (!alive) return;
+      const id=route(), epoch=routeEpoch, storage=hostStorage;
+      if (!storage) return {id,epoch};
+      const server=await context.client.server.info({signal:AbortSignal.timeout(2500)});
+      if (alive && epoch===routeEpoch && route()===id && server?.pid===hostServer)
+        return {id,epoch,storage,server_pid:server.pid};
+    });
     mailbox.start();
     const lifecycles = new Map();
     let stopReply, replySession;
     const inputReceipts = new Map();
     const invalidateReply = sessionID => {
+      if (sessionID !== undefined && sessionID === route()) inputEpoch++;
       if (sessionID !== undefined && replySession !== sessionID && root(sessionID) !== replySession) return;
       stopReply?.(); stopReply = undefined; replySession = undefined;
     };
@@ -171,7 +187,7 @@ export default Plugin.define({
     const pendingObservations = new Map();
     const transport = bridge("opencode", () => context.ui.toast.show({
       title: "MobTerm", message: "Notification unavailable. Check MobTerm integration.", variant: "warning",
-    }));
+    }), () => hostStorage);
     const route = () => {
       const current = context.ui.router.current();
       return current?.type === "session" && validID(current.sessionID) ? current.sessionID : undefined;
@@ -247,7 +263,7 @@ export default Plugin.define({
       if (event.location && locationKey(event.location) !== location) return;
       current.summary = undefined; current.body = undefined; current.messageID = undefined;
       transport.enqueue({adapter_revision:2,runtime_version:version,event:name,session_id:sessionID,
-        run_id:current.run,event_id:event.id,instance_id:activation,...extra},
+        run_id:current.run,event_id:event.id,instance_id:activation,native_storage:hostStorage,...extra},
         () => alive && epoch === routeEpoch && root(route()) === sessionID && locationKey(context.data.session.get(sessionID)?.location) === location);
     };
     const summaryStep = (event, ended = false) => {
@@ -310,7 +326,9 @@ export default Plugin.define({
         batch=isForm?undefined:(await context.client.permission.list({sessionID})).filter(p=>p.sessionID===sessionID).map(p=>p.id).sort();
         if(reserved.cancelled||!valid())return;
         if(!isForm&&(!Array.isArray(batch)||!batch.includes(requestID))){transport.enqueue(payload,valid);return;}
-        const body=JSON.stringify({...payload,cwd:location?.directory??context.data.session.get(sessionID)?.location?.directory,
+        await hostReady;
+        if(reserved.cancelled||!valid())return;
+        const body=JSON.stringify({...payload,native_storage:hostStorage,cwd:location?.directory??context.data.session.get(sessionID)?.location?.directory,
           tool_name:isForm?"form":"permission",tool_use_id:requestID,
           ...(isForm?{native_form:pending}:{tool_input:pending,pending_permissions:batch})});
         if(Buffer.byteLength(body)>24576){transport.enqueue({...payload,unavailable_reason:"interaction_request_too_large"},valid);return;}
@@ -374,7 +392,7 @@ export default Plugin.define({
         questionReceipts.delete(key);
       }
     };
-    const registerReply = (payload, sessionID, location, valid) => {
+    const registerReply = (payload, sessionID, location, valid, resumedSource) => {
       const api = context.client?.session;
       if (!atLeast(version, minimums.reply.opencode) || !api?.get || !api?.prompt || !api?.active || !api?.inbox?.list ||
           !api?.form?.list || !context.client.permission?.list || !location || route() !== sessionID) return;
@@ -386,10 +404,13 @@ export default Plugin.define({
           context.data.session.form.list(id, context.data.session.get(id)?.location)?.length === 0);
       if (!current()) return;
       const preflight = async () => {
-        const [session, active, inbox, forms, permissions] = await Promise.all([
+        const [session, active, inbox, forms, permissions, server] = await Promise.all([
           api.get({sessionID}), api.active(), api.inbox.list({sessionID}),
           api.form.list({sessionID}), context.client.permission.list({sessionID}),
+          payload.server_pid ? context.client.server.info({signal:AbortSignal.timeout(2500)}) : undefined,
         ]);
+        if (payload.server_pid && server?.pid !== payload.server_pid) return false;
+        if (resumedSource && (await latestIdle(sessionID)) !== payload.turn) return false;
         return current() && session.id === sessionID && !session.parentID && !session.time?.archived &&
           locationKey(session.location) === location && active && typeof active === "object" && !Array.isArray(active) && !(sessionID in active) &&
           [inbox, forms, permissions].every(list => Array.isArray(list) && list.length === 0);
@@ -403,7 +424,39 @@ export default Plugin.define({
         const result = await api.prompt({sessionID, id, text:decision.text, delivery:"queue"});
         return result?.id === id && result.sessionID === sessionID && result.type === "user"
           && result.payload?.text === decision.text && result.delivery === "queue" ? "native_accepted" : "delivery_unknown";
-      });
+      }, resumedSource);
+    };
+    // An execution.succeeded event projects an idle message via the native
+    // SessionMessage.ID.fromEvent. Read only the latest row of this session.
+    const latestIdle = async id => {
+      const page = await context.client.message?.list({sessionID:id,limit:1,order:"desc"},{signal:AbortSignal.timeout(2500)});
+      const row = page?.data?.[0];
+      return row?.type === "idle" && row.outcome === "succeeded" && validID(row.id) ? row.id : undefined;
+    };
+    const registerRoute = async (id, location, epoch) => {
+      const registerCurrent = newHostActivation("opencode");
+      // The CLI's explicit server option may name another machine. A PID in
+      // its response must not be interpreted in the local PID namespace.
+      if (!id || process.argv.some(arg=>arg==="--server" || arg.startsWith("--server="))) return;
+      if (root(id)!==id || !location || !context.client.server?.info || !context.client.message?.list) return;
+      // The CLI checks that the server answering this TUI actually holds this
+      // database open. An alternate profile or detached service using another
+      // file cannot bind on the strength of the TUI environment alone.
+      const data = process.env.XDG_DATA_HOME || resolvePath(homedir(),".local/share");
+      const channel = context.app.channel;
+      if (typeof channel !== "string" || process.env.OPENCODE_DB === ":memory:") return;
+      const filename = process.env.OPENCODE_DB || (["latest","dev","beta","next","prod"].includes(channel) ||
+        ["1","true"].includes(process.env.OPENCODE_DISABLE_CHANNEL_DB) ? "opencode.db" : "opencode-" + channel.replace(/[^a-zA-Z0-9._-]/g,"-") + ".db");
+      const storage = resolvePath(data,"opencode",filename), input = inputEpoch;
+      const [server,turn] = await Promise.all([context.client.server.info({signal:AbortSignal.timeout(2500)}),latestIdle(id).catch(()=>undefined)]);
+      if (!alive || routeEpoch !== epoch || route()!==id || !Number.isSafeInteger(server?.pid) || server.pid<=1) return;
+      const host = await registerCurrent({session_id:id,storage,server_pid:server.pid,turn});
+      if (!host || !alive || routeEpoch!==epoch || route()!==id) return;
+      hostStorage=storage; hostServer=server.pid;
+      if (!turn || inputEpoch!==input || !/^[a-f0-9]{64}$/.test(host.source_id)) return;
+      const valid = () => alive && routeEpoch===epoch && inputEpoch===input &&
+        route()===id && root(id)===id && locationKey(context.data.session.get(id)?.location)===location;
+      registerReply({session_id:id,storage,server_pid:server.pid,turn},id,location,valid,host.source_id);
     };
     const handle = (event) => {
       try {
@@ -440,7 +493,7 @@ export default Plugin.define({
         remember(event.id);
         const runID = lifecycles.get(eventRoot)?.run ?? generation?.run ?? randomUUID();
         const payload = { adapter_revision: 2, runtime_version: version, event: nativeType,
-          session_id: sessionID, run_id: runID, event_id: event.id, instance_id: activation,
+          session_id: sessionID, run_id: runID, event_id: event.id, instance_id: activation,native_storage:hostStorage,
           ...(completion ? (generation?.summary && generation.summaryLocation === location ? {summary:generation.summary} : {}) : {request_id:requestID}) };
         if (!completion) {
           invalidateReply(sessionID);
@@ -462,7 +515,14 @@ export default Plugin.define({
             const start = generation.start, end = event.durable;
             if (generation.run === payload.run_id && start?.aggregateID === sessionID && end?.aggregateID === sessionID &&
                 start.version === 1 && end.version === 1 && Number.isSafeInteger(start.seq) && Number.isSafeInteger(end.seq) &&
-                end.seq > start.seq) registerReply(payload, sessionID, location, valid);
+                end.seq > start.seq) {
+              const input = inputEpoch;
+              void hostReady.then(() => {
+                if (inputEpoch !== input || !valid()) return;
+                const turn = hostStorage && /^evt_/.test(event.id) ? event.id.replace(/^evt_/,"msg_") : undefined;
+                registerReply({...payload,storage:hostStorage,server_pid:hostServer,turn}, sessionID,location,valid);
+              });
+            }
           }
           forgetRequests(sessionID);
         }
@@ -472,7 +532,7 @@ export default Plugin.define({
     let disposeRoute;
     const cleanup = () => {
       if (!alive) return;
-      mailbox.stop(); invalidateReply(); inputReceipts.clear(); alive = false; routeEpoch++; transport.stop(); pendingObservations.clear(); questionReceipts.clear();
+      newHostActivation("opencode"); mailbox.stop(); invalidateReply(); inputReceipts.clear(); alive = false; routeEpoch++; transport.stop(); pendingObservations.clear(); questionReceipts.clear();
       for(const child of approvalChildren.values())child.kill("SIGTERM"); approvalChildren.clear();
       disposeRoute?.();
       for (const unsubscribe of dispose.splice(0).reverse()) {
@@ -486,7 +546,15 @@ export default Plugin.define({
         createEffect(() => {
           const current = route();
           const currentLocation = current && locationKey(context.data.session.get(current)?.location);
-          if (current !== previousRoute || currentLocation !== previousLocation) { previousRoute = current; previousLocation = currentLocation; routeEpoch++; invalidateReply(); transport.cancel(); pendingObservations.clear(); for (const current of lifecycles.values()) {current.summary=undefined;current.body=undefined;current.messageID=undefined;} for(const child of approvalChildren.values())child.kill("SIGTERM"); approvalChildren.clear(); }
+          if (current !== previousRoute || currentLocation !== previousLocation) {
+            previousRoute=current; previousLocation=currentLocation; routeEpoch++; invalidateReply();
+            hostStorage=undefined; hostServer=undefined;
+            hostReady=registerRoute(current,currentLocation,routeEpoch).catch(()=>{});
+            transport.cancel(); transport.prepare(hostReady); pendingObservations.clear();
+            for (const run of lifecycles.values()) {run.summary=undefined;run.body=undefined;run.messageID=undefined;}
+            for (const child of approvalChildren.values()) child.kill("SIGTERM");
+            approvalChildren.clear();
+          }
         });
       });
       for (const [type, handler] of [

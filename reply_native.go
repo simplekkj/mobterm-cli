@@ -18,6 +18,8 @@ type replyWaitInput struct {
 	Event    string `json:"event_id"`
 	Instance string `json:"instance_id"`
 	Expires  int64  `json:"expires_at"`
+	Storage  string `json:"storage,omitempty"`
+	Turn     string `json:"turn,omitempty"`
 }
 
 func replyRegistration(s Store, agent string, f replyWaitInput, l Locator, renewable bool) (replyRecord, error) {
@@ -32,10 +34,15 @@ func replyRegistration(s Store, agent string, f replyWaitInput, l Locator, renew
 	}
 	r := replyRecord{V: 1, Renewable: renewable, Agent: agent, Session: f.Session, Run: f.Run, Instance: f.Instance, Locator: l, PID: os.Getpid(), ParentPID: replyParent(agent), Expires: f.Expires, State: "pending", OwnerToken: randomID(), Pairs: map[string]string{}}
 	var err error
-	r.LogicalSession, err = logicalSession(agent, f.Session)
+	base, err := logicalSession(agent, f.Session)
 	if err != nil {
 		return r, err
 	}
+	storage := nativeStorageKey(agent, f.Storage)
+	if f.Storage != "" && storage == "" {
+		return r, errors.New("native_storage_unconfirmed")
+	}
+	r.LogicalSession = sessionWithStorage(base, storage)
 	if r.ParentBirth, err = processIdentity(r.ParentPID); err != nil {
 		return r, err
 	}
@@ -55,7 +62,11 @@ func replyRegistration(s Store, agent string, f replyWaitInput, l Locator, renew
 		if err = s.readJSON("claude-cycles.json", &cycles); err != nil {
 			return r, err
 		}
-		c := cycles[r.LogicalSession]
+		key, err := claudeCycleKey(f.Session, f.Storage)
+		if err != nil {
+			return r, err
+		}
+		c := cycles[key]
 		if c.Cycle == "" || c.PromptID != f.Event || f.Run != f.Event {
 			return r, errors.New("reply_prompt_changed")
 		}
@@ -84,6 +95,12 @@ func replyRegistration(s Store, agent string, f replyWaitInput, l Locator, renew
 	}
 	if len(r.Pairs) == 0 {
 		return r, errors.New("reply_disabled")
+	}
+	if renewable && storage != "" {
+		r.NativeStorage = storage
+		if validHostTurn(f.Turn) {
+			r.NativeTurn = f.Turn
+		}
 	}
 	return r, registerReplyLocked(s, r)
 }

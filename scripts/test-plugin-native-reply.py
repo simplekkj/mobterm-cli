@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Exercise the installed adapter in a real Pi or OpenCode V2 TUI using an offline synthetic model.
-Usage: python3 scripts/test-plugin-native-reply.py pi|opencode /path/to/agent /path/to/mobterm-cli
+Usage: python3 scripts/test-plugin-native-reply.py pi|opencode /path/to/agent /path/to/mobterm-cli [--resume]
 The helper supplies one synthetic already-authorized decision. Separate wire
 tests cover SSH, grant validation and CAS. No credentials or paid model needed.
 """
@@ -22,12 +22,36 @@ import time
 
 agent = sys.argv[1]
 assert agent in ("pi", "opencode")
-binary, cli = [pathlib.Path(p).resolve() for p in sys.argv[2:]]
+binary, cli = [pathlib.Path(p).resolve() for p in sys.argv[2:4]]
+resume = sys.argv[4:] == ["--resume"]
+assert not sys.argv[4:] or resume
 text = "  回复 🧪\n{{keep}} /literal  "
 seed = "mobterm seed"
 next_prompt = "mobterm input during first turn"
 calls = []
 release_first_response = threading.Event()
+
+
+def launch(argv, cwd, env):
+    master, slave = pty.openpty()
+    try:
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 36, 120, 0, 0))
+        process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=slave, stdout=slave, stderr=slave,
+                                   start_new_session=True)
+    finally:
+        os.close(slave)
+    return process, master
+
+
+def stop(process, master):
+    if process.poll() is None:
+        os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+    os.close(master)
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
@@ -87,6 +111,10 @@ with tempfile.TemporaryDirectory(prefix="mobterm-"+agent+"-reply-") as tmp:
     helper.write_text(f"""#!{sys.executable}
 import sys,json,pathlib,os
 root=pathlib.Path({str(root)!r})
+def publish(name,value):
+    tmp=root/(name+"."+str(os.getpid())+".tmp")
+    tmp.write_text(value)
+    tmp.replace(root/name)
 args=sys.argv[1:]
 if {agent!r}=="pi" and args[0]=="notify" and os.getenv("MOBTERM_NATIVE_COMPLETION")=="1":
     print("mobterm/message-body/1",flush=True)
@@ -100,20 +128,38 @@ if args[:2]==["reply","wait"]:
         with (root/"first-source").open("x") as out: out.write(session)
     except FileExistsError: sys.exit(0)
     assert source["renewable"]
-    (root/"registered-pid").write_text(str(os.getpid()))
-    (root/"host-pid").write_text(str(os.getppid()))
+    publish("source.json",json.dumps(source))
+    publish("registered-pid",str(os.getpid()))
+    publish("host-pid",str(os.getppid()))
     print(json.dumps({{"v":1,"source_id":"a"*64,"owner_token":"owner","wake":True}}))
 elif args[0]=="reply" and args[1] in ("navigation-observe", "navigation-confirm"):
     assert int.from_bytes(raw[:4],"big")==len(raw)-4
     challenge=json.loads(raw[4:])
-    assert challenge["nonce"]=="n"*43 and challenge["agent"]=={agent!r}
-    assert os.getppid()==int((root/"host-pid").read_text())
+    restored=challenge["nonce"]=="r"*43
+    assert (restored or challenge["nonce"]=="n"*43) and challenge["agent"]=={agent!r}
+    assert os.getppid()==int((root/("new-host" if restored else "host-pid")).read_text())
     assert challenge["session_id"]==(root/"first-source").read_text()
-    (root/args[1]).touch()
+    (root/(("restored-" if restored else "")+args[1])).touch()
     print('{{"ok":true}}')
-elif args[:2]==["reply","reopen"]:
+elif args[:2]==["reply","host"]:
+    host = json.loads(raw[4:])
+    if {resume!r} and (root/"source.json").exists() and os.getppid()!=int((root/"host-pid").read_text()):
+        origin = json.loads((root/"source.json").read_text())
+        assert all(host[key] == origin[key] for key in ("session_id", "turn", "storage"))
+        assert host["turn"] and os.getppid() != int((root/"host-pid").read_text())
+        publish("new-host",str(os.getppid()))
+        print(json.dumps({{"source_id":"a"*64}}))
+    else: print("{{}}")
+elif args[:2] in (["reply","reopen"],["reply","rebind"]):
     assert int.from_bytes(raw[:4],"big")==len(raw)-4
-    assert json.loads(raw[4:])=={{"v":1,"source_id":"a"*64,"owner_token":"owner"}}
+    if {resume!r}:
+        assert args[1]=="rebind" and os.getppid()==int((root/"new-host").read_text())
+        origin = json.loads((root/"source.json").read_text())
+        proof=json.loads(raw[4:])
+        assert proof["agent"]=={agent!r} and proof["source_id"]=="a"*64 and proof.get("host_token")
+        assert all(proof[key]==origin[key] for key in ("session_id","storage","turn"))
+    else:
+        assert args[1]=="reopen" and json.loads(raw[4:])=={{"v":1,"source_id":"a"*64,"owner_token":"owner"}}
     with (root/"reopened").open("x"): pass
     print(json.dumps({{"v":1,"source_id":"a"*64,"decision_id":"decision","owner_token":"owner","text":{text!r}}}))
 elif args[0]=="notify" and {agent!r}=="pi":
@@ -156,14 +202,11 @@ export default function(pi) {
   });
 }""".replace("FILENAME", json.dumps(str(root / "witness"))).replace("EXPECTED",json.dumps(text))
             .replace("NEXT_INPUT",json.dumps(next_prompt)).replace("ENTERED",json.dumps(str(root/"entered"))))
-    master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 36, 120, 0, 0))
-    process = subprocess.Popen(argv, cwd=root, env=env,
-                               stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
-    os.close(slave)
+    process, master = launch(argv, root, env)
     try:
         deadline = time.monotonic()+90
         entered_next = False
+        restored = False
         while time.monotonic() < deadline and process.poll() is None:
             if agent == "pi" and calls and not entered_next:
                 os.write(master,next_prompt.encode())
@@ -173,15 +216,25 @@ export default function(pi) {
             if (root/"entered").exists():
                 release_first_response.set()
             marker=store/("reply-wake-"+"a"*64+".json")
-            if (root/"registered-pid").exists() and not marker.exists():
+            if resume and not restored and (root/"navigation-confirm").exists():
+                source = json.loads((root/"source.json").read_text())
+                assert source["turn"] and pathlib.Path(source["storage"]).is_file()
+                stop(process, master)
+                restore = [*argv[:-1], "--session", source["storage"]] if agent=="pi" else [binary,"--standalone","--session",source["session_id"]]
+                process, master = launch(restore, root, env)
+                restored = True
+            confirmed=root/("restored-navigation-confirm" if resume else "navigation-confirm")
+            if confirmed.exists() and (root/"registered-pid").exists() and not marker.exists():
                 try: os.kill(int((root/"registered-pid").read_text()),0)
                 except ProcessLookupError:
                     marker.touch(mode=0o600)
             navigation=store/"navigation-request.json"
-            if (root/"host-pid").exists() and not navigation.exists():
+            observed=root/("new-host" if restored else "host-pid")
+            nonce=("r" if restored else "n")*43
+            if observed.exists() and (not navigation.exists() or json.loads(navigation.read_text())["nonce"]!=nonce):
                 temporary=store/"navigation-new"
                 temporary.touch(mode=0o600)
-                temporary.write_text(json.dumps({"nonce":"n"*43,"pid":int((root/"host-pid").read_text()),"until":int(time.time())+20}))
+                temporary.write_text(json.dumps({"nonce":nonce,"pid":int(observed.read_text()),"until":int(time.time())+20}))
                 temporary.replace(navigation)
             states=(root/"receipt").read_text().splitlines() if (root/"receipt").exists() else []
             notifications_ready = agent!="pi" or ((root/"settled").exists() and len((root/"settled").read_text().splitlines())>=2)
@@ -206,12 +259,11 @@ export default function(pi) {
             assert [row["matches"] for row in messages]==[False,False,True]
         else:
             assert "native_consumed" in states and "native_accepted" in states
-        print(f"PASS original {agent} TUI woke after its source helper exited and consumed unmodified ordinary reply; same session included both user messages in loopback synthetic provider input; live navigation challenge confirmed; receipt states: {states}")
+        if resume: assert (root/"restored-navigation-confirm").exists()
+        host = f"user-restored {agent} on a new PTY/PID" if resume else f"original {agent} TUI"
+        print(f"PASS {host} received unmodified ordinary reply; exact session history verified by loopback provider; source navigation confirmed; receipt states: {states}")
     finally:
         release_first_response.set()
-        if process.poll() is None: os.killpg(process.pid, signal.SIGTERM)
-        try: process.wait(timeout=5)
-        except subprocess.TimeoutExpired: os.killpg(process.pid, signal.SIGKILL); process.wait()
-        os.close(master)
+        stop(process, master)
         server.shutdown()
         server.server_close()

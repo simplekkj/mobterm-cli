@@ -29,7 +29,11 @@ await chmod(recorder, 0o700);
 const children = new Set();
 const notificationChildren = new Set();
 const spawn = (...args) => {
-  const child = spawnChild(...args);
+  // Host lifecycle commands are local framed calls; only notify writes the
+  // fixture's newline-delimited native event stream.
+  const child = args[1]?.[0] === "reply" && args[1]?.[1] === "host"
+    ? spawnChild(process.execPath, ["-e",'process.stdin.resume();process.stdin.on("end",()=>console.log("{}"));'],args[2])
+    : spawnChild(...args);
   children.add(child);
   if (args[1]?.[0] === 'notify') notificationChildren.add(child);
   child.once('close', () => { children.delete(child); notificationChildren.delete(child); });

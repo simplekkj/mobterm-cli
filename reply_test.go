@@ -75,6 +75,10 @@ func replyTestConfig(p Pair, generation, revision int64, enabled bool) replyConf
 }
 
 func newReplyFixture(t *testing.T) replyFixture {
+	return newReplyFixtureWithStorage(t, "")
+}
+
+func newReplyFixtureWithStorage(t *testing.T, storage string) replyFixture {
 	t.Helper()
 	ctx := context.Background()
 	claudeNotifyEnvironment(t)
@@ -124,13 +128,13 @@ func newReplyFixture(t *testing.T) replyFixture {
 			t.Fatal(err)
 		}
 	}
-	input := replyWaitInput{"1.5.2", "original_session", "original_run", "original_event", "activation_id", time.Now().Unix() + 295}
+	input := replyWaitInput{"1.5.2", "original_session", "original_run", "original_event", "activation_id", time.Now().Unix() + 295, storage, "native-assistant-entry"}
 	// Registration precedes the completion observation; it must not emit a notification itself.
 	unlock, err := s.lock(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fx.record, err = replyRegistration(s, "pi", input, l, false)
+	fx.record, err = replyRegistration(s, "pi", input, l, storage != "")
 	unlock()
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +143,7 @@ func newReplyFixture(t *testing.T) replyFixture {
 	if err != nil || len(db.Intents) != 0 {
 		t.Fatal("registration emitted an activity")
 	}
-	a := Activity{Agent: "pi", Session: input.Session, Run: input.Run, Instance: input.Instance, Occurrence: fx.record.Cursor, State: "turn_completed", Reminder: "turn_completed", Body: assistantBody{TooLarge: true}}
+	a := Activity{NativeStorage: storage, Agent: "pi", Session: input.Session, Run: input.Run, Instance: input.Instance, Occurrence: fx.record.Cursor, State: "turn_completed", Reminder: "turn_completed", Body: assistantBody{TooLarge: true}}
 	_, _, _, err = applyActivity(ctx, s, l, a)
 	if err != nil {
 		t.Fatal(err)
@@ -425,7 +429,7 @@ func TestReplyCommandsExerciseImmutableSourceAndNativeClaim(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &conf); err != nil || conf.Activations["pi"] != 3 {
 		t.Fatal("CLI did not report configured generation", err)
 	}
-	input := replyWaitInput{"1.5.1", "second-session", "second-run", "second-event", "second-activation", time.Now().Unix() + 100}
+	input := replyWaitInput{"1.5.1", "second-session", "second-run", "second-event", "second-activation", time.Now().Unix() + 100, "", ""}
 	p := fx.pairs[0]
 	l := fx.l
 	logical, err := logicalSession("pi", input.Session)
@@ -683,7 +687,7 @@ func TestReplyNativeCompletionRendezvous(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			f := replyWaitInput{tc.version, "fixture-session", "fixture-run", "fixture-event", "fixture-activation", time.Now().Unix() + 280}
+			f := replyWaitInput{tc.version, "fixture-session", "fixture-run", "fixture-event", "fixture-activation", time.Now().Unix() + 280, "", ""}
 			emit := func(payload map[string]any) {
 				t.Helper()
 				raw, _ := json.Marshal(payload)

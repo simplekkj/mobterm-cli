@@ -8,13 +8,13 @@ action API, host mode and source binding.
 | Agent | Structured interactions | Ordinary reply to the current source |
 | --- | --- | --- |
 | Codex | 0.166.0 | Terminal fallback in shared and profile/embedded mode. A loaded thread has no continuous originating TUI incarnation. |
-| Claude Code | 2.1.316 classic Hooks | 2.1.326, original interactive Mod only |
-| OpenCode V2 | 2.2.5 TUI plugin | 2.2.5, same activation, root session, execution and location |
-| Pi | 1.4.0 extension-owned gate | 1.5.1, same idle extension, session and settled run |
+| Claude Code | 2.1.316 classic Hooks | 2.1.326, current interactive Mod and verified completed source |
+| OpenCode V2 | 2.2.5 TUI plugin | 2.2.5, current root session, execution and location |
+| Pi | 1.4.0 extension-owned gate | 1.5.1, idle extension in the verified session and settled run |
 
 For an ordinary message follow [reply wire v1](reply-v1.md). A real host event
 registers one source. After its initial helper exits, an authorized inspection
-can wake the same host to create a fresh short lease. Claude uses one Mod timer,
+can wake the current host to create a fresh short lease. A user-restored session can acquire a new unclaimed waiter after the adapter proves the same native storage, session and completed turn. Claude uses one Mod timer,
 OpenCode watches the private store during plugin setup/cleanup, and Pi watches
 from session start to shutdown. The source notification and completion
 remain the existing event, independently of body-cache success.

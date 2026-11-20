@@ -406,6 +406,10 @@ func replyCommand(ctx context.Context, s Store, api API, op string, in io.Reader
 		return replyConfiguration(ctx, s, api, op, in)
 	case "navigation-observe", "navigation-confirm":
 		return observeNavigation(ctx, s, op, in)
+	case "host":
+		return registerNativeHost(ctx, s, in)
+	case "rebind":
+		return rebindReply(ctx, s, api, in)
 	case "reopen":
 		return reopenReply(ctx, s, api, in)
 	case "authorize", "receipt":

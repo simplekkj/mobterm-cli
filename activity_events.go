@@ -15,6 +15,7 @@ import (
 )
 
 type activityInput struct {
+	NativeStorage         string          `json:"native_storage,omitempty"`
 	CompletionBody        string          `json:"completion_body_base64,omitempty"`
 	CompletionTooLarge    bool            `json:"completion_body_too_large,omitempty"`
 	AgentID               string          `json:"agent_id,omitempty"`
@@ -69,6 +70,10 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 		return a, p, errors.New("invalid_session")
 	}
 	a.Session = p.SessionID
+	a.NativeStorage = p.NativeStorage
+	if source == "claude" {
+		a.NativeStorage = p.TranscriptPath
+	}
 
 	a.Run = p.TurnID
 	a.Instance = p.SessionID
@@ -87,11 +92,9 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 			return a, p, nil
 		}
 	}
-	logical, scopeErr := logicalSession(source, a.Session)
-	if scopeErr != nil {
-		return a, p, scopeErr
+	if err := a.identifySession(); err != nil {
+		return a, p, err
 	}
-	a.LogicalSession = logical
 	if source == "opencode" || source == "pi" {
 		decoder := json.NewDecoder(bytes.NewReader(raw))
 		decoder.DisallowUnknownFields()
@@ -105,7 +108,7 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 		a.Summary = cleanMessageSummary(p.Summary)
 		a.Run = p.RunID
 		a.Instance = p.InstanceID
-		a.Occurrence = newReplyOccurrence(source, p.Event, p.SessionID, p.EventID, p.InstanceID)
+		a.Occurrence = digest(a.LogicalSession + "\x00" + newReplyOccurrence(source, p.Event, p.SessionID, p.EventID, p.InstanceID))
 		switch p.Event {
 		case "session.execution.started", "agent_start":
 			a.State = "running"
@@ -235,7 +238,7 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 	case "Notification":
 		if source == "claude" && p.NotificationType == "idle_prompt" {
 			var stop claudeBodyCapture
-			cycle, stopped, summary, e := claudeCycleEvent(ctx, s, p.SessionID, "read", "", p.PromptID, &stop)
+			cycle, stopped, summary, e := claudeCycleEvent(ctx, s, p.SessionID, p.TranscriptPath, "read", "", p.PromptID, &stop)
 			a.ClaudeStop = stop.id
 			if e != nil {
 				return a, p, e
@@ -278,7 +281,7 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 				}
 			}
 		}
-		_, _, _, err := claudeCycleEvent(ctx, s, p.SessionID, "stop", cleanMessageSummary(p.LastAssistantMessage), p.PromptID, &capture)
+		_, _, _, err := claudeCycleEvent(ctx, s, p.SessionID, p.TranscriptPath, "stop", cleanMessageSummary(p.LastAssistantMessage), p.PromptID, &capture)
 		return a, p, err // Only idle after this cycle's Stop can confirm completion.
 	default:
 		return a, p, nil
@@ -290,11 +293,11 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 	}
 	if source == "claude" && p.AgentID == "" && a.Reminder != "turn_completed" {
 		if p.HookEventName == "PreToolUse" || p.HookEventName == "PostToolUse" || p.HookEventName == "PostToolUseFailure" {
-			if _, _, _, err := claudeCycleEvent(ctx, s, p.SessionID, "resume", "", p.PromptID); err != nil {
+			if _, _, _, err := claudeCycleEvent(ctx, s, p.SessionID, p.TranscriptPath, "resume", "", p.PromptID); err != nil {
 				return a, p, err
 			}
 		}
-		cycle, _, err := claudeActivityCycle(ctx, s, p.SessionID, false)
+		cycle, _, err := claudeActivityCycle(ctx, s, p.SessionID, p.TranscriptPath, false)
 		if err != nil {
 			return a, p, err
 		}
@@ -329,15 +332,15 @@ func parseActivity(ctx context.Context, s Store, source string, raw []byte) (Act
 	return a, p, nil
 }
 
-func claudeActivityCycle(ctx context.Context, s Store, session string, stop bool) (string, bool, error) {
+func claudeActivityCycle(ctx context.Context, s Store, session, transcript string, stop bool) (string, bool, error) {
 	action := "read"
 	if stop {
 		action = "stop"
 	}
-	cycle, stopped, _, err := claudeCycleEvent(ctx, s, session, action, "", "")
+	cycle, stopped, _, err := claudeCycleEvent(ctx, s, session, transcript, action, "", "")
 	return cycle, stopped, err
 }
-func claudeCycleEvent(ctx context.Context, s Store, session, action, summary, promptID string, capture ...*claudeBodyCapture) (string, bool, string, error) {
+func claudeCycleEvent(ctx context.Context, s Store, session, transcript, action, summary, promptID string, capture ...*claudeBodyCapture) (string, bool, string, error) {
 	unlock, err := s.lock(ctx)
 	if err != nil {
 		return "", false, "", err
@@ -347,7 +350,7 @@ func claudeCycleEvent(ctx context.Context, s Store, session, action, summary, pr
 	if err = s.readJSON("claude-cycles.json", &cycles); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", false, "", err
 	}
-	key, err := logicalSession("claude", session)
+	key, err := claudeCycleKey(session, transcript)
 	if err != nil {
 		return "", false, "", err
 	}
@@ -461,9 +464,6 @@ func observe(ctx context.Context, s Store, api API, source string, raw []byte) (
 			}
 		}
 	}
-	if source == "opencode" || source == "pi" {
-		a.Occurrence = digest(a.LogicalSession + "\x00" + a.Occurrence)
-	}
 	if source == "codex" {
 		allowed, e := admitCodexActivity(ctx, s, l, &a, input)
 		if e != nil || !allowed {
@@ -532,8 +532,8 @@ type claudeBodyCapture struct {
 func (s Store) claudeBodies(a Activity, l Locator) map[string]*bodyRef {
 	var cycles map[string]claudeCycle
 	var stops map[string]string
-	key := a.LogicalSession
-	if s.readJSON("claude-cycles.json", &cycles) != nil || s.readJSON("claude-stops-v2.json", &stops) != nil {
+	key, err := claudeCycleKey(a.Session, a.NativeStorage)
+	if err != nil || s.readJSON("claude-cycles.json", &cycles) != nil || s.readJSON("claude-stops-v2.json", &stops) != nil {
 		return nil
 	}
 	c := cycles[key]

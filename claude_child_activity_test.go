@@ -50,7 +50,7 @@ func TestClaudeChildDisabledQuestionAndPlanRemainIndependent(t *testing.T) {
 		}
 	}
 	parseActivity(ctx, s, "claude", []byte(`{"session_id":"root","hook_event_name":"UserPromptSubmit"}`))
-	cycle, _, _, err := claudeCycleEvent(ctx, s, "root", "stop", "existing root summary", "")
+	cycle, _, _, err := claudeCycleEvent(ctx, s, "root", "", "stop", "existing root summary", "")
 	if err != nil || cycle == "" {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestClaudeChildDisabledQuestionAndPlanRemainIndependent(t *testing.T) {
 	if r := childRunFor(t, s, "two", "same"); r.State != "interrupted" || len(r.Requests) != 0 {
 		t.Fatal("child Stop left an orphan", r.State)
 	}
-	got, stopped, summary, err := claudeCycleEvent(ctx, s, "root", "read", "", "")
+	got, stopped, summary, err := claudeCycleEvent(ctx, s, "root", "", "read", "", "")
 	if err != nil || got != cycle || !stopped || summary != "existing root summary" {
 		t.Fatal("child events modified root cycle or summary")
 	}

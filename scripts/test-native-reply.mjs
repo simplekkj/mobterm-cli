@@ -25,6 +25,7 @@ function cli() {
       const input = JSON.parse(bytes);
       calls.push({args,input});
       if (args[0] !== "reply") queueMicrotask(() => finish());
+      else if (args[1] === "host") queueMicrotask(() => finish({}));
       else if (args[1] === "wait") waiters.push({input,answer:(decision=answer)=>finish(decision)});
       else if (args[1] === "authorize") queueMicrotask(() => {beforeAuthorize();finish({v:1,allowed:true});});
       else if (args[1] === "receipt") {receipts.push(input);queueMicrotask(() => finish({ok:true}));}
@@ -262,9 +263,9 @@ export async function testNativeReply() {
       emit("session.execution.started",{},10);
       emit("session.execution.started",{},3);
       emit("session.execution.failed",{},4);
-      emit("session.execution.succeeded",{},5);
+      emit("session.execution.succeeded",{},5);await turn();
       assert.equal(fixture.waiters.length,0,"earlier execution cannot gain a new waiter");
-      emit("session.execution.succeeded",{},11);
+      emit("session.execution.succeeded",{},11);await turn();
       assert.equal(fixture.waiters.length,1,"older events cannot close the newer execution");
       emit("session.execution.started",{},8);
       fixture.waiters[0].answer();await turn();
@@ -273,7 +274,7 @@ export async function testNativeReply() {
     }
     emit("session.execution.started");
     if(change==="permission-before")pending=[{id:"P",sessionID:"S"}];
-    emit("session.execution.succeeded");
+    emit("session.execution.succeeded");await turn();
     if(change==="global-before" || change==="permission-before"){
       assert.equal(fixture.waiters.length,0,"no reply during "+change);
       dispose();continue;
@@ -292,7 +293,7 @@ export async function testNativeReply() {
       emit("session.inbox.delivered",{inboxID:"wrong"});assert.equal(fixture.receipts.length,1);
       emit("session.inbox.delivered",{inboxID:submissions[0].id});await turn();
       assert.deepEqual(fixture.receipts.map(r=>r.state),["native_accepted","native_consumed"]);
-      emit("session.execution.started");emit("session.execution.succeeded");
+      emit("session.execution.started");emit("session.execution.succeeded");await turn();
       fixture.waiters[1].answer({...answer,source_id:"another-source",decision_id:"decisionoriginal"});
       await turn();
       assert.equal(submissions[1].text,submissions[0].text);

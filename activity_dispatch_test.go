@@ -19,6 +19,9 @@ import (
 // Dispatch children of unit tests must execute the CLI, not recursively run
 // the test suite. The same subprocess path is used by the built executable.
 func TestMain(m *testing.M) {
+	if cert := os.Getenv("MOBTERM_TEST_RELAY_CERT"); cert != "" {
+		os.Exit(runReboundFixtureCLI(cert))
+	}
 	if len(os.Args) == 3 && os.Args[1] == "activity" && os.Args[2] == "dispatch" {
 		if path := os.Getenv("MOBTERM_TEST_DISPATCH_STARTS"); path != "" {
 			f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)

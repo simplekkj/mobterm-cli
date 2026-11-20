@@ -158,7 +158,7 @@ func commandTimeout(args []string) time.Duration {
 	case "approval":
 		return 125 * time.Second
 	case "reply":
-		if len(args) > 1 && args[1] == "reopen" {
+		if len(args) > 1 && (args[1] == "reopen" || args[1] == "rebind") {
 			return 61 * time.Second
 		}
 		if len(args) > 1 && args[1] == "wait" {

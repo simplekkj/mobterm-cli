@@ -15,6 +15,7 @@ import (
 )
 
 type hookInput struct {
+	TranscriptPath       string `json:"transcript_path"`
 	NativeTurnID         string `json:"turn_id"`
 	AgentID              string `json:"agent_id"`
 	PromptID             string `json:"prompt_id"`
@@ -35,6 +36,19 @@ type claudeCycle struct {
 	SummaryCycle string              `json:"summary_cycle,omitempty"`
 	Cycle        string              `json:"cycle"`
 	Updated      int64               `json:"updated"`
+}
+
+// UserPromptSubmit may run before the first transcript file is created. The
+// classic hooks and the Mod retain the same native path throughout this turn.
+func claudeCycleKey(session, transcript string) (string, error) {
+	base, err := logicalSession("claude", session)
+	if err != nil || transcript == "" {
+		return base, err
+	}
+	if !filepath.IsAbs(transcript) {
+		return "", errors.New("invalid_claude_transcript_path")
+	}
+	return digest(base + "\x00claude-cycle-path\x00" + filepath.Clean(transcript)), nil
 }
 
 func parseEvent(ctx context.Context, s Store, source string, payload []byte) (kind, identity string, err error) {
@@ -83,7 +97,7 @@ func parseEvent(ctx context.Context, s Store, source string, payload []byte) (ki
 		if p.AgentID != "" && (p.HookEventName == "UserPromptSubmit" || p.NotificationType == "idle_prompt") {
 			return "", "", nil
 		}
-		key, err := logicalSession("claude", p.SessionID)
+		key, err := claudeCycleKey(p.SessionID, p.TranscriptPath)
 		if err != nil {
 			return "", "", err
 		}
@@ -227,7 +241,7 @@ func notify(ctx context.Context, s Store, a API, source string, payload []byte, 
 			body = &current
 		}
 		if source == "claude" {
-			cycle, _, candidate, e := claudeCycleEvent(ctx, s, input.SessionID, "read", "", input.PromptID)
+			cycle, _, candidate, e := claudeCycleEvent(ctx, s, input.SessionID, input.TranscriptPath, "read", "", input.PromptID)
 			err = e
 			if digest("claude\x00"+digest(input.SessionID)+"\x00"+cycle+"\x00completed") == identity {
 				summary = candidate

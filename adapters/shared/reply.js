@@ -41,6 +41,17 @@ function replyCommand(args, payload, framed, deadline, signal) {
   });
 }
 
+// Capture both positions at the lifecycle transition, before any API await.
+function newHostActivation(agent) {
+  const stamp = process.hrtime.bigint();
+  const clear = {v:1,agent,host_token:"__MOBTERM_HOST_TOKEN__",session_id:"",storage:"",epoch:(stamp*2n).toString()};
+  const released = replyCommand(["host","--stdin-frame"],clear,true,Date.now()+4000);
+  return async proof => {
+    await released;
+    return replyCommand(["host","--stdin-frame"],{...clear,...proof,epoch:(stamp*2n+1n).toString()},true,Date.now()+4000);
+  };
+}
+
 function replyReceipt(tuple, state) {
   return replyCommand(["receipt", "--stdin-frame"], {...tuple, state}, true, Date.now() + 5000);
 }
@@ -64,12 +75,12 @@ function replyWakeMailbox(agent, navigationSession) {
       if (request.pid !== process.pid || !/^[A-Za-z0-9_-]{43}$/.test(request.nonce) ||
           request.nonce === navigationNonce || request.until * 1000 <= Date.now()) return;
       navigationNonce = request.nonce;
-      const initial = navigationSession(), activation = generation;
+      const activation = generation, initial = await navigationSession();
       if (!initial || !validID(initial.id)) return;
-      const observation = {v:1, agent, nonce:request.nonce, session_id:initial.id};
+      const observation = {v:1, agent, nonce:request.nonce, session_id:initial.id,storage:initial.storage,server_pid:initial.server_pid};
       const sampled = await replyCommand(["navigation-observe", "--stdin-frame"], observation, true, request.until * 1000);
-      const current = navigationSession();
-      if (sampled?.ok && generation === activation && current?.id === initial.id && current.epoch === initial.epoch) {
+      const current = await navigationSession();
+      if (sampled?.ok && generation === activation && current?.id === initial.id && current.storage === initial.storage && current.server_pid === initial.server_pid && current.epoch === initial.epoch) {
         await replyCommand(["navigation-confirm", "--stdin-frame"], observation, true, request.until * 1000);
       }
     } catch { /* An absent challenge is the normal idle state. */ }
@@ -113,7 +124,7 @@ function replyWakeMailbox(agent, navigationSession) {
   };
 }
 
-function replyOpportunity(mailbox, agent, source, valid, preflight, submit) {
+function replyOpportunity(mailbox, agent, source, valid, preflight, submit, resumedSource) {
   const controller = new AbortController();
   const current = () => !controller.signal.aborted && valid();
   let disarm;
@@ -137,11 +148,22 @@ function replyOpportunity(mailbox, agent, source, valid, preflight, submit) {
     await replyReceipt(tuple, attempted ? "delivery_unknown" : "not_dispatched");
   };
   const open = async () => {
+    if (resumedSource) {
+      disarm = mailbox.arm(resumedSource, async () => {
+        if (!current() || !await preflight() || !current()) return;
+        const deadline = Date.now() + 60000;
+        const result = await replyCommand(["rebind","--stdin-frame"], {
+          v:1,host_token:"__MOBTERM_HOST_TOKEN__",agent,session_id:source.session_id,source_id:resumedSource,storage:source.storage,turn:source.turn,server_pid:source.server_pid,
+        }, true, deadline, controller.signal);
+        await consume(result, deadline);
+      });
+      return;
+    }
     const expires = Math.floor(Date.now() / 1000) + 15;
     const first = await replyCommand(["wait", "--source", agent], {
       runtime_version: source.runtime_version, session_id: source.session_id,
       run_id: source.run_id, event_id: source.event_id, instance_id: source.instance_id,
-      expires_at: expires, renewable:true,
+      expires_at: expires, renewable:true, storage:source.storage, turn:source.turn,
     }, false, (expires + 5) * 1000, controller.signal);
     if (first?.wake !== true) { await consume(first, expires * 1000); return; }
     if (!current() || !/^[a-f0-9]{64}$/.test(first.source_id) || !validID(first.owner_token)) return;

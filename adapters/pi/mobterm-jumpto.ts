@@ -149,7 +149,7 @@ export default function mobtermJumpTo(pi) {
   const instance = randomUUID();
   let navigatingSession = false;
   const mailbox = replyWakeMailbox("pi", () => alive && !navigatingSession && context?.mode === "tui"
-    ? {id:session(context), epoch} : undefined);
+    ? {id:session(context), epoch, storage:context.sessionManager.getSessionFile?.()} : undefined);
   let stopReply;
   const invalidateReply = () => { stopReply?.(); stopReply = undefined; };
   const pendingGates = new Map();
@@ -178,10 +178,48 @@ export default function mobtermJumpTo(pi) {
   });
   const session = (ctx) => ctx.sessionManager.getSessionId();
   const reset = (ctx) => { invalidateReply(); openPrompts.clear(); context = ctx; epoch++; round = undefined; transport.cancel(); settleGates(); };
-  pi.on("session_start", (_event, ctx) => { alive = true; navigatingSession = false; reset(ctx); if (ctx.mode === "tui") mailbox.start(); });
-  pi.on("session_shutdown", (_event, ctx) => { alive = false; reset(ctx); mailbox.stop(); });
+  // A session filename identifies the storage independently of the pane. Only
+  // a completed assistant entry on the current native branch can renew a reply.
+  const completedEntry = ctx => {
+    let entry = ctx.sessionManager.getLeafEntry?.();
+    // Pi may append this preference on opening an existing file.
+    for (let n = 0; n < 32 && entry?.type === "thinking_level_change"; n++)
+      entry = ctx.sessionManager.getEntry?.(entry.parentId);
+    return entry?.type === "message" && entry.message?.role === "assistant" &&
+      entry.message.stopReason === "stop" && validID(entry.id) ? entry.id : undefined;
+  };
+  const submitReply = decision => {
+    pi.sendUserMessage(decision.text, {expandPromptTemplates:false});
+    return "delivery_unknown";
+  };
+  let inputEpoch = 0, registeredStorage, registerCurrent;
+  const registerStorage = async (id,storage,turn) => {
+    const generation = epoch;
+    const host = await registerCurrent?.({session_id:id,storage,turn});
+    if (host && alive && generation === epoch) registeredStorage = storage;
+    return host;
+  };
+  pi.on("session_start", async (_event, ctx) => {
+    alive = true; navigatingSession = false; registeredStorage = undefined; reset(ctx);
+    registerCurrent = newHostActivation("pi");
+    if (ctx.mode !== "tui") return;
+    mailbox.start();
+    const id = session(ctx), storage = ctx.sessionManager.getSessionFile?.(), turn = completedEntry(ctx);
+    if (!storage) return;
+    const activation = epoch, input = inputEpoch;
+    const host = await registerStorage(id,storage,turn);
+    const valid = () => alive && epoch === activation && inputEpoch === input && !navigatingSession &&
+      session(ctx) === id && ctx.sessionManager.getSessionFile() === storage && completedEntry(ctx) === turn &&
+      !pendingGates.size && !openPrompts.size && ctx.isIdle?.() === true && ctx.hasPendingMessages?.() === false;
+    if (turn && /^[a-f0-9]{64}$/.test(host?.source_id) && valid() &&
+        atLeast(VERSION, minimums.reply.pi) && typeof pi.sendUserMessage === "function") {
+      stopReply = replyOpportunity(mailbox,"pi",{session_id:id,storage,turn},valid,()=>true,submitReply,host.source_id);
+    }
+  });
+  pi.on("session_shutdown", (_event, ctx) => { alive = false; reset(ctx); mailbox.stop(); registerCurrent=undefined; newHostActivation("pi"); });
   for (const event of ["input", "session_before_switch", "session_before_fork", "session_before_tree", "session_before_compact"]) {
     pi.on(event, () => {
+      inputEpoch++;
       if (event === "session_before_switch" || event === "session_before_fork") navigatingSession = true;
       invalidateReply();
       if (round) round.replyInvalidated = true;
@@ -200,7 +238,7 @@ export default function mobtermJumpTo(pi) {
     const current = round;
     if (!alive || ctx.mode !== "tui" || !current || current.epoch !== epoch || session(ctx) !== current.session) return;
     transport.enqueue({ adapter_revision: 2, runtime_version: VERSION, event: name,
-      session_id: current.session, run_id: current.id, event_id: randomUUID(), instance_id: instance, ...extra },
+      session_id: current.session, run_id: current.id, event_id: randomUUID(), instance_id: instance, native_storage:ctx.sessionManager.getSessionFile?.(), ...extra },
       () => alive && ctx.mode === "tui" && epoch === current.epoch && session(ctx) === current.session);
   };
   const gateEnabled=()=>{
@@ -230,7 +268,7 @@ export default function mobtermJumpTo(pi) {
       if(pendingGates.size>8||!valid()){cancel();return;}
       captured.signal?.addEventListener("abort",cancel,{once:true});
       timer=setTimeout(cancel,Math.max(1,captured.deadline-Date.now()));
-      const body=JSON.stringify({adapter_revision:2,runtime_version:VERSION,event:"tool_gate",session_id:captured.session,run_id:captured.round,event_id:key,instance_id:instance,request_id:captured.toolCallId,tool_use_id:captured.toolCallId,tool_name:event.toolName,tool_input:snapshot,cwd:ctx.cwd});
+      const body=JSON.stringify({adapter_revision:2,runtime_version:VERSION,event:"tool_gate",native_storage:ctx.sessionManager.getSessionFile?.(),session_id:captured.session,run_id:captured.round,event_id:key,instance_id:instance,request_id:captured.toolCallId,tool_use_id:captured.toolCallId,tool_name:event.toolName,tool_input:snapshot,cwd:ctx.cwd});
       if(Buffer.byteLength(body)>24576){cancel();return;}
       try{
         child=spawn(executable,["interaction","wait","--source","pi"],{env:{...process.env,MOBTERM_CONFIG_DIR:store},stdio:["pipe","pipe","ignore"],shell:false});
@@ -266,7 +304,7 @@ export default function mobtermJumpTo(pi) {
     }
   };
   pi.on("message_start", (event, ctx) => {
-    if (event.message?.role === "user") invalidateReply();
+    if (event.message?.role === "user") { inputEpoch++; invalidateReply(); }
     if (["assistant", "user"].includes(event.message?.role)) clearSummary(ctx);
     if (round && session(ctx) === round.session && event.message?.role === "assistant") round.message = { reference: new WeakRef(event.message), timestamp: event.message.timestamp };
   });
@@ -312,7 +350,10 @@ export default function mobtermJumpTo(pi) {
     const source = { adapter_revision: 2, runtime_version: VERSION, event: "agent_settled",
       session_id: current.session, run_id: current.id, event_id: current.id, instance_id: instance, aborted: event.aborted,
       ...(!event.aborted && current.summary ? {summary:current.summary} : {}) };
-    transport.enqueue(source,
+    const storage = ctx.sessionManager.getSessionFile?.();
+    // Fresh sessions may create their file only during the first turn.
+    if (storage && registeredStorage !== storage) void registerStorage(current.session,storage);
+    transport.enqueue({...source,native_storage:storage},
       () => alive && ctx.mode === "tui" && epoch === current.epoch && session(ctx) === current.session, event.aborted ? undefined : current.body);
     if (!event.aborted && atLeast(VERSION, minimums.reply.pi) && typeof pi.sendUserMessage === "function"
         && typeof ctx.isIdle === "function" && typeof ctx.hasPendingMessages === "function") {
@@ -321,11 +362,7 @@ export default function mobtermJumpTo(pi) {
         && ctx.isIdle() === true && ctx.hasPendingMessages() === false;
       if (valid()) {
         invalidateReply();
-        stopReply = replyOpportunity(mailbox, "pi", source, valid, () => true, decision => {
-          pi.sendUserMessage(decision.text, {expandPromptTemplates:false});
-          // The host exposes no receipt or caller-supplied native input ID.
-          return "delivery_unknown";
-        });
+        stopReply = replyOpportunity(mailbox, "pi", {...source, storage:ctx.sessionManager.getSessionFile?.(), turn:completedEntry(ctx)}, valid, () => true, submitReply);
       }
     }
     current.body = undefined;

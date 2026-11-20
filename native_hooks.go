@@ -18,13 +18,14 @@ import (
 //go:embed adapters/opencode/package.json adapters/opencode/tui.js adapters/pi/mobterm-jumpto.ts adapters/shared/*.js adapters/claude/*
 var nativeAssets embed.FS
 
-const nativeAdapterRevision = 5
+const nativeAdapterRevision = 6
 
 type nativeOwnedFile struct {
 	SHA         string `json:"sha256"`
 	PreviousSHA string `json:"previous_sha256,omitempty"`
 }
 type nativeHookRecord struct {
+	HostToken         string                     `json:"host_token,omitempty"`
 	V                 int                        `json:"v"`
 	Agent             string                     `json:"agent"`
 	Path              string                     `json:"path"`
@@ -118,6 +119,13 @@ func nativeRead(path string) ([]byte, bool, os.FileMode, error) {
 	return data, true, info.Mode().Perm(), nil
 }
 func nativeRenderedFiles(s Store, agent, path, executable string) (map[string][]byte, string, error) {
+	var record nativeHookRecord
+	if err := s.readJSON(nativeRecordName(agent), &record); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, "", err
+	}
+	return renderNativeAssets(s, agent, path, executable, record.HostToken)
+}
+func renderNativeAssets(s Store, agent, path, executable, hostToken string) (map[string][]byte, string, error) {
 	cli, _ := json.Marshal(executable)
 	state, _ := json.Marshal(s.Dir)
 	render := func(name string) ([]byte, error) {
@@ -134,6 +142,8 @@ func nativeRenderedFiles(s Store, agent, path, executable string) (map[string][]
 				b = bytes.ReplaceAll(b, []byte(token), snippet)
 			}
 		}
+		token, _ := json.Marshal(hostToken)
+		b = bytes.ReplaceAll(b, []byte(`"__MOBTERM_HOST_TOKEN__"`), token)
 		b = bytes.ReplaceAll(b, []byte("__MOBTERM_MINIMUMS_JSON__"), []byte(nativeMinimumJSON))
 		b = bytes.ReplaceAll(b, []byte("__MOBTERM_CLI_JSON__"), cli)
 		b = bytes.ReplaceAll(b, []byte("__MOBTERM_STORE_JSON__"), state)
@@ -331,7 +341,11 @@ func changeNativeHooks(ctx context.Context, s Store, agent, action, path, execut
 			return err
 		}
 	}
-	files, reference, err := nativeRenderedFiles(s, agent, path, executable)
+	hostToken := r.HostToken
+	if action == "install" && hostToken == "" && r.Pending != "install" {
+		hostToken = randomID()
+	}
+	files, reference, err := renderNativeAssets(s, agent, path, executable, hostToken)
 	if err != nil {
 		return err
 	}
@@ -376,7 +390,7 @@ func changeNativeHooks(ctx context.Context, s Store, agent, action, path, execut
 		if r.Pending == "uninstall" {
 			return errors.New("native uninstall is incomplete; retry uninstall first")
 		}
-		next := nativeHookRecord{V: 1, Agent: agent, Path: path, Reference: reference, Executable: executable, Store: s.Dir, Revision: nativeAdapterRevision, Pending: "install", Files: map[string]nativeOwnedFile{}}
+		next := nativeHookRecord{V: 1, HostToken: hostToken, Agent: agent, Path: path, Reference: reference, Executable: executable, Store: s.Dir, Revision: nativeAdapterRevision, Pending: "install", Files: map[string]nativeOwnedFile{}}
 		next.ReferenceRequired = owned && (r.Pending == "" || r.ReferenceRequired)
 		for asset, data := range files {
 			next.Files[asset] = nativeOwnedFile{SHA: nativeDigest(data)}

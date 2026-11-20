@@ -310,6 +310,8 @@ not an iPhone/SSH/APNs or controller-control integration.
 
 Launch Codex normally with `codex`. A shared-daemon completion can reach
 the v2 inbox without a terminal binding on the verified 0.171.0 host.
+On 0.171.0, the status-line provider can receive a displayed-thread snapshot, but the TUI requests that resource through the shared app-server. It supplies no independently checkable TUI PID, birth or current pane. The UserPromptSubmit hook likewise receives no client message ID with which to recognize a pending mobile decision. Ordinary Codex sends and shared-daemon navigation remain unavailable. See the [status-line resource request](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/tui/src/statusline_provider.rs#L197-L222) and [native hook input](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/core/src/hook_runtime.rs#L714-L737).
+
 For supplementary embedded operation, `codex --no-daemon` and
 `codex --no-daemon resume` retain the existing pane-owner checks. Mobterm leaves launch commands and global settings
 under the operator's control. On Codex 0.170.0, specifying a profile also

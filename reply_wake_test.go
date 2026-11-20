@@ -189,7 +189,7 @@ func TestClaudePromptCycleStaysInOriginatingNamespace(t *testing.T) {
 		if _, _, err = parseEvent(ctx, s, "claude", input); err != nil {
 			t.Fatal(err)
 		}
-		cycle, _, _, err := claudeCycleEvent(ctx, s, session, "stop", "", "same-prompt")
+		cycle, _, _, err := claudeCycleEvent(ctx, s, session, "", "stop", "", "same-prompt")
 		if err != nil || cycle == "" {
 			t.Fatal("missing captured cycle", err)
 		}
@@ -200,7 +200,7 @@ func TestClaudePromptCycleStaysInOriginatingNamespace(t *testing.T) {
 	}
 	for i, config := range configs {
 		t.Setenv("CLAUDE_CONFIG_DIR", config)
-		cycle, stopped, _, err := claudeCycleEvent(ctx, s, session, "read", "", "same-prompt")
+		cycle, stopped, _, err := claudeCycleEvent(ctx, s, session, "", "read", "", "same-prompt")
 		if err != nil || !stopped || cycle != cycles[i] {
 			t.Fatal("other namespace displaced the source cycle", err)
 		}

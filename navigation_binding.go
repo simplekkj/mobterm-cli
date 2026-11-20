@@ -13,18 +13,19 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Only the originating interactive host may answer a fresh navigation probe.
+// The originating interactive host identifies the source of a fresh navigation probe.
 // The observed process and stable terminal are captured independently of reply
 // activation. Persisting this record alone grants no authority to navigate.
 type navigationOwner struct {
-	Agent  string `json:"agent"`
-	PID    int    `json:"pid"`
-	Birth  string `json:"birth"`
-	Target string `json:"target"`
+	Agent   string `json:"agent"`
+	PID     int    `json:"pid"`
+	Birth   string `json:"birth"`
+	Target  string `json:"target"`
+	Storage string `json:"storage,omitempty"`
 }
 
 func noticeNavigationOwner(a Activity, l Locator) *navigationOwner {
-	if a.Reminder == "" || l.OccupantID == "" || a.ChildWait != nil {
+	if a.Reminder == "" || l.OccupantID == "" || a.ChildWait != nil || a.NativeStorage != "" && a.storageID == "" {
 		return nil
 	}
 	switch a.Agent {
@@ -37,7 +38,7 @@ func noticeNavigationOwner(a Activity, l Locator) *navigationOwner {
 	if err != nil {
 		return nil
 	}
-	return &navigationOwner{a.Agent, pid, birth, nativeTargetIdentity("", l)}
+	return &navigationOwner{a.Agent, pid, birth, nativeTargetIdentity("", l), a.storageID}
 }
 
 type navigationChallenge struct {
@@ -52,6 +53,7 @@ type navigationObservation struct {
 	Logical string  `json:"logical"`
 	Birth   string  `json:"birth"`
 	Locator Locator `json:"locator"`
+	Storage string  `json:"storage,omitempty"`
 }
 
 const navigationRequestFile = "navigation-request.json"
@@ -130,12 +132,14 @@ func navigationTarget(ctx context.Context, s Store, pid int) (Locator, error) {
 // recorded TUI, even when a classic notification was launched below a shell.
 func observeNavigation(ctx context.Context, s Store, op string, in io.Reader) (any, error) {
 	var f struct {
-		V       int    `json:"v"`
-		Agent   string `json:"agent"`
-		Session string `json:"session_id"`
-		Nonce   string `json:"nonce"`
+		V         int    `json:"v"`
+		Agent     string `json:"agent"`
+		Session   string `json:"session_id"`
+		Storage   string `json:"storage,omitempty"`
+		ServerPID int    `json:"server_pid,omitempty"`
+		Nonce     string `json:"nonce"`
 	}
-	if err := readStrictFrame(ctx, in, &f, 4096); err != nil {
+	if err := readStrictFrame(ctx, in, &f, 8192); err != nil {
 		return nil, err
 	}
 	if f.V != 1 || !opaqueID.MatchString(f.Nonce) || f.Session == "" || len(f.Session) > 256 || (f.Agent != "claude" && f.Agent != "pi" && f.Agent != "opencode") {
@@ -154,6 +158,11 @@ func observeNavigation(ctx context.Context, s Store, op string, in io.Reader) (a
 	if err != nil {
 		return nil, err
 	}
+	storage := nativeStorageKey(f.Agent, f.Storage)
+	logical = sessionWithStorage(logical, storage)
+	if storage != "" && f.Agent == "opencode" && !localOpenCodeDatabase(ctx, pid, f.ServerPID, f.Storage) {
+		return nil, errNavigationBinding
+	}
 	var target Locator
 	if op == "navigation-observe" {
 		target, err = navigationTarget(ctx, s, pid)
@@ -171,10 +180,10 @@ func observeNavigation(ctx context.Context, s Store, op string, in io.Reader) (a
 		return nil, errNavigationBinding
 	}
 	if op == "navigation-observe" {
-		err = s.writeJSON(navigationObservationFile, navigationObservation{ch.Nonce, f.Agent, logical, birth, target})
+		err = s.writeJSON(navigationObservationFile, navigationObservation{ch.Nonce, f.Agent, logical, birth, target, storage})
 	} else {
 		var observation navigationObservation
-		if navigationRead(s, navigationObservationFile, &observation) != nil || observation.Nonce != ch.Nonce || observation.Agent != f.Agent || observation.Birth != birth || observation.Logical != logical || !navigationForeground(ctx, pid) {
+		if navigationRead(s, navigationObservationFile, &observation) != nil || observation.Nonce != ch.Nonce || observation.Agent != f.Agent || observation.Birth != birth || observation.Logical != logical || observation.Storage != storage || !navigationForeground(ctx, pid) {
 			return nil, errNavigationBinding
 		}
 		err = s.writeJSON(navigationConfirmedFile, ch.Nonce)
@@ -185,10 +194,28 @@ func observeNavigation(ctx context.Context, s Store, op string, in io.Reader) (a
 	return map[string]bool{"ok": true}, nil
 }
 
+func navigationCandidate(s Store, p Pair, d delivery) (navigationOwner, error) {
+	if d.Navigation == nil {
+		return navigationOwner{}, errNavigationBinding
+	}
+	owner := *d.Navigation
+	if owner.Storage == "" {
+		return owner, nil
+	}
+	host, err := currentNativeHost(s, owner.Storage, func(h nativeHost) bool {
+		return h.Agent == owner.Agent && audienceSession(p, h.Logical) == d.VisibleSession
+	})
+	if err != nil {
+		return navigationOwner{}, err
+	}
+	owner.PID, owner.Birth = host.PID, host.Birth
+	return owner, nil
+}
+
 func confirmNavigation(ctx context.Context, s Store, p Pair, d delivery, until int64) (Locator, error) {
-	owner := d.Navigation
-	if owner == nil {
-		return Locator{}, errNavigationBinding
+	owner, err := navigationCandidate(s, p, d)
+	if err != nil {
+		return Locator{}, err
 	}
 	if birth, err := processIdentity(owner.PID); err != nil || birth != owner.Birth || !navigationForeground(ctx, owner.PID) {
 		return Locator{}, errNavigationBinding
@@ -235,9 +262,13 @@ func confirmNavigation(ctx context.Context, s Store, p Pair, d delivery, until i
 			birth, e := processIdentity(owner.PID)
 			if err != nil || e != nil || birth != owner.Birth || ch.Until <= time.Now().Unix() || observation.Nonce != nonce || observation.Agent != owner.Agent || observation.Birth != birth ||
 				audienceSession(p, observation.Logical) != d.VisibleSession || observation.Locator.validate() != nil || observation.Locator.InstallationID != p.InstallationID ||
-				nativeTargetIdentity("", observation.Locator) != owner.Target || !navigationForeground(ctx, owner.PID) {
+				(owner.Storage == "" && nativeTargetIdentity("", observation.Locator) != owner.Target || owner.Storage != "" && observation.Storage != owner.Storage) || !navigationForeground(ctx, owner.PID) {
 				return Locator{}, errNavigationBinding
 			}
+			if current, e := navigationCandidate(s, p, d); e != nil || current != owner {
+				return Locator{}, errNavigationBinding
+			}
+
 			return observation.Locator, nil
 		}
 	}

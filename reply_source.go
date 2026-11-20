@@ -21,6 +21,7 @@ type replyBinding struct {
 }
 
 type replyHead struct {
+	LegacyScope string `json:"legacy_scope,omitempty"`
 	SessionHint string `json:"session_hint,omitempty"`
 	Run         string `json:"run,omitempty"`
 	Instance    string `json:"instance,omitempty"`
@@ -98,14 +99,10 @@ func replyIntentBinding(a Activity, l Locator, pair Pair, parentBirth string) *r
 	if a.Agent != "codex" && parentBirth == "" {
 		return nil
 	}
-	logical := a.LogicalSession
-	if logical == "" {
-		var err error
-		logical, err = logicalSession(a.Agent, a.Session)
-		if err != nil {
-			return nil
-		}
+	if err := a.identifySession(); err != nil {
+		return nil
 	}
+	logical := a.LogicalSession
 	return &replyBinding{Agent: a.Agent, SourceID: replySourceID(replyScope(l.InstallationID, logical), a.Run, a.Instance, a.Occurrence, parentBirth), Cursor: a.Occurrence, Origin: strings.TrimSuffix(pair.APIURL, "/"), Installation: pair.InstallationID}
 }
 func bindReply(ref *replyBinding, e Envelope) *replyBinding {
@@ -126,6 +123,8 @@ func claudeCompletionOccurrence(session, cycle string) string {
 }
 
 type replyRecord struct {
+	NativeStorage  string            `json:"native_storage,omitempty"`
+	NativeTurn     string            `json:"native_turn,omitempty"`
 	LogicalSession string            `json:"logical_session,omitempty"`
 	Renewable      bool              `json:"renewable,omitempty"`
 	VisibleSession string            `json:"visible_session,omitempty"`
@@ -202,7 +201,24 @@ func replyOpportunityReason(s Store, r replyRecord, waiting bool) string {
 	if waiting && !r.alive(true) {
 		return "reply_channel_unavailable"
 	}
+	if r.NativeStorage != "" && !nativeReplyOwnerCurrent(s, r) {
+		return "native_session_unavailable"
+	}
 	return replyCursorReason(s, r)
+}
+
+// A configuration-only source can no longer prove which physical file owns
+// it once this installation has observed a qualified cursor for that session.
+func (db *RunStore) retiredReplyScope(scope string) bool {
+	if db.ReplyHeads[scope].LegacyScope != "" {
+		return false
+	}
+	for _, head := range db.ReplyHeads {
+		if head.LegacyScope == scope {
+			return true
+		}
+	}
+	return false
 }
 
 func replyCursorReason(s Store, r replyRecord) string {
@@ -213,7 +229,8 @@ func replyCursorReason(s Store, r replyRecord) string {
 	if r.LogicalSession == "" {
 		return "source_unconfirmed"
 	}
-	if db.ReplyHeads[replyScope(r.Locator.InstallationID, r.LogicalSession)].Cursor != r.Cursor {
+	scope := replyScope(r.Locator.InstallationID, r.LogicalSession)
+	if db.ReplyHeads[scope].Cursor != r.Cursor || db.retiredReplyScope(scope) {
 		return "source_changed"
 	}
 	return ""
@@ -233,15 +250,16 @@ func nativeRequestCurrent(s Store, agent, session, id string, l Locator, logical
 		// Pre-upgrade records only attest the old pane-bound source. New
 		// observations of that native ID cannot safely be assigned to it.
 		for _, head := range db.ReplyHeads {
-			if head.SessionHint == digest(agent+"\x00"+session) && head.Request != id {
+			if head.SessionHint == digest(agent+"\x00"+session) && (head.LegacyScope != "" || head.Request != id) {
 				return false
 			}
 		}
 		h, ok := db.ReplyHeads[nativeTargetIdentity(agent+"\x00"+session, l)]
 		return !ok || h.Request == id
 	}
-	h, ok := db.ReplyHeads[replyScope(l.InstallationID, logical)]
-	return !ok || h.Request == id
+	scope := replyScope(l.InstallationID, logical)
+	h, ok := db.ReplyHeads[scope]
+	return (!ok || h.Request == id) && !db.retiredReplyScope(scope)
 }
 
 func registerReplyLocked(s Store, r replyRecord) error {
@@ -262,6 +280,13 @@ func replyCapacityLocked(s Store, registration *replyRecord) error {
 	if err != nil {
 		return err
 	}
+	var unscoped string
+	if registration != nil {
+		unscoped, err = logicalSession(registration.Agent, registration.Session)
+		if err != nil {
+			return err
+		}
+	}
 	count, active := 0, 0
 	now := time.Now().Unix()
 	for _, entry := range entries {
@@ -274,13 +299,17 @@ func replyCapacityLocked(s Store, registration *replyRecord) error {
 		if err != nil {
 			return err
 		}
-		// The old key included the pane. A repeated completion after upgrading
-		// cannot open a fresh slot for an already registered native run.
-		if registration != nil && old.LogicalSession == "" && old.Agent == registration.Agent &&
+		// A source registered before logical IDs or physical storage proof
+		// still owns its decision after the key format changes.
+		if registration != nil && old.Agent == registration.Agent &&
 			old.Session == registration.Session && old.Run == registration.Run &&
 			old.Instance == registration.Instance &&
 			old.Locator.InstallationID == registration.Locator.InstallationID {
-			return errors.New("reply_already_registered")
+			oldScope := old.LogicalSession
+			if oldScope == "" || oldScope == unscoped && registration.LogicalSession != unscoped ||
+				registration.LogicalSession == unscoped && oldScope == sessionWithStorage(unscoped, old.NativeStorage) && oldScope != unscoped {
+				return errors.New("reply_already_registered")
+			}
 		}
 		if old.Expires+86400 < now && !old.alive(false) {
 			if old.Renewable {

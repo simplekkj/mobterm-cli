@@ -85,7 +85,7 @@ func TestClaudeSubagentCannotReplaceRootCycle(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	parseActivity(ctx, s, "claude", []byte(`{"session_id":"root","hook_event_name":"UserPromptSubmit","agent_type":"custom-root"}`))
-	before, _, _ := claudeActivityCycle(ctx, s, "root", false)
+	before, _, _ := claudeActivityCycle(ctx, s, "root", "", false)
 	for _, name := range []string{"UserPromptSubmit", "Stop", "PreToolUse"} {
 		raw, _ := json.Marshal(map[string]string{"session_id": "root", "hook_event_name": name, "agent_id": "child", "tool_use_id": "tool", "tool_name": "Bash"})
 		a, _, err := parseActivity(ctx, s, "claude", raw)
@@ -93,7 +93,7 @@ func TestClaudeSubagentCannotReplaceRootCycle(t *testing.T) {
 			t.Fatal("child polluted root", name, a, err)
 		}
 	}
-	after, stopped, err := claudeActivityCycle(ctx, s, "root", false)
+	after, stopped, err := claudeActivityCycle(ctx, s, "root", "", false)
 	if err != nil || before == "" || after != before || stopped {
 		t.Fatal("child changed root cycle", before, after, stopped, err)
 	}
@@ -466,7 +466,7 @@ func TestClaudeChildQuestionKeepsNativeConfirmation(t *testing.T) {
 	ctx, waitSenders := withInteractionSenders(ctx)
 	defer waitSenders()
 	parseActivity(ctx, s, "claude", []byte(`{"session_id":"root","hook_event_name":"UserPromptSubmit"}`))
-	rootCycle, _, _ := claudeActivityCycle(ctx, s, "root", false)
+	rootCycle, _, _ := claudeActivityCycle(ctx, s, "root", "", false)
 	raw := []byte(`{"session_id":"root","agent_id":"child","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_use_id":"call","tool_input":{"questions":[{"question":"Choice?","header":"Choice","options":[{"label":"A"},{"label":"B"}]}]}}`)
 	done := make(chan error, 1)
 	go func() {
@@ -516,7 +516,7 @@ func TestClaudeChildQuestionKeepsNativeConfirmation(t *testing.T) {
 			t.Fatal("child created completion reminder")
 		}
 	}
-	cycle, stopped, err := claudeActivityCycle(ctx, s, "root", false)
+	cycle, stopped, err := claudeActivityCycle(ctx, s, "root", "", false)
 	if err != nil || cycle != rootCycle || stopped {
 		t.Fatal("child question modified root cycle", err)
 	}

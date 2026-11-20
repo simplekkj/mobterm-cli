@@ -176,7 +176,7 @@ A historical read does not grant an approval, answer or navigation right.
 ## Latest-source ordinary replies
 
 Ordinary replies require an explicit local activation for the Pair/Agent and
-current cloud policy generation. Only the original live native adapter receives
+current cloud policy generation. Only the verified current live native adapter receives
 the decision through the bounded helper. The native runtime version and source
 are checked separately from terminal liveness, discovery and cached message
 content. The adapter never sends reply text to an argv, shell, PTY, terminal
@@ -189,4 +189,7 @@ A Codex completion produced by a shared daemon may have trustworthy thread and t
 
 ## Navigation on a visible notice
 
-A signed SSH `reply latest` request names one Pair, event and envelope digest. Only its live native owner, verified as the foreground process-group leader, can return the current strong locator. A four-second nonce in the private store is addressed to the recorded host PID. A real child of that process must sample the native session, verify pane ancestry and controlling session, then confirm the same session after the sample. The requester checks the owner birth, foreground process group, Pair-scoped logical session and visible head again. The receipt is valid for at most five seconds. The marker contains no message body or reply decision. A changed logical session, stale host, different strong terminal, expired challenge or ambiguous default Codex session leaves navigation unavailable.
+A signed SSH `reply latest` request names one Pair, event and envelope digest. Only its live native owner, verified as the foreground process-group leader, can return the current strong locator. A four-second nonce in the private store is addressed to the unique registered PID for the original session and physical storage. A real child of that process must sample the native session, verify pane ancestry and controlling session, then confirm the same session after the sample. The requester checks the owner birth, foreground process group, Pair-scoped logical session and visible head again. The receipt is valid for at most five seconds. The marker contains no message body or reply decision. A changed logical session, stale or ambiguous host, mismatched physical storage, expired challenge or ambiguous default Codex session leaves navigation unavailable.
+
+
+Managed adapter revision 6 installs a private per-Agent random credential in its owned asset and local ownership record. Session activation registers through a direct child of the live host. The CLI verifies the installation, credential, owned asset fingerprints, configuration namespace and kernel process birth. Local host state and credentials stay on the paired machine. The trust boundary includes that machine’s user account and installed Agent plugins. A caller that only knows the session ID, storage path and turn cannot register. File metadata identifies the storage without reading the transcript or database. A fresh navigation challenge verifies the current session on both sides of strong terminal sampling. Reply rebind additionally requires the current completed turn, fresh policy, an unclaimed source and a one-time wake marker.

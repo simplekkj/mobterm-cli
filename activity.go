@@ -85,6 +85,9 @@ type PendingRequest struct {
 }
 
 type Activity struct {
+	storageID      string
+	legacySession  string
+	NativeStorage  string `json:"-"`
 	LogicalSession string
 	CodexRuntime   *codexRuntimeSource
 	Body           assistantBody `json:"-"`
@@ -133,16 +136,17 @@ type StoredRun struct {
 	Approval        *ApprovalHint             `json:"approval,omitempty"`
 }
 type RunIntent struct {
-	Navigation *navigationOwner `json:"navigation,omitempty"`
-	Reply      *replyBinding    `json:"reply,omitempty"`
-	Body       *bodyRef         `json:"body,omitempty"`
-	PairID     string           `json:"pair_id"`
-	Key        string           `json:"key"`
-	Occurrence string           `json:"occurrence"`
-	Kind       string           `json:"kind"`
-	Payload    RunPayload       `json:"payload"`
-	ExpiresAt  int64            `json:"expires_at"`
-	Envelope   *Envelope        `json:"envelope,omitempty"`
+	LegacyAudience string           `json:"legacy_audience,omitempty"`
+	Navigation     *navigationOwner `json:"navigation,omitempty"`
+	Reply          *replyBinding    `json:"reply,omitempty"`
+	Body           *bodyRef         `json:"body,omitempty"`
+	PairID         string           `json:"pair_id"`
+	Key            string           `json:"key"`
+	Occurrence     string           `json:"occurrence"`
+	Kind           string           `json:"kind"`
+	Payload        RunPayload       `json:"payload"`
+	ExpiresAt      int64            `json:"expires_at"`
+	Envelope       *Envelope        `json:"envelope,omitempty"`
 }
 type RunStore struct {
 	LastSourceOrder int64                    `json:"last_source_order,omitempty"`
@@ -285,11 +289,8 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 	if err != nil {
 		return "", StoredRun{}, false, err
 	}
-	if a.LogicalSession == "" {
-		a.LogicalSession, err = logicalSession(a.Agent, a.Session)
-		if err != nil {
-			return "", StoredRun{}, false, err
-		}
+	if err = a.identifySession(); err != nil {
+		return "", StoredRun{}, false, err
 	}
 	scope := a.LogicalSession
 	if a.ChildWait != nil {
@@ -463,7 +464,12 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 	if a.ClaudeStop != "" {
 		stoppedBodies = s.claudeBodies(a, l)
 	}
-	advanceReplyHead(&db, a, replyScope(l.InstallationID, r.LogicalSession), now)
+	replyTarget := replyScope(l.InstallationID, r.LogicalSession)
+	if advanceReplyHead(&db, a, replyTarget, now) && a.legacySession != "" {
+		head := db.ReplyHeads[replyTarget]
+		head.LegacyScope = replyScope(l.InstallationID, a.legacySession)
+		db.ReplyHeads[replyTarget] = head
+	}
 	navigation := noticeNavigationOwner(a, l)
 	parentBirth := ""
 	if a.Reminder == "turn_completed" && a.Agent != "codex" {
@@ -526,7 +532,11 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 			// Record the original run identity even when negotiation later selects v1.
 			body.Source = digest(strings.Join([]string{key, a.Occurrence, stream, fmt.Sprint(r.Revision)}, "\x00"))
 		}
-		db.Intents[ik] = RunIntent{Navigation: navigation, Reply: replyIntentBinding(a, l, pair, parentBirth), Body: body, PairID: pid, Key: key, Occurrence: a.Occurrence, Kind: kind, Payload: payload, ExpiresAt: now + 3600}
+		legacyAudience := ""
+		if kind != "state" && a.legacySession != "" {
+			legacyAudience = audienceSession(pair, a.legacySession)
+		}
+		db.Intents[ik] = RunIntent{LegacyAudience: legacyAudience, Navigation: navigation, Reply: replyIntentBinding(a, l, pair, parentBirth), Body: body, PairID: pid, Key: key, Occurrence: a.Occurrence, Kind: kind, Payload: payload, ExpiresAt: now + 3600}
 		if kind != "state" {
 			delete(db.Intents, digest(pid+"\x00state\x00"+key))
 		}
@@ -647,6 +657,12 @@ func encodeRunIntent(ctx context.Context, s Store, key string, intent RunIntent,
 	raw, err := decode64(p.EncryptionKey, 32)
 	if err != nil {
 		return intent, err
+	}
+	if intent.Kind != "state" && current.LegacyAudience != "" && intent.Payload.Source != nil {
+		source := *intent.Payload.Source
+		source.Retires = current.LegacyAudience
+		intent.Payload.Source = &source
+		intent.Payload = fitRunDisplayBudget(intent.Payload)
 	}
 	e, err := sealRun(raw, Envelope{V: 2, PairID: p.PairID, EventID: digest(intent.Occurrence + "\x00" + p.PairID), Kind: intent.Kind, StreamID: intent.Payload.StreamID, Revision: intent.Payload.Revision, CapabilityGeneration: c.CapabilityGeneration, ExpiresAt: intent.ExpiresAt}, intent.Payload, nil)
 	if err != nil {
