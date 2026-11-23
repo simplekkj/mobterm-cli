@@ -25,7 +25,7 @@ func flags(name string, args []string, defs func(*flag.FlagSet)) (*flag.FlagSet,
 	return f, f.Parse(args)
 }
 func installationStatus(id string) map[string]any {
-	return map[string]any{"v": 1, "installation_id": id, "version": version, "commit": commit, "interaction_protocols": []int{1}, "message_body_protocols": []int{1}, "reply_protocols": []int{1}, "read_only_target_protocols": []int{1}}
+	return map[string]any{"v": 1, "installation_id": id, "version": version, "commit": commit, "interaction_protocols": []int{1}, "message_body_protocols": []int{1}, "reply_protocols": []int{1, 2}, "reply_modes": []string{appendMode}, "read_only_target_protocols": []int{1}}
 }
 
 func status(ctx context.Context, s Store, a API, pairID string, installationOnly bool) (result map[string]any, err error) {

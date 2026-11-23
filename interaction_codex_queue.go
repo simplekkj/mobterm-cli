@@ -180,6 +180,12 @@ func codexConnect(ctx context.Context) (*codexRPC, error) {
 		}
 		home = filepath.Join(home, ".codex")
 	}
+	return dialCodex(ctx, home, nil)
+}
+
+// Callback connections prove ancestry. A later SSH exec has only the immutable
+// peer identity captured by that callback and must prove it on the new stream.
+func dialCodex(ctx context.Context, home string, source *codexRuntimeSource) (*codexRPC, error) {
 	physical, err := codexVerifiedSocket(home)
 	if err != nil {
 		return nil, err
@@ -192,12 +198,19 @@ func codexConnect(ctx context.Context) (*codexRPC, error) {
 	conn := connection.(*net.UnixConn)
 	fail := func(e error) (*codexRPC, error) { _ = conn.Close(); return nil, e }
 	pid, uid, err := codexSocketPeer(conn)
-	if err != nil || uid != os.Geteuid() || !codexIsAncestor(pid) {
+	if err != nil || uid != os.Geteuid() {
 		return fail(errors.New("codex_daemon_owner_mismatch"))
 	}
 	birth, err := processIdentity(pid)
 	if err != nil {
 		return fail(err)
+	}
+	if source == nil {
+		if !codexIsAncestor(pid) {
+			return fail(errors.New("codex_daemon_owner_mismatch"))
+		}
+	} else if source.Socket != physical || source.UID != uid || source.PeerPID != pid || source.PeerBirth != birth || !codexDaemonImage(ctx, pid) {
+		return fail(errors.New("codex_daemon_owner_mismatch"))
 	}
 	// Recheck alias and private socket permissions after connect; peer credentials bind the actual stream.
 	again, err := codexVerifiedSocket(home)
@@ -216,6 +229,7 @@ func codexConnect(ctx context.Context) (*codexRPC, error) {
 	}
 	var initialized struct {
 		UserAgent string `json:"userAgent"`
+		CodexHome string `json:"codexHome"`
 	}
 	if json.Unmarshal(result, &initialized) != nil {
 		return fail(errors.New("codex_agent_version_unverified"))
@@ -226,6 +240,19 @@ func codexConnect(ctx context.Context) (*codexRPC, error) {
 		return fail(errors.New("codex_agent_version_unverified"))
 	}
 	client.version = parts[0]
+	if filepath.IsAbs(initialized.CodexHome) {
+		client.home, _ = filepath.EvalSymlinks(initialized.CodexHome)
+	}
+	if source != nil {
+		if client.home == "" || client.home != source.Home {
+			return fail(errors.New("codex_home_mismatch"))
+		}
+		if !runtimeAtLeast(map[string]stableVersion{"codex": {0, 171, 0}}, "codex", client.version) {
+			return fail(errors.New("codex_append_version_unsupported"))
+		}
+		client.frameLimit = 2 << 20
+		client.remainingRead = 4 << 20
+	}
 	if err = client.write(1, []byte(`{"method":"initialized"}`)); err != nil {
 		return fail(err)
 	}

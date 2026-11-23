@@ -20,6 +20,10 @@ const replyPurpose = "mobterm/reply/1"
 const replyTextLimit = 16 << 10
 
 type replyFrame struct {
+	Mode               string `json:"mode,omitempty"`
+	Lease              string `json:"lease,omitempty"`
+	ActivationRevision int64  `json:"activation_revision,omitempty"`
+	ClientID           string `json:"client_message_id,omitempty"`
 	bodyIdentity
 	SourceID         string `json:"source_id,omitempty"`
 	Cursor           string `json:"cursor,omitempty"`
@@ -34,11 +38,14 @@ type replyFrame struct {
 }
 
 func replyMAC(key []byte, op string, f replyFrame) (string, error) {
+	if f.V == 2 {
+		return replyProof(key, f.Pair, []string{appendPurpose, "2", f.Mode, op, f.Origin, f.Installation, f.Pair, f.Event, f.Envelope, f.Nonce, f.SourceID, f.Lease, f.Agent, f.Action, f.ResponseDigest, f.DecisionID, f.ClientID, strconv.FormatInt(f.ActivationRevision, 10), strconv.FormatInt(f.PolicyGeneration, 10), strconv.FormatInt(f.Expires, 10)})
+	}
 	return replyProof(key, f.Pair, []string{replyPurpose, op, f.Origin, f.Installation, f.Pair, f.Event, f.Envelope, f.Nonce, f.SourceID, f.Cursor, f.Agent, f.Action, f.ResponseDigest, f.DecisionID, strconv.FormatInt(f.PolicyGeneration, 10), strconv.FormatInt(f.Expires, 10)})
 }
 
 func replyProof(key []byte, pair string, fields []string) (string, error) {
-	k, err := hkdf.Key(sha256.New, key, []byte(pair), replyPurpose, 32)
+	k, err := hkdf.Key(sha256.New, key, []byte(pair), fields[0], 32)
 	if err != nil {
 		return "", err
 	}
@@ -113,6 +120,7 @@ func replyPair(s Store, id string) (Pair, error) {
 }
 
 type replyConfigFrame struct {
+	Mode         string `json:"mode,omitempty"`
 	V            int    `json:"v"`
 	Agent        string `json:"agent"`
 	Pair         string `json:"pair_id"`
@@ -131,19 +139,24 @@ func (f replyConfigFrame) mac(key []byte) (string, error) {
 	if f.Expected == nil || f.Enabled == nil {
 		return "", errors.New("invalid_reply_configuration")
 	}
-	return replyProof(key, f.Pair, []string{replyPurpose, "configure", f.Origin, f.Installation, f.Pair, f.Agent, strconv.FormatBool(*f.Enabled), strconv.Itoa(f.Revision), strconv.FormatInt(f.Generation, 10), strconv.FormatInt(*f.Expected, 10), f.Nonce, strconv.FormatInt(f.Expires, 10)})
+	prefix := []string{replyPurpose, "configure"}
+	if f.V == 2 {
+		prefix = []string{appendPurpose, "2", f.Mode, "configure"}
+	}
+	return replyProof(key, f.Pair, append(prefix, f.Origin, f.Installation, f.Pair, f.Agent, strconv.FormatBool(*f.Enabled), strconv.Itoa(f.Revision), strconv.FormatInt(f.Generation, 10), strconv.FormatInt(*f.Expected, 10), f.Nonce, strconv.FormatInt(f.Expires, 10)))
 }
 
 func replyConfiguration(ctx context.Context, s Store, api API, op string, in io.Reader) (any, error) {
 	if op == "configuration" {
 		var f struct {
+			Mode string `json:"mode,omitempty"`
 			V    int    `json:"v"`
 			Pair string `json:"pair_id"`
 		}
 		if err := readStrictFrame(ctx, in, &f, 128<<10); err != nil {
 			return nil, err
 		}
-		if f.V != 1 || !opaqueID.MatchString(f.Pair) {
+		if !(f.V == 1 && f.Mode == "" || f.V == 2 && f.Mode == appendMode) || !opaqueID.MatchString(f.Pair) {
 			return nil, errors.New("invalid_reply_configuration")
 		}
 		unlock, err := s.lockBodyRead(ctx)
@@ -159,9 +172,15 @@ func replyConfiguration(ctx context.Context, s Store, api API, op string, in io.
 		if err != nil {
 			return nil, err
 		}
+		if f.V == 2 {
+			return appendConfiguration(s, p, m)
+		}
 		values := map[string]int64{}
 		revisions := map[string]int64{}
 		for agent, a := range m[f.Pair] {
+			if agent == appendScope || agent == "codex" {
+				continue
+			}
 			revisions[agent] = a.Revision
 			if a.Token != "" {
 				values[agent] = a.Generation
@@ -173,7 +192,8 @@ func replyConfiguration(ctx context.Context, s Store, api API, op string, in io.
 	if err := readStrictFrame(ctx, in, &f, 128<<10); err != nil {
 		return nil, err
 	}
-	if f.V != 1 || !opaqueID.MatchString(f.Pair) || f.Enabled == nil || f.Revision != 1 || f.Generation < 1 || !interactionAgent(f.Agent) || f.Agent == "codex" && *f.Enabled {
+	appendConfig := f.V == 2 && f.Mode == appendMode && f.Agent == "codex"
+	if !(f.V == 1 && f.Mode == "" || appendConfig) || !opaqueID.MatchString(f.Pair) || f.Enabled == nil || f.Revision != 1 || f.Generation < 1 || !interactionAgent(f.Agent) || !appendConfig && f.Agent == "codex" && *f.Enabled {
 		return nil, errors.New("invalid_reply_configuration")
 	}
 	p, err := replyPair(s, f.Pair)
@@ -217,7 +237,11 @@ func replyConfiguration(ctx context.Context, s Store, api API, op string, in io.
 	if m[f.Pair] == nil {
 		m[f.Pair] = map[string]replyActivation{}
 	}
-	a := m[f.Pair][f.Agent]
+	scope := f.Agent
+	if appendConfig {
+		scope = appendScope
+	}
+	a := m[f.Pair][scope]
 	if a.Generation > f.Generation {
 		return nil, errors.New("reply_policy_changed")
 	}
@@ -231,11 +255,15 @@ func replyConfiguration(ctx context.Context, s Store, api API, op string, in io.
 	}
 	a.Revision++
 	a.Generation = f.Generation
-	m[f.Pair][f.Agent] = a
+	m[f.Pair][scope] = a
 	if err = s.writeJSON("reply-activations-v1.json", m); err != nil {
 		return nil, err
 	}
-	return map[string]any{"v": 1, "pair_id": p.PairID, "installation_id": p.InstallationID, "agent": f.Agent, "activation_revision": 1, "policy_generation": f.Generation, "enabled": *f.Enabled, "api_url": f.Origin, "nonce": f.Nonce, "configuration_revision": a.Revision, "configuration_saved": true, "loaded": "unknown"}, nil
+	result := map[string]any{"v": f.V, "pair_id": p.PairID, "installation_id": p.InstallationID, "agent": f.Agent, "activation_revision": 1, "policy_generation": f.Generation, "enabled": *f.Enabled, "api_url": f.Origin, "nonce": f.Nonce, "configuration_revision": a.Revision, "configuration_saved": true, "loaded": "unknown"}
+	if appendConfig {
+		result["mode"] = appendMode
+	}
+	return result, nil
 }
 
 func sameReplyDecision(a, b replyFrame) bool {
@@ -244,7 +272,7 @@ func sameReplyDecision(a, b replyFrame) bool {
 
 func verifyReply(op string, f replyFrame, p Pair) error {
 	now := time.Now().Unix()
-	if (RetirePacket{f.V, f.Origin, f.Pair, f.Installation}).validate() != nil || f.Origin != strings.TrimSuffix(p.APIURL, "/") || strings.HasSuffix(f.Origin, "/") || f.Installation != p.InstallationID || f.Pair != p.PairID || !opaqueID.MatchString(f.Event) || !bodyHashPattern.MatchString(f.Envelope) || !opaqueID.MatchString(f.Nonce) || f.Expires <= now || f.Expires > now+60 {
+	if f.Mode != "" || f.Lease != "" || f.ClientID != "" || f.ActivationRevision != 0 || (RetirePacket{f.V, f.Origin, f.Pair, f.Installation}).validate() != nil || f.Origin != strings.TrimSuffix(p.APIURL, "/") || strings.HasSuffix(f.Origin, "/") || f.Installation != p.InstallationID || f.Pair != p.PairID || !opaqueID.MatchString(f.Event) || !bodyHashPattern.MatchString(f.Envelope) || !opaqueID.MatchString(f.Nonce) || f.Expires <= now || f.Expires > now+60 {
 		return errors.New("invalid_reply_identity")
 	}
 	if op == "inspect" || op == "latest" {
@@ -271,6 +299,13 @@ func verifyReply(op string, f replyFrame, p Pair) error {
 }
 
 type replyResult struct {
+	Mode               string `json:"mode,omitempty"`
+	Lease              string `json:"lease,omitempty"`
+	ActivationRevision int64  `json:"activation_revision,omitempty"`
+	ClientID           string `json:"client_message_id,omitempty"`
+	QueueID            string `json:"queue_id,omitempty"`
+	AckConfirmed       bool   `json:"ack_confirmed,omitempty"`
+	ThreadState        string `json:"thread_state,omitempty"`
 	bodyIdentity
 	Locator            *Locator `json:"locator,omitempty"`
 	SourceID           string   `json:"source_id,omitempty"`
@@ -425,6 +460,9 @@ func replyCommand(ctx context.Context, s Store, api API, op string, in io.Reader
 	p, err := replyPair(s, f.Pair)
 	if err != nil {
 		return nil, err
+	}
+	if f.V == 2 {
+		return appendCommand(ctx, s, api, p, op, f)
 	}
 	if err = verifyReply(op, f, p); err != nil {
 		return nil, err
@@ -588,6 +626,13 @@ func replyCommand(ctx context.Context, s Store, api API, op string, in io.Reader
 		return nil, errors.New("reply_policy_changed")
 	}
 	if err = unusedReplyDecision(s, f.DecisionID, r.SourceID); err != nil {
+		return nil, err
+	}
+	appendDB, err := loadAppendStore(s)
+	if err != nil {
+		return nil, err
+	}
+	if err = appendDB.unusedDecision(f.DecisionID, ""); err != nil {
 		return nil, err
 	}
 	r.State = "decision_recorded"

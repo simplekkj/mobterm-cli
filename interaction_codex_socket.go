@@ -20,12 +20,15 @@ import (
 // Codex protocol: masked outbound text, uncompressed final inbound text/control.
 // It opens no listener, follows no redirects and never retries a native mutation.
 type codexRPC struct {
-	conn      *net.UnixConn
-	reader    *bufio.Reader
-	next      int
-	peerPID   int
-	peerBirth string
-	version   string
+	conn          *net.UnixConn
+	reader        *bufio.Reader
+	next          int
+	peerPID       int
+	peerBirth     string
+	version       string
+	home          string
+	frameLimit    int
+	remainingRead int
 }
 
 func codexHandshake(ctx context.Context, c *net.UnixConn) (*codexRPC, error) {
@@ -77,8 +80,12 @@ func codexHandshake(ctx context.Context, c *net.UnixConn) (*codexRPC, error) {
 	return &codexRPC{conn: c, reader: reader}, nil
 }
 func (c *codexRPC) write(op byte, payload []byte) error {
-	if len(payload) > interactionFrameLimit {
-		return errors.New("codex_rpc_frame_too_large")
+	_, err := c.writeFrame(op, payload)
+	return err
+}
+func (c *codexRPC) writeFrame(op byte, payload []byte) (bool, error) {
+	if len(payload) > c.limit() {
+		return false, errors.New("codex_rpc_frame_too_large")
 	}
 	header := []byte{0x80 | op}
 	n := len(payload)
@@ -92,24 +99,33 @@ func (c *codexRPC) write(op byte, payload []byte) error {
 	}
 	mask := make([]byte, 4)
 	if _, err := rand.Read(mask); err != nil {
-		return err
+		return false, err
 	}
 	header = append(header, mask...)
 	for i, b := range payload {
 		header = append(header, b^mask[i%4])
 	}
+	started := false
 	for len(header) > 0 {
 		n, err := c.conn.Write(header)
+		started = started || n > 0
 		if err != nil {
-			return err
+			return started, err
 		}
 		if n == 0 {
-			return io.ErrShortWrite
+			return started, io.ErrShortWrite
 		}
 		header = header[n:]
 	}
-	return nil
+	return true, nil
 }
+func (c *codexRPC) limit() int {
+	if c.frameLimit > 0 {
+		return c.frameLimit
+	}
+	return interactionFrameLimit
+}
+
 func (c *codexRPC) read() ([]byte, error) {
 	for skipped := 0; skipped < 32; skipped++ {
 		var h [2]byte
@@ -134,8 +150,14 @@ func (c *codexRPC) read() ([]byte, error) {
 			n = binary.BigEndian.Uint64(b[:])
 		}
 		op := h[0] & 15
-		if n > interactionFrameLimit || (op >= 8 && n > 125) {
+		if n > uint64(c.limit()) || (op >= 8 && n > 125) {
 			return nil, errors.New("codex_rpc_frame_too_large")
+		}
+		if c.frameLimit > 0 {
+			if int(n) > c.remainingRead {
+				return nil, errors.New("codex_rpc_read_budget")
+			}
+			c.remainingRead -= int(n)
 		}
 		payload := make([]byte, int(n))
 		if _, err := io.ReadFull(c.reader, payload); err != nil {
@@ -169,7 +191,10 @@ func (c *codexRPC) request(ctx context.Context, method string, params any) (json
 	if err != nil {
 		return nil, err
 	}
-	if err = c.write(1, raw); err != nil {
+	if started, err := c.writeFrame(1, raw); err != nil {
+		if !started && method == "thread/queue/add" {
+			return nil, errCodexNoRequestBytes
+		}
 		return nil, err
 	}
 	for ignored := 0; ignored < 64; ignored++ {
@@ -191,8 +216,12 @@ func (c *codexRPC) request(ctx context.Context, method string, params any) (json
 		if _, present := object["method"]; present {
 			return nil, errors.New("codex_rpc_unexpected_request")
 		}
-		if _, present := object["error"]; present {
-			return nil, errors.New("codex_rpc_rejected")
+		if rawError, present := object["error"]; present {
+			var rejection codexRejection
+			if object["result"] != nil || json.Unmarshal(rawError, &rejection) != nil {
+				return nil, errors.New("codex_rpc_invalid_response")
+			}
+			return nil, &rejection
 		}
 		result, ok := object["result"]
 		if !ok {
@@ -202,3 +231,14 @@ func (c *codexRPC) request(ctx context.Context, method string, params any) (json
 	}
 	return nil, errors.New("codex_rpc_notification_limit")
 }
+
+// Raw native messages can contain private paths or input. Only stable public
+// reason codes may leave the adapter.
+var errCodexNoRequestBytes = errors.New("codex_rpc_not_written")
+
+type codexRejection struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+func (*codexRejection) Error() string { return "codex_rpc_rejected" }

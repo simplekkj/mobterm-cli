@@ -19,7 +19,7 @@ repositories. See [LICENSE](LICENSE) and [THIRD_PARTY.md](THIRD_PARTY.md).
 - **Protocol and operation:** [v1 setup, notifications and targets](docs/protocol-v1.md),
   [v2 state/inbox/badge and legacy approval wire v3](docs/protocol-v2.md),
   [independent interaction wire v1](docs/interaction-v1.md),
-  [native interaction support](docs/native-interactions.md),
+  [native interaction support](docs/native-interactions.md), [Codex conversation append](docs/reply-v2.md),
   [notification compatibility and fixed samples](docs/compatibility.md), and
   [security](docs/security.md). These are separate contracts, not a system-wide
   version upgrade; v1 AAD and compatibility remain supported.

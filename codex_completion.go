@@ -55,8 +55,16 @@ func publishUnboundCodexCompletion(ctx context.Context, s Store, api API, instal
 	// thread and turn. Distinguish the sources before store/outbox deduplication.
 	activity.Instance = digest(home + "\x00" + activity.Session)
 	activity.Occurrence = digest(home + "\x00" + activity.Occurrence)
+	// Normalize only the append collision domain. Preserve the notification's
+	// existing logical identity even when its config entry used a symlink.
+	realHome, homeErr := filepath.EvalSymlinks(home)
+	var completedAt int64
+	if homeErr == nil && realHome == client.home {
+		activity.CodexRuntime.Home = realHome
+		activity.appendCreated = &completedAt
+	}
 	confirm := func() error {
-		if err := client.confirmCompletion(ctx, activity.Session, activity.Run); err != nil {
+		if err := client.confirmCompletionTime(ctx, activity.Session, activity.Run, &completedAt); err != nil {
 			return err
 		}
 		birth, err := processIdentity(client.peerPID)
@@ -92,6 +100,10 @@ func registerCodexCompletion(ctx context.Context, s Store, activity Activity, co
 }
 
 func (c *codexRPC) confirmCompletion(ctx context.Context, thread, turn string) error {
+	return c.confirmCompletionTime(ctx, thread, turn, nil)
+}
+
+func (c *codexRPC) confirmCompletionTime(ctx context.Context, thread, turn string, completedAt *int64) error {
 	result, err := c.request(ctx, "thread/read", map[string]any{"threadId": thread, "includeTurns": false})
 	if err != nil {
 		return err
@@ -121,12 +133,16 @@ func (c *codexRPC) confirmCompletion(ctx context.Context, thread, turn string) e
 	}
 	var latest struct {
 		Data []struct {
-			ID     string `json:"id"`
-			Status string `json:"status"`
+			ID          string `json:"id"`
+			Status      string `json:"status"`
+			CompletedAt int64  `json:"completedAt"`
 		} `json:"data"`
 	}
 	if json.Unmarshal(result, &latest) != nil || len(latest.Data) != 1 || latest.Data[0].ID != turn || latest.Data[0].Status != "completed" {
 		return errors.New("codex_completion_turn_unconfirmed")
+	}
+	if completedAt != nil {
+		*completedAt = latest.Data[0].CompletedAt
 	}
 	return nil
 }

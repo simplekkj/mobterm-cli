@@ -15,6 +15,46 @@ and [fixed compatibility samples](#mobterm-cli-compatibility--round-1-v10--2026-
 The earlier records below retain their original scope; they are not rerun by
 documentation maintenance.
 
+## 2026-11-23 — Codex notification conversation append, round 1 v1.0
+
+The CLI started from clean `main` at `9ba9255e88c3435bc096c4d114754bb0a6ade9ae`. The Go protocol vector covers inspect, send, status and configure and uses the same expected proofs as the Swift tests. A storage fixture covers same-event retry, independent homes, changed daemon birth, seven-day expiry, replay after collection and malformed/unknown stores. A synthetic two-Pair TLS grant fixture exercises new completion outbox fan-out, old-grant denial, independent local activation, invalidated old lease, concurrent claim and restart readback of retained ACK evidence. These fixtures do not exercise an iPhone or APNs.
+
+A locally built Intel macOS CLI reported reply protocols 1 and 2 and mode `thread_append` at `status --installation-json --read-only`. Framed `reply configuration` for active fixture pairing returned the original v1 map and the v2 default-off Codex scope with async disabled. The [delivery report](https://app.notion.com/p/421cede2082381468c9dd4eb85c6514d) records the exact commits, final checks, native runtime coverage and outstanding environment boundaries.
+
+On macOS 15.8.1 Intel, real tmux 3.7c and Herdr 0.9.5 (protocol 22) each hosted two default shared Codex 0.171.0 TUIs. Two notifications per multiplexer reached the local Worker. After a later turn in the first thread and /new in the second pane, the iOS 26.3.1 App authenticated both envelopes and obtained matched queue ACKs through trusted SSH. The original threads contained the corresponding client IDs and literal messages in all four cases. One tmux target was unloaded when the App queried; it still held the exact queue item and consumed it only after the test operator explicitly resumed it. The local worker used application grant logic and local D1 with intercepted APNs outbound traffic.
+
+The native lifecycle fixture runs the pinned, signed 0.171.0 executable against a temporary store and loopback model. A cold unloaded thread stayed unloaded after add. Explicit resume admitted the original client ID and literal input. Normal and cold resume of the Interrupted thread both left its queued items pending. The local model produced an actual command approval and a plan-mode Question. Queueing the text “同意” preserved each pending native request. The fixture then separately denied the approval or answered the Question and observed admission. The full queue contained 100 submissions and refused one more. Archived and deleted threads both refused add.
+
+```sh
+python3 scripts/test-codex-shared-daemon.py tmux --queue-lifecycle --codex "$CODEX" --cli ./mobterm-cli
+```
+
+For the cross-repository product test, build this CLI under its final name and build the sibling API with its locked dependencies and `npm run build`. The script starts an ephemeral loopback SSH server, TLS origin, migrated local D1/Worker, and two no-argument TUIs in one profile. The harness intercepts outbound APNs. Use a fresh disposable simulator because the test trusts a run-owned TLS root and uses Keychain. Run one multiplexer at a time.
+
+```sh
+mkdir -p ../mobterm/build/codex-thread-append-r1
+manifest=../mobterm/build/codex-thread-append-r1/live.json
+python3 scripts/test-codex-shared-daemon.py tmux --app-bridge "$manifest" --local-api ../mobterm-api --codex "$CODEX" --cli ./mobterm-cli
+```
+
+After the fixture prints READY, import the `tls_root` from the private manifest using `xcrun simctl keychain "$SIM" add-root-cert "$CERT"`. Run the App's `mobterm` scheme with `-only-testing:MobtermTests/SSHCommandStreamTests/testCodexThreadAppendFromTwoAuthenticatedDeliveriesOverSSH` on that simulator. On success, touch `live.done` beside the manifest and wait for both native checks. The fixture explicitly resumes an unloaded synthetic thread only after observing its pending queue item. It matches each native user message by thread, client ID and original bytes. Repeat with `herdr --herdr "$HERDR"` instead of `tmux`. Interrupt the fixture on test failure and delete only the disposable simulator after preserving the xcresult. Keep the manifest private until the fixture cleans it up.
+
+### Go integration and adjacent hosts
+
+On Intel macOS (Darwin 24.6.0), with Go 1.27.1 and tmux 3.7c, both full suites required tmux using `MOBTERM_REQUIRE_TMUX=1`. A preliminary default-timeout run stopped after 600.952 seconds while an existing physical-session test had been running for three seconds. It recorded no preceding assertion failure. The integration runs used the established 45-minute package timeout and ran serially.
+
+| Command | Result |
+| --- | --- |
+| `go test -timeout 45m -json -count=1 ./...` | 892 tests/subtests passed, six skipped, zero failures, 583.522 s |
+| `go test -race -timeout 45m -json -count=1 ./...` | 892 passed, six skipped, zero failures or race reports, 756.385 s |
+| `go test -timeout 8m -count=1 -run '^Test(Append\|ExpiredAppend)' .` and the same with `-race` | Final source, 33 passed in each run, zero skips/failures, 3.291 s and 4.760 s |
+| `go vet ./...`, `test -z "$(gofmt -l .)"`, `git diff --check`, `go build -trimpath -o mobterm-cli .` | Passed on final Go source |
+| `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath` with temporary output | Cross-build passed, ELF x86-64. Linux native execution was outside this run. |
+
+The full suites started before the final narrow changes aligning queue-ID validation with Swift and checking the current remote Pair before disclosing an expired source. Final-source targeted runs cover those paths, malformed and lost ACKs, the four shared wire proofs, capacity, and both local Codex scopes. The two-Pair fixture explicitly enables the legacy async scope for one Pair and leaves it off for the other. Both start with append disabled. Closing append preserves async, revokes the old lease and leaves a claimed receipt queryable.
+
+The six routine skips were five opt-in real-host scenarios and the navigation event child process. A final-source targeted run supplied isolated test binaries for Claude Code 2.1.330, OpenCode 2.3.2 and Pi 1.6.0, the final trimmed CLI, real tmux, temporary agent configurations and local fixture models. All five scenarios passed in 96.952 seconds, with zero skips or failures. Pi, Claude and OpenCode ordinary replies after session restoration passed in 5.18, 70.50 and 8.32 seconds respectively. The OpenCode permission-scope test passed in 5.54 seconds. Pi terminal navigation passed in 7.03 seconds and invoked the event helper as a child process. These runs exercised the original protocols independently of Codex append.
+
 ## 2026-10-31 — Agent activity and native approval, round 1 v1.0
 
 [Implementation and acceptance](https://app.notion.com/p/40acede2082381daa4a8f505dff3b649).

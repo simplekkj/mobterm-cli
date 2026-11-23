@@ -85,6 +85,7 @@ type PendingRequest struct {
 }
 
 type Activity struct {
+	appendCreated  *int64
 	storageID      string
 	legacySession  string
 	NativeStorage  string `json:"-"`
@@ -136,6 +137,8 @@ type StoredRun struct {
 	Approval        *ApprovalHint             `json:"approval,omitempty"`
 }
 type RunIntent struct {
+	AppendOrigin   string           `json:"append_origin,omitempty"`
+	AppendSource   string           `json:"append_source,omitempty"`
 	LegacyAudience string           `json:"legacy_audience,omitempty"`
 	Navigation     *navigationOwner `json:"navigation,omitempty"`
 	Reply          *replyBinding    `json:"reply,omitempty"`
@@ -479,6 +482,11 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 	if r.CodexRuntime != nil {
 		installation = r.CodexRuntime.Installation
 	}
+	appendSource := ""
+	if a.appendCreated != nil && *a.appendCreated > 0 && a.CodexRuntime != nil && a.CodexRoot && a.Reminder == "turn_completed" {
+		// Notification delivery remains independent of optional append storage.
+		appendSource, _ = registerAppendSource(s, *a.CodexRuntime, a.Session, a.Run, *a.appendCreated, now)
+	}
 	for pid, pair := range pairs {
 		if pair.Status != "active" || pair.InstallationID != installation {
 			continue
@@ -536,7 +544,7 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 		if kind != "state" && a.legacySession != "" {
 			legacyAudience = audienceSession(pair, a.legacySession)
 		}
-		db.Intents[ik] = RunIntent{LegacyAudience: legacyAudience, Navigation: navigation, Reply: replyIntentBinding(a, l, pair, parentBirth), Body: body, PairID: pid, Key: key, Occurrence: a.Occurrence, Kind: kind, Payload: payload, ExpiresAt: now + 3600}
+		db.Intents[ik] = RunIntent{AppendSource: appendSource, LegacyAudience: legacyAudience, Navigation: navigation, Reply: replyIntentBinding(a, l, pair, parentBirth), Body: body, PairID: pid, Key: key, Occurrence: a.Occurrence, Kind: kind, Payload: payload, ExpiresAt: now + 3600}
 		if kind != "state" {
 			delete(db.Intents, digest(pid+"\x00state\x00"+key))
 		}
@@ -551,8 +559,10 @@ func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, boo
 	err = saveRuns(s, db)
 	if err != nil && err.Error() == "run_store_capacity" {
 		for ik, intent := range db.Intents {
-			if intent.Key == key && intent.Occurrence == a.Occurrence && intent.Reply != nil {
+			if intent.Key == key && intent.Occurrence == a.Occurrence && (intent.Reply != nil || intent.AppendSource != "") {
 				intent.Reply = nil
+				intent.AppendSource = ""
+				intent.AppendOrigin = ""
 				db.Intents[ik] = intent
 			}
 		}
@@ -674,6 +684,9 @@ func encodeRunIntent(ctx context.Context, s Store, key string, intent RunIntent,
 		}
 		return current, err
 	}
+	if current.AppendSource != "" {
+		current.AppendOrigin = strings.TrimSuffix(p.APIURL, "/")
+	}
 	current.Kind = intent.Kind
 	current.Payload = intent.Payload
 	current.Envelope = &e
@@ -697,6 +710,11 @@ func enqueueRunReminder(ctx context.Context, s Store, intent RunIntent) (deliver
 	}
 	if old, ok := sh.Records[key]; ok {
 		return old, nil
+	}
+	if intent.AppendSource != "" && e.Kind == "turn_completed" {
+		// Bind the sealed envelope before it becomes eligible for delivery.
+		// Retry is idempotent; a failed binding only disables this action.
+		_ = bindAppendDelivery(s, intent.AppendSource, intent.AppendOrigin, e)
 	}
 	old := cloneShard(sh)
 	raw, _ := json.Marshal(intent.Payload.Locator)

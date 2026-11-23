@@ -27,8 +27,7 @@ private Unix endpoint, kernel peer UID/PID, immediate callback parent and
 process birth. It reads canonical root metadata and asks that runtime for exact
 main thread metadata and the newest turn with items disabled. The private
 record stores its home, endpoint and process identity; no navigation locator
-or write grant is inferred. The ordinary follow-up write remains unavailable
-because queue/add has no expected-turn condition.
+or write grant is inferred. A separate append lease can authorize one literal message for the original thread. Later user turns can run before that message.
 
 The native Codex notify interface itself puts its JSON input in argv. The CLI
 cannot change that upstream contract and preserves it when composing a user's
@@ -184,7 +183,7 @@ clipboard, notification service or APNs. A matching durable receipt can
 advance evidence after delivery uncertainty; losing the result cannot create
 another dispatch. See [reply wire v1](reply-v1.md).
 
-A Codex completion produced by a shared daemon may have trustworthy thread and turn provenance but no current terminal binding. The paired host checks the callback parent, peer and birth, exact user thread, main-session metadata and completed turn before admitting that form. A queue write has no expected-turn precondition in Codex 0.171.0. Ordinary Codex sends remain unavailable because a competing terminal input can start a new task after the last read.
+A Codex completion produced by a shared daemon may have trustworthy thread and turn provenance but no current terminal binding. The paired host checks the callback parent, peer and birth, exact user thread, main-session metadata and completed turn before admitting that form. The stable event key covers the installation, canonical configuration entry, thread and completed turn across Pair copies. The host freezes the original daemon incarnation and binds each sealed envelope to the slot before delivery. Its private record survives outbox cleanup. The independent SSH exec reconnects only to that endpoint, checks the kernel peer UID, PID and birth, Codex process image and returned home, and acquires a current scoped grant. A matching native ACK or an unresolved dispatch survives disable and daemon exit. See [reply wire v2](reply-v2.md).
 
 
 ## Navigation on a visible notice

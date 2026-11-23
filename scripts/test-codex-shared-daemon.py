@@ -6,6 +6,7 @@ from the validation record. Each invocation owns a fresh private fixture.
 """
 
 import argparse
+import atexit
 import base64
 import hashlib
 import json
@@ -24,8 +25,13 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from contextlib import ExitStack
 
 os.umask(0o077)
+# A supervising integration test can stop a background probe and still run
+# the same cleanup for its private native processes, keys and manifest.
+signal.signal(signal.SIGINT, signal.default_int_handler)
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("mux", choices=("tmux", "herdr"))
 parser.add_argument("--cli", type=Path, required=True)
@@ -34,7 +40,12 @@ parser.add_argument("--herdr", type=Path)
 mode = parser.add_mutually_exclusive_group()
 mode.add_argument("--first-registration", action="store_true", help="Hold the first notify until the next turn reaches the local inbox")
 mode.add_argument("--no-daemon", action="store_true", help="Probe an embedded TUI with a separate stdio app-server")
+mode.add_argument("--queue-lifecycle", action="store_true", help="Probe cold resume and interruption in a disposable native app-server")
+mode.add_argument("--app-bridge", type=Path, help="Write the temporary private manifest used by SSHCommandStreamTests")
+parser.add_argument("--local-api", type=Path, help="Sibling mobterm-api checkout with npm dependencies and dist/worker.js")
 args = parser.parse_args()
+if args.app_bridge and (not args.local_api or args.app_bridge.exists()):
+    parser.error("--app-bridge requires --local-api and a fresh manifest path")
 kind = args.mux
 if kind == "herdr" and args.herdr is None:
     parser.error("--herdr is required with herdr")
@@ -88,6 +99,7 @@ print("native", subprocess.check_output([native, "--version"], env=env, text=Tru
 wait_model = threading.Event()
 release = threading.Event()
 counter = 0
+issued_requests = set()
 
 
 class Mock(BaseHTTPRequestHandler):
@@ -104,7 +116,8 @@ class Mock(BaseHTTPRequestHandler):
         counter += 1
         i = counter
         # This injected barrier is solely a local model callback. No production user input.
-        if "mobile-probe-race-terminal" in json.dumps(body) and not wait_model.is_set():
+        held_turn = "mobile-probe-race-terminal" in json.dumps(body) and not wait_model.is_set()
+        if held_turn:
             wait_model.set()
             release.wait(18)
         rid = "resp_" + str(i)
@@ -125,12 +138,54 @@ class Mock(BaseHTTPRequestHandler):
                 "response": {"id": rid, "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}},
             },
         ]
+        if args.queue_lifecycle:
+            for marker, name, params in (
+                (
+                    "probe-approval",
+                    "exec_command",
+                    {
+                        "cmd": "true",
+                        "sandbox_permissions": "require_escalated",
+                        "justification": "Synthetic approval?",
+                    },
+                ),
+                (
+                    "probe-question",
+                    "request_user_input",
+                    {
+                        "questions": [
+                            {
+                                "id": "choice",
+                                "header": "Fixture",
+                                "question": "Choose one.",
+                                "options": [
+                                    {"label": "First", "description": "First choice"},
+                                    {"label": "Second", "description": "Second choice"},
+                                ],
+                            }
+                        ]
+                    },
+                ),
+            ):
+                if marker in json.dumps(body["input"]) and marker not in issued_requests:
+                    issued_requests.add(marker)
+                    events[1]["item"] = {
+                        "type": "function_call",
+                        "id": "item_" + str(i),
+                        "call_id": "call_" + str(i),
+                        "name": name,
+                        "arguments": json.dumps(params),
+                    }
         data = "".join("event: " + e["type"] + "\ndata: " + json.dumps(e) + "\n\n" for e in events).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            if not (args.queue_lifecycle and held_turn and release.is_set()):
+                raise
 
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Mock)
@@ -175,8 +230,17 @@ capture = ThreadingHTTPServer(("127.0.0.1", 0), Capture)
 threading.Thread(target=capture.serve_forever, daemon=True).start()
 store = root / "store"
 store.mkdir()
+stack = ExitStack()
+atexit.register(stack.close)
 installation = "I" * 32
 pair = "P" * 32
+sender = base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("=")
+origin = "http://127.0.0.1:" + str(capture.server_port)
+if args.app_bridge:
+    from codex_append_live import start_live
+    ids_live, live_manifest = start_live(stack, root, cli, args.local_api.resolve(strict=True))
+    installation, pair, sender, origin = (ids_live[k] for k in ("installation","pair","sender","origin"))
+    env.update(SSL_CERT_FILE=str(root/"ca.pem"), GODEBUG="x509sslcertoverrideplatform=1")
 sk = base64.b64encode(os.urandom(32)).decode()
 (store / "installation.json").write_text(json.dumps(dict(v=1, installation_id=installation)))
 (store / "pairs.json").write_text(
@@ -187,9 +251,9 @@ sk = base64.b64encode(os.urandom(32)).decode()
                 pair_id=pair,
                 installation_id=installation,
                 status="active",
-                send_token=base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip("="),
+                send_token=sender,
                 encryption_key=sk,
-                api_url="http://127.0.0.1:" + str(capture.server_port),
+                api_url=origin,
             )
         }
     )
@@ -402,6 +466,8 @@ class StdioClient:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
         )
         self.responses = queue.Queue()
+        self.completions = queue.Queue()
+        self.requests = queue.Queue()
         self.n = 0
         threading.Thread(target=self.read_responses, daemon=True).start()
         self.rpc("initialize", {
@@ -413,8 +479,12 @@ class StdioClient:
     def read_responses(self):
         for line in self.proc.stdout:
             response = json.loads(line)
-            if "id" in response:
+            if "id" in response and "method" in response:
+                self.requests.put(response)
+            elif "id" in response:
                 self.responses.put(response)
+            elif response.get("method") == "turn/completed":
+                self.completions.put(response["params"])
 
     def send(self, value):
         self.proc.stdin.write(json.dumps(value) + "\n")
@@ -426,7 +496,7 @@ class StdioClient:
         response = self.responses.get(timeout=10)
         assert response["id"] == self.n
         if "error" in response:
-            raise ValueError(str(response["error"]["code"]))
+            raise ValueError(method + " " + str(response["error"]["code"]))
         return response["result"]
 
     def close(self):
@@ -568,8 +638,172 @@ def embedded_probe(pane, first):
             until(shell_returned.exists)
         retained = client.rpc("thread/read", {"threadId": thread, "includeTurns": False})["thread"]
         assert retained["id"] == thread
-        log(embedded_tui_exited=True, stored_thread_readable=True,
-            original_target_still_resolves_after_exit=target().get("status") == "valid")
+        log(
+            embedded_tui_exited=True,
+            stored_thread_readable=True,
+            original_target_still_resolves_after_exit=target().get("status") == "valid",
+        )
+    finally:
+        release.set()
+        client.close()
+
+
+def queue_lifecycle():
+    # Only this experiment acts as the user starting, interrupting and
+    # explicitly resuming disposable threads. Production append never does so.
+    client = StdioClient(profile)
+
+    def start_thread():
+        return client.rpc("thread/start", {"cwd": str(work), "modelProvider": "localprobe"})["thread"]["id"]
+
+    def start_turn(thread, text):
+        return client.rpc(
+            "turn/start",
+            {
+                "threadId": thread,
+                "input": [{"type": "text", "text": text, "text_elements": []}],
+            },
+        )["turn"]["id"]
+
+    def completed(thread, status):
+        event = client.completions.get(timeout=25)
+        assert event["threadId"] == thread and event["turn"]["status"] == status
+
+    def queued(thread):
+        return [
+            r["clientUserMessageId"]
+            for r in client.rpc("thread/queue/list", {"threadId": thread, "limit": 100})["data"]
+        ]
+
+    def enqueue(thread, token):
+        row = client.rpc(
+            "thread/queue/add",
+            {
+                "threadId": thread,
+                "clientUserMessageId": token,
+                "input": [{"type": "text", "text": token, "text_elements": []}],
+            },
+        )["queuedSubmission"]
+        assert row["clientUserMessageId"] == token and row["input"][0]["text"] == token and row["id"]
+
+    def admitted(thread, token):
+        items = client.rpc(
+            "thread/items/list",
+            {"threadId": thread, "sortDirection": "desc", "limit": 16},
+        )["data"]
+        return any(
+            r["item"].get("type") == "userMessage"
+            and r["item"].get("clientId") == token
+            and r["item"]["content"][0].get("text") == token
+            for r in items
+        )
+
+    try:
+        for marker, expected_method, flag in (
+            ("probe-approval", "item/commandExecution/requestApproval", "waitingOnApproval"),
+            ("probe-question", "item/tool/requestUserInput", "waitingOnUserInput"),
+        ):
+            target = client.rpc(
+                "thread/start",
+                {
+                    "cwd": str(work),
+                    "modelProvider": "localprobe",
+                    "approvalPolicy": "on-request",
+                    "sandbox": "read-only",
+                },
+            )["thread"]["id"]
+            params = {"threadId": target, "input": [{"type": "text", "text": marker, "text_elements": []}]}
+            if marker == "probe-question":
+                params["collaborationMode"] = {
+                    "mode": "plan",
+                    "settings": {"model": "gpt-5.1", "reasoning_effort": None, "developer_instructions": None},
+                }
+            turn_id = client.rpc("turn/start", params)["turn"]["id"]
+            pending = client.requests.get(timeout=18)
+            assert (
+                pending["method"] == expected_method
+                and pending["params"]["threadId"] == target
+                and pending["params"]["turnId"] == turn_id
+            ), pending["method"]
+            enqueue(target, "同意")
+            assert queued(target) == ["同意"]
+            status = client.rpc("thread/read", {"threadId": target, "includeTurns": False})["thread"]["status"]
+            assert flag in status["activeFlags"], status["type"]
+            log(native_request=pending["method"], append_queued_request_still_pending=True)
+            # End the synthetic pending request as the test operator, separately
+            # from queue/add. Approval is denied; no command is run for the test.
+            answer = (
+                {"decision": "decline"}
+                if marker == "probe-approval"
+                else {"answers": {"choice": {"answers": ["First"]}}}
+            )
+            client.send({"id": pending["id"], "result": answer})
+            completed(target, "completed")
+            until(lambda: admitted(target, "同意"))
+            completed(target, "completed")
+        ordinary = start_thread()
+        start_turn(ordinary, "mobile-probe-lifecycle")
+        completed(ordinary, "completed")
+        interrupted = start_thread()
+        turn = start_turn(interrupted, "mobile-probe-race-terminal")
+        assert wait_model.wait(12)
+        enqueue(interrupted, "mobile-probe-before-interrupt")
+        client.rpc("turn/interrupt", {"threadId": interrupted, "turnId": turn})
+        completed(interrupted, "interrupted")
+        release.set()
+        enqueue(interrupted, "mobile-probe-after-interrupt")
+        expected = ["mobile-probe-before-interrupt", "mobile-probe-after-interrupt"]
+        client.rpc("thread/resume", {"threadId": interrupted})
+        assert queued(interrupted) == expected
+        client.close()
+        client = StdioClient(profile)
+        assert ordinary not in client.rpc("thread/loaded/list", {})["data"]
+        enqueue(ordinary, "mobile-probe-cold-resume")
+        assert queued(ordinary) == ["mobile-probe-cold-resume"]
+        assert (
+            client.rpc("thread/read", {"threadId": ordinary, "includeTurns": False})["thread"]["status"]["type"]
+            == "notLoaded"
+        )
+        assert ordinary not in client.rpc("thread/loaded/list", {})["data"]
+        client.rpc("thread/resume", {"threadId": ordinary})
+        until(lambda: admitted(ordinary, "mobile-probe-cold-resume"))
+        assert queued(ordinary) == []
+        client.rpc("thread/resume", {"threadId": interrupted})
+        enqueue(interrupted, "mobile-probe-cold-interrupted")
+        time.sleep(0.5)
+        assert queued(interrupted) == expected + ["mobile-probe-cold-interrupted"]
+        # Capacity and archival exercise upstream rejections with the same
+        # disposable threads. Nothing here invokes the product dispatcher.
+        for i in range(100 - len(queued(interrupted))):
+            enqueue(interrupted, "mobile-probe-limit-" + str(i))
+        try:
+            enqueue(interrupted, "mobile-probe-over-capacity")
+        except ValueError:
+            assert len(queued(interrupted)) == 100
+        else:
+            raise AssertionError("native queue exceeded its documented capacity")
+        client.rpc("thread/archive", {"threadId": ordinary})
+        try:
+            enqueue(ordinary, "mobile-probe-archived")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("native queue accepted an archived thread")
+        client.rpc("thread/delete", {"threadId": ordinary})
+        try:
+            enqueue(ordinary, "mobile-probe-deleted")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("native queue accepted a deleted thread")
+        log(capacity_100_verified=True, archived_refused=True, deleted_refused=True)
+        log(
+            unloaded_add_stays_unloaded=True,
+            manual_cold_resume_admission=True,
+            busy_queued=True,
+            interrupted_normal_resume_pending=True,
+            interrupted_cold_resume_pending=True,
+        )
     finally:
         release.set()
         client.close()
@@ -579,6 +813,9 @@ mux = None
 c = None
 try:
     assert identity(native) == initial
+    if args.queue_lifecycle:
+        queue_lifecycle()
+        sys.exit(0)
     launch = "codex --no-daemon" if args.no_daemon else "codex"
     if kind == "tmux":
         log(version=tm("-V"))
@@ -642,6 +879,91 @@ try:
         shared_daemon=first["ppid"] == second["ppid"],
         threads_distinct=ids(first)[0] != ids(second)[0],
     )
+    if args.app_bridge:
+
+        def delivery(d):
+            runs = json.loads((store / "runs-v2.json").read_text())["runs"].values()
+            run = next((r for r in runs if r["run"] == d["turn-id"]), None)
+            if run:
+                event = hashlib.sha256(
+                    (run["first_occurrence"] + "\0" + pair).encode()
+                ).hexdigest()
+                path = root / (event + ".delivery")
+                if path.exists():
+                    return json.loads(path.read_text())
+
+        envelopes = [until(lambda d=d: delivery(d)) for d in (first, second)]
+        enter(a, "mobile-probe-later-before-send")
+        assert (
+            notice("mobile-probe-later-before-send")["thread-id"] == first["thread-id"]
+        )
+        enter(b, "/new")
+        time.sleep(0.65)
+        enter(b, "mobile-probe-new-thread")
+        assert notice("mobile-probe-new-thread")["thread-id"] != second["thread-id"]
+        live_manifest.update(
+            origin=origin,
+            installation=installation,
+            pair=pair,
+            key=sk,
+            owner=ids_live["owner"],
+            device=ids_live["device"],
+            deliveries=envelopes,
+        )
+        temp = args.app_bridge.with_suffix(".tmp")
+        temp.write_text(json.dumps(live_manifest))
+        temp.replace(args.app_bridge)
+        print(
+            "READY two authenticated deliveries; later turn in A, /new in B", flush=True
+        )
+        # The driver writes .done only after the App has queried both decisions.
+        until(lambda: args.app_bridge.with_suffix(".done").exists(), timeout=1200)
+        c = Client()
+        for i, d in enumerate((first, second)):
+            token = "mobile-probe-app-" + str(i)
+            thread, _ = ids(d)
+            meta = c.rpc("thread/read", {"threadId": thread, "includeTurns": False})["thread"]
+            if meta["status"]["type"] == "notLoaded":
+                pending = c.rpc("thread/queue/list", {"threadId": thread})["data"]
+                assert any(item["input"][0]["text"] == token for item in pending)
+                assert thread not in c.rpc("thread/loaded/list", {})["data"]
+                log(app_input=i, persisted_unloaded=True, operator_resumes_now=True)
+                c.rpc("thread/resume", {"threadId": thread})
+            done = notice(token)
+            assert done["thread-id"] == thread and done["turn-id"] != d["turn-id"]
+            log(app_input=i, exact_original_thread=True, native_new_turn=True)
+        # Read back the exact client ID and original bytes in native history.
+        for i, original in enumerate((first, second)):
+            thread, turn = ids(original)
+            sources = json.loads((store / "reply-append-v2.json").read_text())[
+                "sources"
+            ]
+            slot = next(
+                r
+                for r in sources.values()
+                if (r["thread"], r["turn"]) == (thread, turn)
+            )
+            client_id = slot["decision"]["client_message_id"]
+            expected_text = "mobile-probe-app-" + str(i)
+            assert slot["ack"] and slot["queue_id"]
+            entries = c.rpc(
+                "thread/items/list",
+                {"threadId": thread, "sortDirection": "desc", "limit": 16},
+            )["data"]
+            matches = [
+                e["item"]
+                for e in entries
+                if e["item"]["type"] == "userMessage"
+                and e["item"].get("clientId") == client_id
+            ]
+            assert (
+                len(matches) == 1
+                and len(matches[0]["content"]) == 1
+                and matches[0]["content"][0]["text"] == expected_text
+            )
+            log(app_input=i, matched_client_id_and_original_text=True)
+
+        sys.exit(0)
     c = Client()
     for i, (p, other, d) in enumerate([(a, b, first), (b, a, second)]):
         # The local mock responds instantly. Native status can settle just after notify.
@@ -752,7 +1074,7 @@ finally:
     elif mux:
         hd("server", "stop", check=False)
         mux.wait(timeout=6)
-    if not args.no_daemon:
+    if not args.no_daemon and not args.queue_lifecycle:
         subprocess.run(
             [native, "app-server", "daemon", "stop"],
             cwd=work, env=env, timeout=15, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -771,4 +1093,8 @@ finally:
             os.kill(pid, signal.SIGTERM)
     server.shutdown()
     capture.shutdown()
+    stack.close()
+    if args.app_bridge:
+        args.app_bridge.unlink(missing_ok=True)
+        args.app_bridge.with_suffix(".done").unlink(missing_ok=True)
     fixture.cleanup()

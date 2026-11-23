@@ -28,7 +28,7 @@ passing the gate is **not** a claim that its event contract has been tested.
 
 The interaction floors are Codex 0.166.0, Claude 2.1.316, OpenCode 2.2.5 and
 Pi 1.4.0. Ordinary replies require Claude 2.1.326, OpenCode 2.2.5 or Pi 1.5.1.
-Codex has no ordinary reply route. The host and schema checks still apply to
+Codex conversation append requires a shared daemon reporting at least 0.171.0 and a verified native queue. The host and schema checks still apply to
 each native action. See [capability minimums](../adapters/minimums.json).
 
 The November source references are the [Codex hook runtime](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/core/src/hook_runtime.rs),
@@ -326,7 +326,7 @@ not an iPhone/SSH/APNs or controller-control integration.
 
 Launch Codex normally with `codex`. A shared-daemon completion can reach
 the v2 inbox without a terminal binding on the verified 0.171.0 host.
-On 0.171.0, the status-line provider can receive a displayed-thread snapshot, but the TUI requests that resource through the shared app-server. It supplies no independently checkable TUI PID, birth or current pane. The UserPromptSubmit hook likewise receives no client message ID with which to recognize a pending mobile decision. Ordinary Codex sends and shared-daemon navigation remain unavailable. See the [status-line resource request](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/tui/src/statusline_provider.rs#L197-L222) and [native hook input](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/core/src/hook_runtime.rs#L714-L737).
+On 0.171.0, the status-line provider can receive a displayed-thread snapshot, but the TUI requests that resource through the shared app-server. It supplies no independently checkable TUI PID, birth or current pane. The UserPromptSubmit hook likewise receives no client message ID with which to recognize a pending mobile decision. Shared-daemon navigation still requires a proven current terminal. Conversation append uses the stored original logical thread and independently verified queue endpoint. See [reply v2](reply-v2.md). See the [status-line resource request](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/tui/src/statusline_provider.rs#L197-L222) and [native hook input](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/core/src/hook_runtime.rs#L714-L737).
 
 For supplementary embedded operation, `codex --no-daemon` and
 `codex --no-daemon resume` retain the existing pane-owner checks. Mobterm leaves launch commands and global settings

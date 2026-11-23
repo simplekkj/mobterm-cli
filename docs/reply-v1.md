@@ -2,9 +2,11 @@
 
 The App queries the exact notification copy through the paired host. A reply is a new literal message to the original running main Agent. A Question, form, elicitation or approval retains its own request, schema, deadline and response path. Terminal navigation and message-body lookup have independent identities and lifetimes.
 
+Codex conversation append has its own [reply wire v2](reply-v2.md).
+
 ## Discovery and local activation
 
-`status --installation-json --read-only` advertises `reply_protocols:[1]`. An absent version leaves notifications, Jump to and existing native interactions usable. Native support also requires the correct loaded adapter and source. Codex ordinary replies return `ordinary_reply_unavailable`, including shared and embedded/profile modes. A loaded logical thread does not identify the original TUI incarnation.
+`status --installation-json --read-only` advertises `reply_protocols:[1,2]` and `reply_modes:["thread_append"]`. An absent version leaves notifications, Jump to and existing native interactions usable. Native support also requires the correct loaded adapter and source. Wire v1 Codex replies return `ordinary_reply_unavailable`, including shared and embedded/profile modes. A loaded logical thread does not identify the original TUI incarnation.
 
 After explicit user confirmation and an authenticated API policy update, invoke `reply configure --stdin-frame` with `v:1,api_url,installation_id,pair_id,agent,enabled,activation_revision:1,policy_generation,expected_revision,nonce,expires_at,proof`. Activation checks the active Pair, exact API generation and enabled per-Agent `followupMessage` grant. On success the CLI echoes the fields, installation ID, incremented `configuration_revision`, `configuration_saved:true` and `loaded:"unknown"`. Query `reply configuration --stdin-frame` with `v:1,pair_id` for the locally saved per-Agent generation map in `activations` and local CAS revisions in `revisions` (a missing Agent has revision zero). Confirm and sign that revision. Each successful configure increments it, including disable, preventing an old signed enable from undoing a later disable in the same cloud generation. A saved activation is distinct from an adapter currently handling a specific source.
 
