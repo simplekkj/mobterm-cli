@@ -27,6 +27,7 @@ func readCapabilities(s Store) (map[string]any, error) {
 	result := map[string]any{
 		"v": 1, "version": version, "commit": commit, "operations": workspaceOperations,
 		"server_time": time.Now().Unix(), "execution_backends": []string{},
+		"quick_command_result_protocols": []int{1},
 		"limits": map[string]int{"frame_bytes": maxFrame, "response_bytes": maxDiscoveryOutput,
 			"tmux_sessions": maxDiscoverySessions, "panes_per_session": maxPanesPerSession},
 	}

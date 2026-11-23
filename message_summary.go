@@ -109,7 +109,11 @@ func truncateMessageSummary(text string, maxRunes, maxBytes int) string {
 // Include badge and Foundation's conservative slash escaping, matching the
 // API/NSE contract. No summary is exposed outside authenticated ciphertext.
 func notificationPayloadSize(e Envelope) int {
-	payload := map[string]any{"aps": map[string]any{"alert": map[string]any{"title": "MobTerm", "loc-key": "agentNotificationNeedsInputAlert"}, "sound": "default", "mutable-content": 1, "badge": 2147483647}, "mobterm": e}
+	key := "agentNotificationNeedsInputAlert"
+	if e.V == 3 {
+		key = "quickCommandNotificationResultAlert"
+	}
+	payload := map[string]any{"aps": map[string]any{"alert": map[string]any{"title": "MobTerm", "loc-key": key}, "sound": "default", "mutable-content": 1, "badge": 2147483647}, "mobterm": e}
 	raw, _ := json.Marshal(payload)
 	return len(raw) + strings.Count(string(raw), "/")
 }

@@ -47,16 +47,18 @@ type Locator struct {
 	OccupantID     string `json:"occupant_id,omitempty"`
 }
 type Envelope struct {
-	V                    int    `json:"v"`
-	PairID               string `json:"pair_id"`
-	EventID              string `json:"event_id"`
-	Kind                 string `json:"kind"`
-	ExpiresAt            int64  `json:"expires_at"`
-	Nonce                string `json:"nonce"`
-	Ciphertext           string `json:"ciphertext"`
-	StreamID             string `json:"stream_id,omitempty"`
-	Revision             int64  `json:"revision,omitempty"`
-	CapabilityGeneration int64  `json:"capability_generation,omitempty"`
+	V                         int    `json:"v"`
+	PairID                    string `json:"pair_id"`
+	EventID                   string `json:"event_id"`
+	Kind                      string `json:"kind"`
+	ExpiresAt                 int64  `json:"expires_at"`
+	Nonce                     string `json:"nonce"`
+	Ciphertext                string `json:"ciphertext"`
+	StreamID                  string `json:"stream_id,omitempty"`
+	Revision                  int64  `json:"revision,omitempty"`
+	CapabilityGeneration      int64  `json:"capability_generation,omitempty"`
+	QuickCapabilityGeneration int64  `json:"quick_command_capability_generation,omitempty"`
+	QuickPolicyGeneration     int64  `json:"quick_command_policy_generation,omitempty"`
 }
 
 func randomID() string {
@@ -68,7 +70,11 @@ func randomID() string {
 }
 func digest(s string) string { b := sha256.Sum256([]byte(s)); return hex.EncodeToString(b[:]) }
 func (e Envelope) aad() []byte {
-	if e.V == 2 {
+	switch e.V {
+	case 3:
+		return []byte(fmt.Sprintf("mobterm/3\n%s\n%s\n%s\n%d\n%d\n%d", e.Kind, e.PairID, e.EventID,
+			e.QuickCapabilityGeneration, e.QuickPolicyGeneration, e.ExpiresAt))
+	case 2:
 		return e.aadV2()
 	}
 	return []byte(fmt.Sprintf("mobterm/1\n%s\n%s\n%s\n%d", e.PairID, e.EventID, e.Kind, e.ExpiresAt))

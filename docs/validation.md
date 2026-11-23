@@ -15,6 +15,34 @@ and [fixed compatibility samples](#mobterm-cli-compatibility--round-1-v10--2026-
 The earlier records below retain their original scope; they are not rerun by
 documentation maintenance.
 
+## 2026-11-23 — QuickCommand result receipt v1
+
+On Intel macOS 15.8.1 with Go 1.27.1, the result vector authenticated and
+decoded with its synthetic AES-256 key. The Go tests verified every AAD identity,
+a changed tag, interleaved binary streams, empty output, the 4096-byte limit,
+invalid terminal metadata, the exact seven-day cutoff, file permission and
+symlink refusal, strict framing and read-only behavior on a missing store.
+The capability test checked result protocol v1 with an empty execution backend
+list. All four focused tests passed.
+
+A trimmed CLI binary read a synthetic result over loopback OpenSSH using a
+pinned host key, a temporary client key and a forced `job output` command.
+Two separate SSH invocations returned the same encrypted receipt byte fields.
+A third request with the wrong digest returned `identity_mismatch`. Sizes and
+modification times in the isolated result store remained unchanged. The
+fixture removed its server, private keys and store at exit. This exercised
+the SSH reader with a prewritten receipt. A real job producer, client
+submission, startup disconnect survival and APNs are outside this run.
+
+The final sources passed formatting, vet, a trimmed Intel macOS build and a
+CGO-disabled linux/amd64 cross-build. There was no running local Docker daemon
+for a native Linux execution check. An initial ordinary suite run encountered
+the existing asdf five-second launcher preflight timeouts during simulator
+startup. The final ordinary suite passed in 642.796 seconds, including the asdf
+groups. The full race run passed in 783.357 seconds. Each final run recorded
+902 passing tests/subtests and 6 skipped opt-in native cases/subprocess
+entries. Both required real tmux and supplied the pinned Herdr 0.9.3 fixture.
+
 ## 2026-11-23 — Read-only capabilities and workspace discovery
 
 The CLI work started from clean `main` at
@@ -2376,3 +2404,29 @@ The Python reply probes supplied decisions through a fixture helper. Configurati
 - `go test -race -count=1 -json ./...` passed in 694.467 s with 861 passing tests/subtests, six skips and no race reports. The ordinary and race suites ran serially.
 - After the race suite finished, the complete ordinary suite was rerun. `go test -count=1 -json ./...` passed in 539.218 s with 861 passing tests/subtests, six skips and zero failures. This included all eight previously timed-out preflights.
 - Five opt-in native host cases and one subprocess helper skip by design in both unconfigured full suites. The three `TestLive*ReboundReply` cases and `TestLiveOpenCodePermissionScope` ran separately above. With Pi 1.6.0, the final trimmed CLI and `MOBTERM_REQUIRE_TMUX=1 PI_BINARY="$PI" MOBTERM_NAV_CLI="$CLI" go test -timeout 3m -count=1 -run '^TestLivePiNavigation$' -v .`, the navigation scenario passed in 7.77 s. It launches `TestNavigationEventSource` as a subprocess and checks pane movement, a new session, pane reuse, a rebound source and two concurrently active copies.
+
+## 2026-11-23 — QuickCommand notification v3
+
+On Intel macOS with Go 1.27.1, the focused command
+`go test -run '^TestQuickCommand(V3Golden|FrozenOutbox)$' .` passed.
+The final lost-response test also passed with `-race`. Go sealed
+the public `protocol-v3.json` vector byte-for-byte. The queue tests persisted
+one original Pair/event, dropped the HTTP response after reading the POST, retried the identical
+envelope, accepted a matching HTTP 429 durable handoff, and refused a version
+4 record before sending. The sealer rejected missing job notification intent, closed gates, mismatched
+Pair/installation, stale receipts, invalid QC generations and inconsistent terminal metadata.
+
+A separate local cross-repository run seeded an isolated outbox using the
+production Go sealer and a fixture terminal result (exit 23). The fixture read
+its exact Pair capabilities over HTTP from workerd, including both QC
+generations, and passed that receipt to the sealer. The built CLI ran
+`outbox flush --pair … --json` through a loopback bridge to the real Worker
+route in Miniflare/workerd. Local D1 accepted it and retained the ciphertext
+with mock APNs returning 503. A second flush made no POST. The App's production
+Swift envelope and activity files, compiled on macOS, authenticated the envelope
+read from the classified inbox and recovered the original job, installation,
+command name and exit code. The fixture, Worker and Swift consumer used a
+synthetic Pair. This run did not exercise a remote job, real APNs, an iPhone
+notification, or navigation. CLI automatic completion-policy evaluation and
+terminal-to-outbox creation are still pending. No Linux runtime was exercised
+in this notification interop run.

@@ -17,8 +17,10 @@ repositories. See [LICENSE](LICENSE) and [THIRD_PARTY.md](THIRD_PARTY.md).
   [Upgrade](#upgrade), [Build and verify](#build-and-verify), and the
   [current command budgets and diagnostics](#notification-api-request-deadlines).
 - [Read-only capabilities and workspace discovery](docs/workspace-discovery.md) over an authenticated SSH connection.
+- [Read an encrypted QuickCommand result receipt](docs/quick-command-result-v1.md) for its original job.
 - **Protocol and operation:** [v1 setup, notifications and targets](docs/protocol-v1.md),
   [v2 state/inbox/badge and legacy approval wire v3](docs/protocol-v2.md),
+  [QuickCommand completion notification v3](docs/notification-v3.md),
   [independent interaction wire v1](docs/interaction-v1.md),
   [native interaction support](docs/native-interactions.md), [Codex conversation append](docs/reply-v2.md),
   [notification compatibility and fixed samples](docs/compatibility.md), and

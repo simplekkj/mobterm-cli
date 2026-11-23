@@ -27,6 +27,9 @@ func TestWorkspaceCapabilitiesNoInitialization(t *testing.T) {
 	if backends, ok := v["execution_backends"].([]any); !ok || len(backends) != 0 {
 		t.Fatal("unexpected execution backend")
 	}
+	if protocols, ok := v["quick_command_result_protocols"].([]any); !ok || len(protocols) != 1 || protocols[0] != float64(1) {
+		t.Fatal("missing read-only result protocol")
+	}
 	if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("read-only probe wrote state")
 	}

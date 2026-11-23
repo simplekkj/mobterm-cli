@@ -1,0 +1,17 @@
+{
+  "fixture_version": 3,
+  "key": "//79/Pv6+fj39vX08/Lx8O/u7ezr6uno5+bl5OPi4eA=",
+  "plaintext": "{\"v\":1,\"installation_id\":\"install_fixture_0000000000000001\",\"job_id\":\"f54b6762-7132-4f4e-a1d9-1308912f7245\",\"command_id\":\"7eafcffb-b477-43fc-b2a0-abeee38aa1f1\",\"command_name\":\"磁盘用量\",\"state\":\"failed\",\"exit_code\":23,\"occurred_at\":1700000000}",
+  "aad": "mobterm/3\nquick_command_completed\npair_fixture_000000000000000001\nevent_fixture_00000000000000003\n1\n1\n1700003600",
+  "envelope": {
+    "v": 3,
+    "pair_id": "pair_fixture_000000000000000001",
+    "event_id": "event_fixture_00000000000000003",
+    "kind": "quick_command_completed",
+    "expires_at": 1700003600,
+    "quick_command_capability_generation": 1,
+    "quick_command_policy_generation": 1,
+    "nonce": "TExMTExMTExMTExM",
+    "ciphertext": "YW5db3LDHWdooN9+1KtCrLSZ1gs2htLinWw6N+bRqgHZWfhu2MQCaVOF4liNsN1O+6NECp67apC/gFmLZDjIvCn61zp7czBzwSMZb3b+m7xmmhuv1DTkZuTEk8JaOEvSIUDMxICWx4ac2hHds9PxGGiF4D1fOZw+I3bh5l8gSDb/cWwPZpoVsr36qLrHmL9kbaiu8NWeEz07Yxx9GdvqOgU+ctlA2wjSliy2HnZaICuauoPUgkMf2BKO4QsVMliAAtf+ig/dTXRgB8M1n7MzZ6m24ykNSoWeT2ZpcDW4u1wnf4NzSWFJPTl0yoGp6vBEAq7d+j+SEbC0baBdRmSzImWRPjj/Edw="
+  }
+}

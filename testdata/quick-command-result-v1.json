@@ -1,0 +1,23 @@
+{
+  "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "aad": "mobterm/quick-command-result/1\ninstallation_fixture_01\na37e96e0-462c-4eb8-b8b3-127324f662d2\n49aa3979-8b7b-42d2-ae04-7b472781d3c6\na799f830af9b12d4d2b21f81c4f2213c5128e3fb01c7b66b735cc477f823aa0b",
+  "receipt": {
+    "v": 1,
+    "installation_id": "installation_fixture_01",
+    "job_id": "a37e96e0-462c-4eb8-b8b3-127324f662d2",
+    "command_id": "49aa3979-8b7b-42d2-ae04-7b472781d3c6",
+    "request_digest": "a799f830af9b12d4d2b21f81c4f2213c5128e3fb01c7b66b735cc477f823aa0b",
+    "occurred_at": 1780000002,
+    "nonce": "ICEiIyQlJicoKSor",
+    "ciphertext": "qRjVBA3sfywgXiSvqHSRnfJlzvn/6RexD5kId2uwaSVX/ZFl/FFQvkucGrBiOCjw0hrcvqoMHU3sDRx+OcB4uLx5rH+0rdShs1rZF4ttCVP5tUd2wpXlf7sqpgggaOypZ3gMOb0w7oa9vp4l8qObUF/mzgmz8o1+JJZifYfY70lPj1+kGaVkjFit3+lEjGIj4oy0RwOC/7yzCo8="
+  },
+  "payload": {
+    "state": "failed",
+    "exit_code": 7,
+    "started_at": 1780000000,
+    "occurred_at": 1780000002,
+    "truncated": true,
+    "output": "QUVC/wAK",
+    "stderr_mask": "Kg=="
+  }
+}

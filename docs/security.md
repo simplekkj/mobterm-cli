@@ -5,6 +5,11 @@ Each installation has a random local ID. Each paired phone has an independent
 0600 files in a mode 0700 directory. The API stores credential hashes and cannot
 decrypt target locators or message summaries. The CLI does not contain global service secrets.
 
+A [QuickCommand result receipt](quick-command-result-v1.md) uses an independent
+per-job key. The SSH reader returns at most one authenticated-encryption envelope
+bound to the original installation, job, command and request digest. It reads
+an existing private receipt without writing a result key or extending its expiry.
+
 Only routing metadata (opaque IDs, event kind, expiry, ciphertext length) reaches
 the API/APNs. Encryption does not hide timing, kind, or traffic volume. Server,
 username and terminal coordinates remain in the encrypted/local parts. Native
@@ -32,6 +37,12 @@ or write grant is inferred. A separate append lease can authorize one literal me
 The native Codex notify interface itself puts its JSON input in argv. The CLI
 cannot change that upstream contract and preserves it when composing a user's
 existing notifier. Mobterm pairing secrets never use argv or environment variables.
+
+QuickCommand completion metadata uses a separate v3 authenticated domain. Both
+QC generations and the original Pair and event are bound to the ciphertext.
+That ciphertext contains the original job identity, command display name and
+terminal state. The result key, command text, stdout and stderr stay outside
+the notification protocol. See the [wire contract](notification-v3.md).
 
 Setup and target verification run over an independently authenticated, non-PTY
 SSH channel. They never write to a foreground terminal. Store/config writes use

@@ -490,6 +490,7 @@ func deliverAttempt(ctx context.Context, s Store, a API, d delivery) (map[string
 	}
 	owner := randomID()
 	now := time.Now().Unix()
+	var path string
 	claimed, err := updateDelivery(ctx, s, d.PairID, d.EventID, func(current *delivery) error {
 		if current.State != "pending" || current.Next > now || current.Lease > now {
 			return errors.New("outbox_not_due")
@@ -507,6 +508,14 @@ func deliverAttempt(ctx context.Context, s Store, a API, d delivery) (map[string
 			}
 			current.Envelope = nil
 			return nil
+		}
+		switch current.Envelope.V {
+		case 1:
+			path = "/v1/pairs/" + current.PairID + "/events"
+		case 2, 3:
+			path = "/v2/pairs/" + current.PairID + "/events"
+		default:
+			return errors.New("unsupported_envelope_version")
 		}
 		if !deliveryAttemptAllowed(ctx, deliveryKey(d.PairID, d.EventID), true) {
 			return errors.New("outbox_not_due")
@@ -535,10 +544,6 @@ func deliverAttempt(ctx context.Context, s Store, a API, d delivery) (map[string
 	if !ok || p.Status != "active" {
 		err = errors.New("pair_not_active")
 	} else {
-		path := "/v1/pairs/" + p.PairID + "/events"
-		if claimed.Envelope.V == 2 {
-			path = "/v2/pairs/" + p.PairID + "/events"
-		}
 		if claimed.Approval != nil {
 			request, readErr := approvalRead(s, claimed.Approval.RequestID)
 			if readErr != nil || !approvalNotificationValid(s, claimed.Approval, p.PairID) {

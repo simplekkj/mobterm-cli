@@ -205,7 +205,7 @@ func commandTimeout(args []string) time.Duration {
 
 func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "mobterm-cli capabilities --json | discovery tmux.discovery|herdr.list|herdr.probe|herdr.snapshot --stdin-frame | setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | reply inspect|send|status|latest|configure|configuration --stdin-frame | message read --stdin-frame | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | pairs retire --stdin-frame --json | upgrade --version vX.Y.Z | version")
+		fmt.Fprintln(out, "mobterm-cli capabilities --json | job output --stdin-frame | discovery tmux.discovery|herdr.list|herdr.probe|herdr.snapshot --stdin-frame | setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | reply inspect|send|status|latest|configure|configuration --stdin-frame | message read --stdin-frame | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | pairs retire --stdin-frame --json | upgrade --version vX.Y.Z | version")
 		return 0
 	}
 	if args[0] == "version" || args[0] == "--version" {
@@ -236,6 +236,16 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 			err = errors.New("invalid_request")
 		} else {
 			value, err = readCapabilities(s)
+		}
+	case "job":
+		if len(args) != 3 || args[1] != "output" || args[2] != "--stdin-frame" {
+			err = errors.New("invalid_request")
+		} else {
+			var receipt quickResultReceipt
+			receipt, err = readQuickResult(ctx, s, in, time.Now)
+			if err == nil {
+				value = receipt
+			}
 		}
 	case "discovery":
 		if len(args) != 3 || args[2] != "--stdin-frame" {
@@ -561,7 +571,7 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		}
 		if value == nil {
 			code := "operation_failed"
-			if args[0] == "discovery" {
+			if args[0] == "discovery" || args[0] == "job" {
 				code = safeCode(err.Error())
 			}
 			if args[0] == "target" {
