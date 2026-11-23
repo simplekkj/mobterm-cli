@@ -78,8 +78,15 @@ class LifecycleTests(unittest.TestCase):
         for name in ('.profile', '.bashrc', '.ssh/config', '.codex/hooks.json', '.claude.json'):
             path = self.home / name
             path.parent.mkdir(exist_ok=True)
-            content = {'hooks': {}} if name == '.codex/hooks.json' else {'numStartups': 3}
-            path.write_text(json.dumps(content) if name.endswith('.json') else '# user-owned sentinel\n')
+            if name == '.codex/hooks.json':
+                # Current samples install their owned groups in this same file.
+                # Keep a real third-party command and require exact restoration.
+                hooks = {'SessionStart': [{'hooks': [{'type': 'command', 'command': 'true'}]}]}
+                path.write_text(json.dumps({'hooks': hooks}, indent=2) + '\n')
+            elif name.endswith('.json'):
+                path.write_text(json.dumps({'numStartups': 3}))
+            else:
+                path.write_text('# user-owned sentinel\n')
             self.sentinels[path] = path.read_bytes()
 
     def tearDown(self):
@@ -185,7 +192,10 @@ class LifecycleTests(unittest.TestCase):
         for agent, path in (('codex', self.codex), ('claude', self.claude)):
             self.hook(agent)
             if agent == 'codex':
-                path.write_bytes(path.read_bytes().replace(b'--mobterm-chain', b'--user-change'))
+                installed = path.read_bytes()
+                json_hooks = self.codex.with_name('hooks.json')
+                installed_hooks = json_hooks.read_bytes()
+                path.write_bytes(installed.replace(b'--mobterm-chain', b'--user-change'))
             else:
                 settings = json.loads(path.read_bytes())
                 settings['hooks']['UserPromptSubmit'][-1]['hooks'][0]['timeout'] = 77
@@ -193,6 +203,12 @@ class LifecycleTests(unittest.TestCase):
             edited = path.read_bytes()
             self.hook(agent, 'uninstall', code=1)
             self.assertEqual(path.read_bytes(), edited)
+            if agent == 'codex':
+                self.assertEqual(json_hooks.read_bytes(), installed_hooks)
+                # Resolve the intentional conflict and verify both files roll back.
+                path.write_bytes(installed)
+                self.hook(agent, 'uninstall')
+                self.assertEqual(path.read_bytes(), self.original_codex)
 
     def test_invalid_configs_and_symlinks_unchanged(self):
         for agent, path, invalids in (

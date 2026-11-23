@@ -10,12 +10,12 @@
     "claude": "2.1.282"
   },
   "current": {
-    "codex": "0.163.0",
-    "claude": "2.1.301",
-    "opencode": "2.1.0",
-    "pi": "1.3.0"
+    "codex": "0.171.0",
+    "claude": "2.1.330",
+    "opencode": "2.3.2",
+    "pi": "1.6.0"
   },
   "macos-config": {
-    "codex": "0.163.0"
+    "codex": "0.171.0"
   }
 }

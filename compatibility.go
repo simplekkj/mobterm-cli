@@ -55,10 +55,10 @@ var minimums = func() capabilityMinimums {
 }()
 
 var agentCompatibilities = map[string]agentCompatibility{
-	"codex":    {minimums.Notification["codex"], "0.163.0", "codex-cli ", ""},
-	"claude":   {minimums.Notification["claude"], "2.1.301", "", " (Claude Code)"},
-	"opencode": {minimums.Notification["opencode"], "2.1.0", "opencode v", ""},
-	"pi":       {minimums.Notification["pi"], "1.3.0", "", ""},
+	"codex":    {minimums.Notification["codex"], "0.171.0", "codex-cli ", ""},
+	"claude":   {minimums.Notification["claude"], "2.1.330", "", " (Claude Code)"},
+	"opencode": {minimums.Notification["opencode"], "2.3.2", "opencode v", ""},
+	"pi":       {minimums.Notification["pi"], "1.6.0", "", ""},
 }
 
 // Match a whole official version token. An optional v and SemVer build metadata

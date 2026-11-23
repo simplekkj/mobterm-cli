@@ -27,11 +27,12 @@ const recorder = join(temp, 'notify');
 await writeFile(recorder, `#!${process.execPath}\nconst fs=require('node:fs');if(process.env.MOBTERM_NATIVE_COMPLETION==='1' && fs.existsSync(${JSON.stringify(join(temp,"new-cli"))}))process.stdout.write('mobterm/message-body/1\\n');let b='';process.stdin.on('data',x=>b+=x);process.stdin.on('end',()=>{const first=!fs.existsSync(${JSON.stringify(output)});setTimeout(()=>fs.appendFileSync(${JSON.stringify(output)},b+'\\n'),first?2200:0);});`);
 await chmod(recorder, 0o700);
 const children = new Set();
+const rollbackHelper = join(temp,'rollback-helper');
 const notificationChildren = new Set();
 const spawn = (...args) => {
   // Host lifecycle commands are local framed calls; only notify writes the
   // fixture's newline-delimited native event stream.
-  const child = args[1]?.[0] === "reply" && args[1]?.[1] === "host"
+  const child = args[0] !== rollbackHelper && args[1]?.[0] === "reply" && args[1]?.[1] === "host"
     ? spawnChild(process.execPath, ["-e",'process.stdin.resume();process.stdin.on("end",()=>console.log("{}"));'],args[2])
     : spawnChild(...args);
   children.add(child);
@@ -329,7 +330,7 @@ try {
   // HTTP success only records delivery; the originating tool result proves values.
   const interactionDecider=join(temp,'interaction-decider');
   const receiptsPath=join(temp,'receipts.jsonl');
-  await writeFile(interactionDecider, `#!${process.execPath}\nconst fs=require('node:fs');const chunks=[];process.stdin.on('data',x=>chunks.push(x));process.stdin.on('end',()=>{const b=Buffer.concat(chunks);if(process.argv.includes('receipt')){fs.appendFileSync(${JSON.stringify(receiptsPath)},b.subarray(4).toString()+'\\n');return;}if(process.argv.includes('authorize')){process.stdout.write(JSON.stringify({allowed:true}));return;}const p=JSON.parse(b);process.stdout.write(JSON.stringify({request_id:'request-local',digest:'digest',owner_token:'owner',expires_at:Math.floor(Date.now()/1000)+60,action:p.event==='tool_gate'?(p.tool_input.command==='release'?'release':'allow_once'):p.event==='permission.asked'?'deny':'answer',response_json:JSON.stringify({answers:{q0:'custom text',q1:['x','y'],zero:0,flag:false}})}));});`);
+  await writeFile(interactionDecider, `#!${process.execPath}\nconst fs=require('node:fs');const chunks=[];process.stdin.on('data',x=>chunks.push(x));process.stdin.on('end',()=>{const b=Buffer.concat(chunks);if(process.argv.includes('receipt')){fs.appendFileSync(${JSON.stringify(receiptsPath)},b.subarray(4).toString()+'\\n');return;}if(process.argv.includes('authorize')){process.stdout.write(JSON.stringify({allowed:true}));return;}const p=JSON.parse(b);process.stdout.write(JSON.stringify({request_id:'request-local',digest:'digest',owner_token:'owner',request_version:p.pending_permissions&&p.event_id!=='batch-legacy-helper'?2:undefined,expires_at:Math.floor(Date.now()/1000)+60,action:p.event==='tool_gate'?(p.tool_input.command==='release'?'release':'allow_once'):p.event==='permission.asked'?(p.event_id==='fallback-allow_once'?'allow_once':p.event_id==='fallback-release'?'release':'deny'):'answer',response_json:JSON.stringify({answers:{q0:'custom text',q1:['x','y'],zero:0,flag:false}})}));});`);
   await chmod(interactionDecider,0o700);
   const formPlugin=await load('opencode','1.4.0',interactionDecider),formHost=host();formHost.context.app.version='2.2.5';
   const form={id:'frm_test',sessionID:'root',title:'Question',metadata:{kind:'question',tool:{messageID:'msg',id:'tool'}},fields:[{key:'q0',type:'string',custom:true},{key:'q1',type:'multiselect',options:[{value:'x',label:'X'},{value:'y',label:'Y'}]},{key:'zero',type:'integer'},{key:'flag',type:'boolean'}]};
@@ -367,16 +368,131 @@ try {
     if(notices.length)assert.ok(notices[0].unavailable_reason);
     assert.equal(replies,mode==='dispatch'?1:0);assert.equal(cancels,0);assert.equal(f.state.status,'pending');stop();
   }
-  // Reject uses two authoritative native list reads, never the TUI cache.
-  const batchHost=host();batchHost.context.app.version='2.2.5';batchHost.pending.set('root',[request]);
-  let listReads=0,batchChanged=false,batchReplies=[];
-  batchHost.context.client={permission:{get:async()=>({...request}),list:async()=>{listReads++;return batchChanged&&listReads%2===0?[request,{id:'arrived',sessionID:'root'}]:[request];},reply:async value=>batchReplies.push(value)}};
-  const stopBatch=formPlugin.setup(batchHost.context);
-  batchHost.emit('permission.asked','batch-same',request);
-  await waitFor(()=>batchReplies.length===1,'same-scope batch rejection missing');
-  assert.equal(batchReplies[0].decision,'reject');assert.equal(listReads,2);
-  batchChanged=true;batchHost.emit('permission.asked','batch-changed',request);
-  await settleChildren();assert.equal(listReads,4);assert.equal(batchReplies.length,1,'new native pending request invalidates known batch');stopBatch();
+  // Enter through the real plugin subscription with a bounded helper process.
+  // This controlled permission service models the two audited reject contracts.
+  const source = messageID => ({type:'tool',messageID,id:'tool-'+messageID});
+  const cases = [
+    {version:'2.2.5',kind:'session'}, {version:'2.3.0',kind:'session'},
+    {version:'2.3.1',kind:'message'}, {version:'2.3.2',kind:'message',change:'other'},
+    {version:'2.3.2',kind:'unassociated'}, {version:'2.3.2',kind:'message',change:'add'},
+    {version:'2.3.2',kind:'message',change:'remove'}, {version:'2.3.2',kind:'message',change:'server'},
+    {version:'2.3.2',kind:'message',change:'version'}, {version:'2.3.2',kind:'message',change:'local'},
+    {version:'2.3.2',kind:'message',change:'legacy-helper'}, {version:'2.3.2',kind:'message',change:'input'}, {version:'2.3.2',kind:'message',change:'route'}, {version:'2.3.2',kind:'message',change:'immutable'},
+    {version:'2.3.2',change:'malformed'}, {version:'3.0.0'}, {version:'2.3.3'},
+    {version:'2.3.2-beta.1'}, {version:undefined},
+  ];
+  for (const [index,{version,kind,change}] of cases.entries()) {
+    const batchHost=host(), replies=[];
+    batchHost.context.app.version = version === '2.2.5' ? '2.3.2' : '2.2.5';
+    const original={...request};
+    if(kind!=='unassociated') original.source=source('one');
+    if(change==='malformed') original.source=null;
+    const second={...original,id:'second'}, other={...request,id:'different',source:source('two')};
+    let pending=[original,second,other,{...second,id:'other-session',sessionID:'other'}];
+    let getReads=0,listReads=0,serverPID=1000,currentVersion=version;
+    batchHost.pending.set('root',[original]);
+    batchHost.context.client={
+      server:{info:async()=>({pid:serverPID,version:currentVersion})},
+      message:{list:async()=>({data:[]})},
+      permission:{
+        get:async()=>{
+          if(++getReads===2){
+            if(change==='server') serverPID++;
+            if(change==='version') currentVersion='2.3.0';
+            if(change==='route') batchHost.route('other');
+            if(change==='input') batchHost.emit('session.inbox.enqueued','new-input',{sessionID:'root'});
+            if(change==='local') throw Error('no longer pending');
+            if(change==='immutable') return {...original,resources:['changed']};
+          }
+          return original;
+        },
+        list:async()=>{
+          if(++listReads===2){
+            if(change==='add') pending.push({...original,id:'new'});
+            if(change==='remove') pending=pending.filter(item=>item.id!=='second');
+            if(change==='other') pending.push({...other,id:'other-step-arrival'});
+          }
+          return pending;
+        },
+        reply:async decision=>{
+          replies.push(decision);
+          pending=pending.filter(item=>item.sessionID!==original.sessionID ||
+            (['2.3.1','2.3.2'].includes(currentVersion) && item.source?.messageID!==original.source?.messageID));
+        },
+      },
+    };
+    const stopBatch=formPlugin.setup(batchHost.context);
+    batchHost.emit('permission.asked','batch-'+(change==='legacy-helper'?change:index),original);
+    const succeeds=Boolean(kind && (!change || change==='other'));
+    await waitFor(async()=> {
+      await settleChildren();
+      return getReads>=2;
+    },'batch decision did not reach final verification '+index);
+    await settleChildren();
+    assert.equal(replies.length,succeeds?1:0,JSON.stringify({version,kind,change}));
+    if(succeeds){
+      assert.equal(listReads,2);
+      assert.deepEqual(replies[0],{sessionID:'root',requestID:original.id,decision:'reject'});
+      const retained=['other-session'];
+      if(kind!=='session') retained.push('different');
+      if(change==='other') retained.push('other-step-arrival');
+      assert.deepEqual(pending.map(item=>item.id).sort(),retained.sort());
+    }
+    stopBatch();
+  }
+  for (const action of ['allow_once','release']) {
+    const h=host(), replies=[];
+    h.context.app.version='2.3.2';
+    const malformed={...request,source:null};
+    h.pending.set('root',[malformed]);
+    h.context.client={permission:{get:async()=>malformed,reply:async value=>replies.push(value)}};
+    const stop=formPlugin.setup(h.context);
+    h.emit('permission.asked','fallback-'+action,malformed);
+    await settleChildren();
+    assert.deepEqual(replies,action==='allow_once'?[{sessionID:'root',requestID:request.id,decision:'once'}]:[]);
+    stop();
+  }
+  // A still-loaded plugin can encounter the old strict host helper after a
+  // binary rollback. Keep its ordinary owner/DB proof and disable new deny.
+  const rollbackLog=join(temp,'rollback.jsonl');
+  await writeFile(rollbackHelper,`#!${process.execPath}
+const fs=require('node:fs'),chunks=[];
+process.stdin.on('data',chunk=>chunks.push(chunk));
+process.stdin.on('end',()=>{
+  const args=process.argv.slice(2), bytes=Buffer.concat(chunks);
+  const body=JSON.parse(args.includes('--stdin-frame') ? bytes.subarray(4) : bytes);
+  fs.appendFileSync(${JSON.stringify(rollbackLog)},JSON.stringify({args,body})+'\\n');
+  if(args[1]==='host' && 'server_version' in body) {process.exitCode=1;return;}
+  if(args[1]==='wait' && args[0]==='interaction') {
+    process.stdout.write(JSON.stringify({action:'deny',request_version:2,request_id:'untrusted',owner_token:'unused',expires_at:Math.floor(Date.now()/1000)+60}));
+  } else {process.stdout.write('{}');}
+});
+`);
+  await chmod(rollbackHelper,0o700);
+  const rollbackPlugin=await load('opencode','2.3.2',rollbackHelper);
+  const rollbackHost=host();
+  rollbackHost.context.app.version='2.3.2';
+  rollbackHost.pending.set('root',[request]);
+  rollbackHost.context.client={
+    server:{info:async()=>({pid:1000,version:'2.3.2'})},message:{list:async()=>({data:[]})},
+    permission:{get:async()=>request, list:async()=>[request], reply:()=>assert.fail('legacy registration cannot enable deny')},
+  };
+  const stopRollback=rollbackPlugin.setup(rollbackHost.context);
+  rollbackHost.emit('permission.asked','rollback-approval',request);
+  await waitFor(async()=>{
+    await settleChildren();
+    try {return (await readFile(rollbackLog,'utf8')).includes('"receipt"');} catch {return false;}
+  },'missing rollback cancellation');
+  const rollbackCalls=(await readFile(rollbackLog,'utf8')).trim().split('\n').map(JSON.parse);
+  const rollbackRegistrations=rollbackCalls.filter(c=>c.args[1]==='host' && c.body.session_id==='root').map(c=>c.body);
+  assert.equal(rollbackRegistrations.length,2);
+  const {server_version:attemptedVersion,...sameProof}=rollbackRegistrations[0];
+  assert.equal(attemptedVersion,'2.3.2');assert.deepEqual(sameProof,rollbackRegistrations[1]);
+  const rollbackWait=rollbackCalls.find(c=>c.args[0]==='interaction' && c.args[1]==='wait').body;
+  assert.equal(rollbackWait.native_storage,sameProof.storage);
+  assert.equal(Object.hasOwn(rollbackWait,'pending_permissions'),false);
+  assert.equal(rollbackCalls.some(c=>c.args[1]==='authorize'),false);
+  stopRollback();
   // Pi's default is genuinely off. Once explicitly enabled, the captured
   // tool callback returns undefined to continue all later extension gates.
   const gateCallbacks=new Map(),gateAdapter=await load('pi','1.4.0',interactionDecider);

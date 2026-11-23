@@ -94,17 +94,23 @@ inputs on hosts that lack an expected-source precondition.
   back instead of being discarded; displayed defaults are never auto-submitted.
   External fields require an explicit true acknowledgment, not an OAuth success
   claim. Expiring the mobile lease never invokes form.cancel.
-- OpenCode `permission.reply` uses `decision: once/reject`. Reject explicitly
-  covers all permissions still pending in the same session at execution time;
-  the plugin fetches the authoritative native pending list before waiting and
-  again immediately before reject, refusing changed known scope. Both new and
-  legacy paths revalidate current authorization before the native reply. The native
-  interface cannot atomically reject a supplied list, so an arrival during the
-  final native call remains part of the disclosed scope. Legacy approval v3 now
-  exposes only allow_once for OpenCode; batch deny requires the new interaction
-  scope. Old strict clients safely fall back to their terminal. Disabled new
-  interaction approval retains the existing allow-once authority, not a second
-  parallel waiter.
+- OpenCode approval uses the running server's version and process identity from
+  `client.server.info()`. The TUI version still gates the plugin. The managed
+  host registration verifies the server's relationship to the local TUI and
+  open database. On stable servers 2.2.5 through 2.3.0, reject affects all
+  pending permissions in the session. On 2.3.1 and 2.3.2 it affects the
+  session's pending requests with the same `source.messageID`; a request
+  without `source` affects every other pending request without a source in
+  that session. Missing process proof, unknown server semantics and malformed
+  sources leave the original permission available locally. Independently
+  supported allow-once and release remain available.
+- Before waiting and again before dispatch the plugin reads the original
+  permission and takes the applicable batch from the authoritative list. A
+  changed original request, target set, server, route, user input or grant
+  cancels the held decision. Other steps can continue independently. The
+  native API receives one `decision: "reject"` and can also reject concurrent
+  arrivals within the same scope at execution time. Legacy approval v3
+  continues to offer only allow-once. See [request compatibility](interaction-v1.md#opencode-approval-request-contents).
 - Pi adds its own tool_call gate only after explicit local and remote opt-in.
   Built-in bash/read/write/edit/grep/find/ls expose their complete input and cwd.
   Allow returns undefined so later extension gates still decide. Denial, invalid
@@ -155,6 +161,7 @@ Deferred value. Equal actual answers prove the value, not which device won.
   [2.1.317 delta](https://github.com/anthropics/claude-code/releases/tag/v2.1.317).
   The core engine is closed; these are public contract checks, not a claim of
   complete engine source review or a successful model-driven TUI answer.
+- OpenCode reject implementations for [2.3.0](https://github.com/anomalyco/opencode/blob/a6b15d33daf6ab7d35569f6d711fdb630b9f04e7/packages/core/src/permission.ts), [2.3.1](https://github.com/anomalyco/opencode/blob/c769de83007e3584b5b395176c9fcde2d3231e88/packages/core/src/permission.ts) and [2.3.2](https://github.com/anomalyco/opencode/blob/c0ad18b402eb2827fc1ee71c171b1177b3fc02d1/packages/core/src/permission.ts), with the [permission source](https://github.com/anomalyco/opencode/blob/c0ad18b402eb2827fc1ee71c171b1177b3fc02d1/packages/schema/src/permission.ts) and [server identity](https://github.com/anomalyco/opencode/blob/c0ad18b402eb2827fc1ee71c171b1177b3fc02d1/packages/protocol/src/groups/server.ts).
 - [OpenCode Form schema](https://github.com/anomalyco/opencode/blob/9bbb8ce18c80f099e0e448775f59d965ead40a21/packages/schema/src/form.ts),
   [validation/Deferred lifecycle](https://github.com/anomalyco/opencode/blob/9bbb8ce18c80f099e0e448775f59d965ead40a21/packages/core/src/form.ts),
   [client decision and reply](https://github.com/anomalyco/opencode/blob/9bbb8ce18c80f099e0e448775f59d965ead40a21/packages/client/src/promise/generated/client.ts),

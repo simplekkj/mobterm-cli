@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -367,6 +369,117 @@ func openCodeFormSpec(raw json.RawMessage, session string) (InteractionSpec, err
 	return spec, interactionSchema(spec.Fields)
 }
 
+// Scope is frozen inside request_json and tied to the exact native permission.
+type openCodeDenyScope struct {
+	Kind          string   `json:"kind"`
+	ServerVersion string   `json:"server_version"`
+	ServerPID     int      `json:"server_pid"`
+	ServerBirth   string   `json:"server_birth"`
+	RouteID       string   `json:"route_id"`
+	Directory     string   `json:"directory"`
+	WorkspaceID   string   `json:"workspace_id,omitempty"`
+	PendingIDs    []string `json:"pending_ids"`
+	MessageID     string   `json:"message_id,omitempty"`
+}
+
+// Only the audited stable server implementations define this action. TUI
+// minima, notification and ordinary replies keep their independent policies.
+func openCodeScopeVersion(version string) string {
+	switch version {
+	case "2.3.1", "2.3.2":
+		return "step"
+	case "2.3.0":
+		return "session"
+	}
+	if strings.HasPrefix(version, "2.2.") && agentVersionToken.MatchString(version) &&
+		!strings.ContainsAny(version, "-+") && nativeInteractionVersion("opencode", version) {
+		return "session"
+	}
+	return ""
+}
+
+func (scope openCodeDenyScope) matches(session, id, cwd string, input json.RawMessage) bool {
+	if scope.ServerPID <= 1 || scope.Directory != cwd || !approvalCwdValid(cwd) || !nativeInteractionID(scope.RouteID) ||
+		(scope.WorkspaceID != "" && !nativeInteractionID(scope.WorkspaceID)) || len(scope.PendingIDs) == 0 || len(scope.PendingIDs) > 256 {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, pending := range scope.PendingIDs {
+		if !nativeInteractionID(pending) || seen[pending] {
+			return false
+		}
+		seen[pending] = true
+	}
+	if !seen[id] {
+		return false
+	}
+	var permission map[string]json.RawMessage
+	if interactionJSON(input, &permission) != nil || !nativeKeys(permission, "id", "sessionID", "action", "resources", "metadata", "source", "message", "save") {
+		return false
+	}
+	var nativeID, sessionID, action string
+	var resources []string
+	if json.Unmarshal(permission["id"], &nativeID) != nil || nativeID != id ||
+		json.Unmarshal(permission["sessionID"], &sessionID) != nil || sessionID != session ||
+		json.Unmarshal(permission["action"], &action) != nil || action == "" ||
+		json.Unmarshal(permission["resources"], &resources) != nil || resources == nil {
+		return false
+	}
+	source, hasSource := permission["source"]
+	var messageID string
+	if hasSource {
+		var fields map[string]string
+		if interactionJSON(source, &fields) != nil || len(fields) != 3 || fields["type"] != "tool" ||
+			!nativeInteractionID(fields["id"]) || !nativeInteractionID(fields["messageID"]) {
+			return false
+		}
+		messageID = fields["messageID"]
+	}
+	switch openCodeScopeVersion(scope.ServerVersion) {
+	case "session":
+		return scope.Kind == "session" && scope.MessageID == ""
+	case "step":
+		if !hasSource {
+			return scope.Kind == "unassociated" && scope.MessageID == ""
+		}
+		return scope.Kind == "message" && scope.MessageID == messageID
+	}
+	return false
+}
+
+func verifiedOpenCodeScope(s Store, p activityInput) *openCodeDenyScope {
+	var fields map[string]json.RawMessage
+	var scope openCodeDenyScope
+	if interactionJSON(p.PendingPermissions, &fields) != nil || !nativeKeys(fields, "kind", "server_pid", "server_version", "route_id", "directory", "workspace_id", "pending_ids", "message_id") ||
+		json.Unmarshal(p.PendingPermissions, &scope) != nil || (fields["workspace_id"] != nil && scope.WorkspaceID == "") ||
+		(fields["message_id"] != nil && scope.MessageID == "") || !scope.matches(p.SessionID, p.RequestID, p.Cwd, p.ToolInput) {
+		return nil
+	}
+	storage := nativeStorageKey("opencode", p.NativeStorage)
+	route, err := logicalSession("opencode", scope.RouteID)
+	if err != nil || storage == "" {
+		return nil
+	}
+	host, err := currentNativeHost(s, storage, func(h nativeHost) bool {
+		return h.Agent == "opencode" && h.Logical == sessionWithStorage(route, storage) && h.PID == os.Getppid()
+	})
+	if err != nil || host.ServerPID != scope.ServerPID || host.ServerVersion != scope.ServerVersion || host.ServerBirth == "" {
+		return nil
+	}
+	birth, err := processIdentity(scope.ServerPID)
+	if err != nil || birth != host.ServerBirth {
+		return nil
+	}
+	scope.ServerBirth = birth
+	return &scope
+}
+
+func (spec InteractionSpec) openCodeDenyValid() bool {
+	scope := spec.DenyScope
+	return spec.Agent == "opencode" && spec.Kind == "approval" && spec.V == 2 && scope != nil &&
+		bytes.Equal(spec.ToolInput, spec.NativeInput) && strongTmuxOccupant.MatchString(scope.ServerBirth) && scope.matches(spec.SessionID, spec.NativeID, spec.Cwd, spec.NativeInput)
+}
+
 func interactionObserve(ctx context.Context, s Store, api API, source string, raw []byte) (any, error) {
 	// A disabled Pi gate leaves the existing tool chain untouched. Once locally
 	// opted in, every target/schema/network error must block this invocation.
@@ -489,9 +602,11 @@ func interactionObserve(ctx context.Context, s Store, api API, source string, ra
 			spec.Title = "OpenCode permission"
 			spec.NativeID = p.RequestID
 			spec.NativeInput = p.ToolInput
-			spec.SupportedActions = []string{"allow_once", "deny", "release"}
-			spec.Scope = "Deny rejects all permission requests pending in this session at execution time, including requests arriving concurrently."
-			spec.NativeMetadata = object["pending_permissions"]
+			spec.SupportedActions = []string{"allow_once", "release"}
+			if scope := verifiedOpenCodeScope(s, p); scope != nil {
+				spec.DenyScope = scope
+				spec.SupportedActions = []string{"allow_once", "deny", "release"}
+			}
 		} else {
 			return nil, errors.New("unsupported_native_interaction")
 		}

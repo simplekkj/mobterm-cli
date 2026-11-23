@@ -162,7 +162,7 @@ export default Plugin.define({
     });
     let alive = true, routeEpoch = 0, previousRoute, previousLocation;
     const activation = randomUUID();
-    let hostStorage, hostServer, hostReady = Promise.resolve(), inputEpoch = 0;
+    let hostStorage, hostServer, scopeServerVersion, hostReady = Promise.resolve(), inputEpoch = 0;
     const mailbox = replyWakeMailbox("opencode", async () => {
       if (!alive) return;
       const id=route(), epoch=routeEpoch, storage=hostStorage;
@@ -173,12 +173,16 @@ export default Plugin.define({
     });
     mailbox.start();
     const lifecycles = new Map();
-    let stopReply, replySession;
+    let stopReply, replySession, permissionInputEpoch = 0;
     const inputReceipts = new Map();
     const invalidateReply = sessionID => {
       if (sessionID !== undefined && sessionID === route()) inputEpoch++;
       if (sessionID !== undefined && replySession !== sessionID && root(sessionID) !== replySession) return;
       stopReply?.(); stopReply = undefined; replySession = undefined;
+    };
+    const inboxInput = id => {
+      if (id && root(id) === root(route())) permissionInputEpoch++;
+      invalidateReply(id);
     };
     const tools = new Map();
     const approvalChildren = new Map();
@@ -310,6 +314,50 @@ export default Plugin.define({
         child.once("error",()=>finish(false));child.stdin.on("error",()=>finish(false));child.once("close",code=>{try{finish(code===0&&JSON.parse(output).allowed===true);}catch{finish(false);}});child.stdin.end(Buffer.concat([header,body]));
       }catch{finish(false);}
     });
+    // Permission.get/list are authoritative. A missing or unknown proof only
+    // removes batch deny; allow-once and the notification still have their own gates.
+    const permissionScope = async (pending, location) => {
+      if (!scopeServerVersion || !hostStorage || !location?.directory || !validID(route()) ||
+          (location.workspaceID !== undefined && !validID(location.workspaceID))) return;
+      try {
+        const server = await context.client.server.info({signal: AbortSignal.timeout(2500)});
+        if (server?.pid !== hostServer || server.version !== scopeServerVersion) return;
+        const version = server.version;
+        const sessionWide = version === "2.3.0" ||
+          (/^2\.2\.(0|[1-9]\d*)$/.test(version) && atLeast(version, [2, 2, 5]));
+        if (!sessionWide && version !== "2.3.1" && version !== "2.3.2") return;
+        const message = item => {
+          if (!Object.hasOwn(item, "source")) return undefined;
+          const source = item.source;
+          if (!source || source.type !== "tool" || !validID(source.messageID) || !validID(source.id) ||
+              Object.keys(source).length !== 3) throw Error("unknown_permission_source");
+          return source.messageID;
+        };
+        const messageID = message(pending);
+        const ids = new Set();
+        const requests = await context.client.permission.list({sessionID: pending.sessionID});
+        if (!Array.isArray(requests)) return;
+        for (const item of requests) {
+          if (!validID(item?.sessionID)) return;
+          if (item.sessionID !== pending.sessionID) continue;
+          const otherMessage = message(item);
+          if (!sessionWide && otherMessage !== messageID) continue;
+          if (!validID(item.id) || typeof item.action !== "string" ||
+              !Array.isArray(item.resources) || !item.resources.every(value => typeof value === "string") ||
+              ids.has(item.id) || ids.size >= 256) return;
+          if (item.id === pending.id && stableJSON(item) !== stableJSON(pending)) return;
+          ids.add(item.id);
+        }
+        if (!ids.has(pending.id)) return;
+        return {
+          kind: sessionWide ? "session" : messageID === undefined ? "unassociated" : "message",
+          server_version: version, server_pid: server.pid, route_id: route(),
+          directory: location.directory, workspace_id: location.workspaceID,
+          ...(!sessionWide && messageID !== undefined ? {message_id: messageID} : {}),
+          pending_ids: [...ids].sort(),
+        };
+      } catch { return undefined; }
+    };
     const startInteraction = async (payload, requestID, location, valid, isForm) => {
       const sessionID=payload.session_id, key=JSON.stringify([sessionID,requestID]);
       if(!atLeast(version, minimums.interaction.opencode)){transport.enqueue({...payload,unavailable_reason:"agent_version_unverified"},valid);return;}
@@ -318,19 +366,25 @@ export default Plugin.define({
       // Reserve before awaiting the official client, so duplicate events cannot
       // create two waiters for the same native continuation.
       const reserved={kill:()=>{reserved.cancelled=true;},cancelled:false};approvalChildren.set(key,reserved);
-      let pending,snapshot,batch;
+      let pending,snapshot,denyScope;
       try {
         pending=isForm?await context.client.session.form.get({sessionID,formID:requestID}):await context.client.permission.get({sessionID,requestID});
         if(reserved.cancelled||!valid()||pending.sessionID!==sessionID||pending.id!==requestID||isForm&&pending.state?.status!=="pending")return;
         const {state,...immutable}=pending;snapshot=stableJSON(immutable);
-        batch=isForm?undefined:(await context.client.permission.list({sessionID})).filter(p=>p.sessionID===sessionID).map(p=>p.id).sort();
-        if(reserved.cancelled||!valid())return;
-        if(!isForm&&(!Array.isArray(batch)||!batch.includes(requestID))){transport.enqueue(payload,valid);return;}
         await hostReady;
+        const nativeLocation = location ?? context.data.session.get(sessionID)?.location;
+        if (!isForm) denyScope = await permissionScope(pending, nativeLocation);
         if(reserved.cancelled||!valid())return;
-        const body=JSON.stringify({...payload,native_storage:hostStorage,cwd:location?.directory??context.data.session.get(sessionID)?.location?.directory,
+        const input = {...payload,native_storage:hostStorage,cwd:nativeLocation?.directory,
           tool_name:isForm?"form":"permission",tool_use_id:requestID,
-          ...(isForm?{native_form:pending}:{tool_input:pending,pending_permissions:batch})});
+          ...(isForm?{native_form:pending}:{tool_input:pending})};
+        // Older CLI parsers accept this metadata key. Only a v2 decision
+        // acknowledgment from a new helper can dispatch a scoped reject.
+        let body = JSON.stringify({...input, pending_permissions: denyScope});
+        if (denyScope && Buffer.byteLength(body) > 24576) {
+          denyScope = undefined;
+          body = JSON.stringify(input);
+        }
         if(Buffer.byteLength(body)>24576){transport.enqueue({...payload,unavailable_reason:"interaction_request_too_large"},valid);return;}
         const child=spawn(executable,["interaction","wait","--source","opencode"],{env:{...process.env,MOBTERM_CONFIG_DIR:store},stdio:["pipe","pipe","ignore"],shell:false});
         approvalChildren.set(key,child);let output="",overflow=false;
@@ -357,8 +411,8 @@ export default Plugin.define({
             const {state,...immutable}=current;
             if(!valid()||Date.now()>=result.expires_at*1000||stableJSON(immutable)!==snapshot||isForm&&state?.status!=="pending"){await receipt(result,"native_cancelled");return;}
             if(!isForm&&result.action==="deny") {
-              const now=(await context.client.permission.list({sessionID})).filter(p=>p.sessionID===sessionID).map(p=>p.id).sort();
-              if(stableJSON(now)!==stableJSON(batch)){await receipt(result,"native_cancelled");return;}
+              const now = result.request_version === 2 && denyScope && await permissionScope(current, nativeLocation);
+              if(!now || stableJSON(now)!==stableJSON(denyScope)){await receipt(result,"native_cancelled");return;}
             }
             if(!await authorize(result)||!valid()||Date.now()>=result.expires_at*1000){await receipt(result,"native_cancelled");return;}
             if(isForm){
@@ -449,10 +503,20 @@ export default Plugin.define({
         ["1","true"].includes(process.env.OPENCODE_DISABLE_CHANNEL_DB) ? "opencode.db" : "opencode-" + channel.replace(/[^a-zA-Z0-9._-]/g,"-") + ".db");
       const storage = resolvePath(data,"opencode",filename), input = inputEpoch;
       const [server,turn] = await Promise.all([context.client.server.info({signal:AbortSignal.timeout(2500)}),latestIdle(id).catch(()=>undefined)]);
-      if (!alive || routeEpoch !== epoch || route()!==id || !Number.isSafeInteger(server?.pid) || server.pid<=1) return;
-      const host = await registerCurrent({session_id:id,storage,server_pid:server.pid,turn});
-      if (!host || !alive || routeEpoch!==epoch || route()!==id) return;
-      hostStorage=storage; hostServer=server.pid;
+      const current = () => alive && routeEpoch === epoch && route() === id;
+      if (!current() || !Number.isSafeInteger(server?.pid) || server.pid <= 1) return;
+      const proof = {session_id:id, storage, server_pid:server.pid, turn};
+      let host = await registerCurrent({...proof, server_version:server.version});
+      const verifiedVersion = host && server.version;
+      if (!host && current() && typeof server.version === "string") {
+        // Older helpers strictly reject server_version. Recheck the same TUI
+        // and server before retrying only host registration at the same epoch.
+        const live = await context.client.server.info({signal:AbortSignal.timeout(2500)});
+        if (current() && live?.pid === server.pid && live.version === server.version)
+          host = await registerCurrent(proof);
+      }
+      if (!host || !current()) return;
+      hostStorage=storage; hostServer=server.pid; scopeServerVersion=verifiedVersion;
       if (!turn || inputEpoch!==input || !/^[a-f0-9]{64}$/.test(host.source_id)) return;
       const valid = () => alive && routeEpoch===epoch && inputEpoch===input &&
         route()===id && root(id)===id && locationKey(context.data.session.get(id)?.location)===location;
@@ -476,7 +540,9 @@ export default Plugin.define({
         const epoch = routeEpoch, generation = lifecycles.get(sessionID);
         if (completion && (generation?.terminal || staleExecution(event))) return;
         const requestKey = JSON.stringify([sessionID,requestID]);
+        const permissionInput = permissionInputEpoch;
         const valid = () => {
+          if (nativeType === "permission.asked" && permissionInput !== permissionInputEpoch) return false;
           if (!alive || epoch !== routeEpoch || route() !== selected || root(sessionID) !== selectedRoot || root(selected) !== selectedRoot) return false;
           if (locationKey(context.data.session.get(sessionID)?.location) !== location) return false;
           if (lifecycles.get(sessionID) !== generation) return false;
@@ -548,7 +614,7 @@ export default Plugin.define({
           const currentLocation = current && locationKey(context.data.session.get(current)?.location);
           if (current !== previousRoute || currentLocation !== previousLocation) {
             previousRoute=current; previousLocation=currentLocation; routeEpoch++; invalidateReply();
-            hostStorage=undefined; hostServer=undefined;
+            hostStorage=undefined; hostServer=undefined; scopeServerVersion=undefined;
             hostReady=registerRoute(current,currentLocation,routeEpoch).catch(()=>{});
             transport.cancel(); transport.prepare(hostReady); pendingObservations.clear();
             for (const run of lifecycles.values()) {run.summary=undefined;run.body=undefined;run.messageID=undefined;}
@@ -562,7 +628,7 @@ export default Plugin.define({
         ["session.execution.failed", (event) => {if (!staleExecution(event)) {state(event,event.type);lifecycle(event.data.sessionID,true,event);}}],
         ["session.execution.interrupted", (event) => {if (!staleExecution(event)) {state(event,event.type);lifecycle(event.data.sessionID,true,event);}}],
         ["session.execution.succeeded", handle],
-        ["session.inbox.enqueued", event => invalidateReply(event.data?.sessionID)],
+        ["session.inbox.enqueued", event => inboxInput(event.data?.sessionID)],
         ["session.status", event => { if (event.data?.status?.type !== "idle") invalidateReply(event.data?.sessionID); }],
         ["session.inbox.delivered", event => {
           const id = event.data?.inboxID, item = inputReceipts.get(id);
@@ -570,7 +636,7 @@ export default Plugin.define({
               (!event.location || locationKey(event.location) === item.location)) {
             inputReceipts.delete(id); void replyReceipt(item.tuple, "native_consumed");
           }
-          invalidateReply(event.data?.sessionID);
+          inboxInput(event.data?.sessionID);
         }],
         ["session.step.started", event => summaryStep(event)],
         ["session.step.ended", event => summaryStep(event, true)],

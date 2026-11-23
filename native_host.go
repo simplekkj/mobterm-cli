@@ -17,25 +17,29 @@ import (
 // Each adapter publishes its current native session from its own host. Entries
 // select a challenge recipient. They never authorize a navigation or a write.
 type nativeHost struct {
-	Epoch      uint64 `json:"epoch,omitempty,string"`
-	Agent      string `json:"agent"`
-	Logical    string `json:"logical"`
-	Storage    string `json:"storage"`
-	PID        int    `json:"pid"`
-	Birth      string `json:"birth"`
-	Credential string `json:"credential"`
+	ServerPID     int    `json:"server_pid,omitempty"`
+	ServerVersion string `json:"server_version,omitempty"`
+	ServerBirth   string `json:"server_birth,omitempty"`
+	Epoch         uint64 `json:"epoch,omitempty,string"`
+	Agent         string `json:"agent"`
+	Logical       string `json:"logical"`
+	Storage       string `json:"storage"`
+	PID           int    `json:"pid"`
+	Birth         string `json:"birth"`
+	Credential    string `json:"credential"`
 }
 
 type nativeHostFrame struct {
-	Epoch     uint64 `json:"epoch,omitempty,string"`
-	ServerPID int    `json:"server_pid,omitempty"`
-	Token     string `json:"host_token"`
-	V         int    `json:"v"`
-	Agent     string `json:"agent"`
-	Session   string `json:"session_id"`
-	Storage   string `json:"storage"`
-	Turn      string `json:"turn,omitempty"`
-	Source    string `json:"source_id,omitempty"`
+	ServerVersion string `json:"server_version,omitempty"`
+	Epoch         uint64 `json:"epoch,omitempty,string"`
+	ServerPID     int    `json:"server_pid,omitempty"`
+	Token         string `json:"host_token"`
+	V             int    `json:"v"`
+	Agent         string `json:"agent"`
+	Session       string `json:"session_id"`
+	Storage       string `json:"storage"`
+	Turn          string `json:"turn,omitempty"`
+	Source        string `json:"source_id,omitempty"`
 }
 
 const nativeHostsFile = "native-hosts.json"
@@ -121,8 +125,14 @@ func readHostFrame(ctx context.Context, s Store, in io.Reader) (nativeHostFrame,
 		return f, h, err
 	}
 	if f.Session != "" {
-		if f.Agent == "opencode" && !localOpenCodeDatabase(ctx, h.PID, f.ServerPID, f.Storage) {
-			return f, h, errNavigationBinding
+		if f.Agent == "opencode" {
+			if !localOpenCodeDatabase(ctx, h.PID, f.ServerPID, f.Storage) {
+				return f, h, errNavigationBinding
+			}
+			if openCodeScopeVersion(f.ServerVersion) != "" {
+				h.ServerPID, h.ServerVersion = f.ServerPID, f.ServerVersion
+				h.ServerBirth, _ = processIdentity(f.ServerPID)
+			}
 		}
 		h.Storage = nativeStorageKey(f.Agent, f.Storage)
 		if h.Storage == "" {

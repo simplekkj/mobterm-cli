@@ -372,3 +372,85 @@ func TestInteractionConfirmedReceiptRedactsOtherPair(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenCodeConcurrentPermissionAfterFrozenDecision(t *testing.T) {
+	s := testStore(t)
+	if err := ensureDir(s.Dir, true); err != nil {
+		t.Fatal(err)
+	}
+	l := Locator{InstallationID: randomID()}
+	spec := InteractionSpec{V: 2, Agent: "opencode", Kind: "approval", SessionID: "session", NativeID: "p", Cwd: "/project", RunID: "run", RuntimeIdentity: "tui"}
+	spec.NativeInput = json.RawMessage(`{"id":"p","sessionID":"session","action":"edit","resources":["file"]}`)
+	spec.ToolInput = spec.NativeInput
+	spec.DenyScope = &openCodeDenyScope{Kind: "unassociated", ServerVersion: "2.3.2", ServerPID: 2, ServerBirth: "tmux-proc-v1:" + strings.Repeat("a", 64), RouteID: "session", Directory: spec.Cwd, PendingIDs: []string{"p"}}
+	raw, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := InteractionRecord{Agent: "opencode", RequestID: randomID(), LogicalSession: "logical", Locator: l, RequestJSON: string(raw)}
+	db, err := loadRuns(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := replyScope(l.InstallationID, r.LogicalSession)
+	next := Activity{Agent: "opencode", Session: spec.SessionID, Run: spec.RunID, Instance: spec.RuntimeIdentity, State: "waiting_approval", Reminder: "needs_input", Occurrence: "p1", Interaction: &InteractionHint{Kind: "approval", RequestID: r.RequestID}}
+	advance := func(a Activity) {
+		t.Helper()
+		if !advanceReplyHead(&db, a, scope, time.Now().Unix()) {
+			t.Fatal("head did not advance")
+		}
+		if err := saveRuns(s, db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	advance(next)
+	group := openCodeDispatchGroup(s, r, spec)
+	if group == "" || !interactionSourceCurrent(s, r) {
+		t.Fatal("latest original source unavailable")
+	}
+	next.Occurrence = "p2"
+	next.Interaction.RequestID = randomID()
+	advance(next)
+	if interactionSourceCurrent(s, r) {
+		t.Fatal("old notification started a new decision")
+	}
+	r.Frame = &InteractionFrame{Action: "deny"}
+	r.PermissionGroup = group
+	if !interactionSourceCurrent(s, r) {
+		t.Fatal("unrelated concurrent permission cancelled frozen deny")
+	}
+	r.Frame.Action = "allow_once"
+	if interactionSourceCurrent(s, r) {
+		t.Fatal("unrelated action received deny-only exception")
+	}
+	r.Frame.Action = "deny"
+	prior := db.ReplyHeads[scope]
+	for _, change := range []string{"input", "complete", "new-run", "new-host"} {
+		db.ReplyHeads[scope] = prior
+		changed := next
+		changed.Occurrence = "changed-" + change
+		switch change {
+		case "input":
+			changed.State = "running"
+			changed.Reminder = ""
+			changed.Interaction = nil
+		case "complete":
+			changed.State = "completed"
+			changed.Reminder = "turn_completed"
+			changed.Interaction = nil
+		case "new-run":
+			changed.Run = "new-run"
+		case "new-host":
+			changed.Instance = "new-tui"
+		}
+		advance(changed)
+		if interactionSourceCurrent(s, r) {
+			t.Fatal(change + " retained authority")
+		}
+		next.Occurrence = "later-" + change
+		advance(next)
+		if interactionSourceCurrent(s, r) {
+			t.Fatal(change + " revived old decision")
+		}
+	}
+}

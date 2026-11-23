@@ -48,6 +48,7 @@ type InteractionField struct {
 	When        []InteractionCondition `json:"when,omitempty"`
 }
 type InteractionSpec struct {
+	DenyScope        *openCodeDenyScope `json:"deny_scope,omitempty"`
 	OwnerPID         int                `json:"-"`
 	OwnerBirth       string             `json:"-"`
 	V                int                `json:"v"`
@@ -350,7 +351,7 @@ func interactionFieldValue(f InteractionField, v any) error {
 	return nil
 }
 func interactionAnswers(spec InteractionSpec, action, raw string) error {
-	if !interactionAction(spec.Kind, action) {
+	if !interactionAction(spec.Kind, action) || (spec.Agent == "opencode" && action == "deny" && !spec.openCodeDenyValid()) {
 		return errors.New("invalid_interaction_action")
 	}
 	allowed := action == "release"

@@ -17,7 +17,7 @@ import linux_lifecycle_test as lifecycle
 
 
 class DarwinCodexTest(unittest.TestCase):
-    version = '0.163.0'
+    version = '0.171.0'
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="codex guard's test ")
@@ -41,7 +41,7 @@ class DarwinCodexTest(unittest.TestCase):
         (self.platform_package / 'package.json').write_text(json.dumps({
             'name': '@openai/codex', 'version': self.version + '-darwin-x64',
             'cpu': ['x64'], 'os': ['darwin']}))
-        self.enterContext(patch.object(guard, 'LAUNCHER_SHA256', guard.digest(self.launcher)))
+        self.enterContext(patch.dict(guard.LAUNCHER_SHA256, {self.version: guard.digest(self.launcher)}))
         self.pin_digest()
         self.enterContext(patch('platform.system', return_value='Darwin'))
         self.enterContext(patch('platform.machine', return_value='x86_64'))
@@ -51,17 +51,17 @@ class DarwinCodexTest(unittest.TestCase):
         self.enterContext(patch.dict(guard.NATIVE_SHA256, {
             (self.version, 'x64'): guard.digest(self.native)}))
 
-    def write_sentinel(self, path, tag, *, version='0.163.0', code=0):
+    def write_sentinel(self, path, tag, *, version=None, code=0):
         path.parent.mkdir(exist_ok=True, parents=True)
         path.write_text('#!/bin/sh\n' + f'echo {tag} "$@" >> {shlex.quote(str(self.calls))}\n'
-                        f'echo codex-cli {version}\nexit {code}\n')
+                        f'echo codex-cli {version or self.version}\nexit {code}\n')
         path.chmod(0o700)
 
     def write_manifest(self, version=None):
         (self.package / 'package.json').write_text(json.dumps({
             'name': '@openai/codex', 'bin': {'codex': 'bin/codex.js'},
             'version': version or self.version,
-            'optionalDependencies': {'@openai/codex-darwin-x64': 'npm:@openai/codex@0.163.0-darwin-x64'}
+            'optionalDependencies': {'@openai/codex-darwin-x64': f'npm:@openai/codex@{self.version}-darwin-x64'}
         }))
 
     def runner_error(self, message, *, version=None):
@@ -146,7 +146,7 @@ class DarwinCodexTest(unittest.TestCase):
 
     def test_real_program_mismatch_or_nonzero_after_allow_is_failure(self):
         with patch.object(guard, 'assess_native'):
-            for version, code, reason in (('0.163.1', 0, 'mismatch'), ('0.163.0', 7, 'exit 7')):
+            for version, code, reason in (('0.171.1', 0, 'mismatch'), (self.version, 7, 'exit 7')):
                 with self.subTest(reason=reason):
                     self.write_sentinel(self.native, 'native', version=version, code=code)
                     self.pin_digest()

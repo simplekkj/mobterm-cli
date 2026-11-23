@@ -43,6 +43,44 @@ cannot authorize a new kind. Disabling prevents dispatch and cancels an existing
 decision from that pairing; other original participating pairings retain their
 independent permissions and the original pairing can still query its receipt.
 
+## OpenCode approval request contents
+
+A verified OpenCode batch deny uses `request_json.v = 2`. Its `deny_scope`
+contains `kind` (`session`, `message` or `unassociated`), `server_version`,
+`server_pid`, `server_birth`, `route_id`, `directory`, optional `workspace_id`
+and 1–256 unique `pending_ids` including `native_id`. Only `message` has
+`message_id`. The route may be the visible root of a child session. The
+complete original permission is bound by the request digest, including its
+session, ID and optional tool source. Directory matches the original cwd.
+Server birth is the local OS incarnation of the server attested by the managed
+TUI for its open database. Server identity and the authoritative affected set
+are verified before the single native reject. The set can still change during
+the non-atomic native call. See [audited versions and scope](native-interactions.md).
+
+Only the inner immutable request changes version. The encrypted hint, SSH
+commands, outer inspection, receipt, HMAC and byte budgets retain their
+versions. Older Apps reject the versioned request. A new App receiving an old
+OpenCode v1 request excludes deny even if its advertised actions include it.
+A new CLI refuses fresh denies against such stored requests. A current CLI
+with an old loaded adapter or unproven server can produce v1 allow-once and
+release when those actions meet their independent prerequisites. The plugin
+requires the helper’s local `request_version:2` acknowledgment before deny; an
+old helper cannot dispatch by returning the old bare deny action. Status and
+idempotent queries of existing decisions remain available.
+
+Upgrade the App, then the CLI, refresh the owned OpenCode hook via
+`mobterm-cli hooks install --agent opencode`, then reload the plugin through
+OpenCode. The installer checks existing file fingerprints and config ownership.
+An installed adapter can coexist with a session still running the older code.
+After a CLI rollback, a loaded current OpenCode plugin may retry its local host
+registration once using the older frame at the same activation epoch, after
+checking the original route and server PID/version. This preserves ordinary
+host registration with the older helper and removes batch deny for that
+registration. Between registrations, the adapter uses the existing local
+`pending_permissions` metadata slot to carry scope, which old wait helpers
+can read. A legacy array in this slot supplies no deny proof to a new helper.
+Host registration retries never submit a decision.
+
 ## Authentication vector
 
 Derive 32 bytes with HKDF-SHA256, IKM the existing pairing encryption key, salt
@@ -129,7 +167,9 @@ Optional form fields have an explicit Clear Answer action, distinct from enterin
 empty text/arrays, false or zero. Clearing removes the answer and transient input;
 conditions are recomputed and inactive answers remain excluded.
 
-If raw OpenCode input fits but the normalized request or nested response envelope
+When only optional OpenCode deny evidence exceeds the raw or normalized request budget,
+allow-once and release can still use the complete permission within budget.
+If the complete required OpenCode input fits but the normalized request or nested response envelope
 exceeds its budget, the helper alone publishes a reason-bearing unavailable
 observation before creating any actionable record. It has no actions, waiter or
 owner token and cannot authorize dispatch. With the current opt-in interaction
@@ -178,5 +218,7 @@ The legacy OpenCode adapter uses owner-bound `interaction authorize-approval`
 with `{v:1,request_id,digest}` after refreshing the native request. It checks the
 original parent incarnation, consumed allow-once receipt, fresh legacy grant,
 expiry and target without granting another send. New batch denial refreshes the
-native permission list before final authorization; an observed list change
-requires a new user decision rather than silently widening known scope.
+native permission list before final authorization. A change to the verified
+affected set invalidates the frozen decision. Fresh decisions still require
+the current source. A recorded deny may pass intervening permission reminders
+in the same run and activation while all native and policy checks hold.

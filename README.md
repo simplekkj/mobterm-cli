@@ -390,7 +390,7 @@ this is not a download test against a public Release.
 
 The eight native CI jobs use historical Codex 0.162.1 / Claude Code 2.1.282.
 Linux also runs the real minimum and current endpoint suites. The macOS Intel
-`macos-config` job uses Codex 0.163.0 with minimum Claude Code 2.0.36,
+`macos-config` job uses Codex 0.171.0 with minimum Claude Code 2.0.36,
 OpenCode 2.0.0 and Pi 1.1.0. Each job selects its exact versions from
 `testdata/compatibility-samples.json` before npm installation. Go fixtures
 exercise the Codex notification floor of 0.100.0 on both systems.

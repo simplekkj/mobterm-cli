@@ -2,9 +2,9 @@
 
 ## Reading scope
 
-The table below records fixed notification regression samples, originally checked
-on 2026-10-16 and extended for OpenCode/Pi on 2026-10-20. “Current reference” is a
-reproducible sample label, not the newest upstream release or an action allowlist.
+The table records the November 23 fixed notification references. Earlier samples
+and their original execution results remain in the validation ledger. “Current
+reference” identifies a reproducible sample. Each action has its own runtime checks.
 For current v2 observation and legacy approval behavior, see
 [negotiated state and approval](#negotiated-state-and-approval-2026-10-31); for
 new request/answer actions, use the per-action minimum versions and runtime schemas in
@@ -19,12 +19,28 @@ minimum can use the existing adapter, with no mechanical upper limit. Every even
 must still satisfy the field, semantic, target and pairing checks. A future version
 passing the gate is **not** a claim that its event contract has been tested.
 
-| Agent | Minimum stable | Historical regression | Current reference (2026-10-16) |
+| Agent | Minimum stable | Historical regression | Current reference (2026-11-23) |
 | --- | --- | --- | --- |
-| Codex | 0.100.0 | 0.162.1 | 0.163.0 |
-| Claude Code | 2.0.36 | 2.1.282 | 2.1.301 |
-| OpenCode | 2.0.0 | — | 2.1.0 (2026-10-20) |
-| Pi coding-agent | 1.1.0 | — | 1.3.0 (2026-10-20) |
+| Codex | 0.100.0 | 0.162.1 | 0.171.0 |
+| Claude Code | 2.0.36 | 2.1.282 | 2.1.330 |
+| OpenCode | 2.0.0 | — | 2.3.2 (V2) |
+| Pi coding-agent | 1.1.0 | — | 1.6.0 |
+
+The interaction floors are Codex 0.166.0, Claude 2.1.316, OpenCode 2.2.5 and
+Pi 1.4.0. Ordinary replies require Claude 2.1.326, OpenCode 2.2.5 or Pi 1.5.1.
+Codex has no ordinary reply route. The host and schema checks still apply to
+each native action. See [capability minimums](../adapters/minimums.json).
+
+The November source references are the [Codex hook runtime](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/core/src/hook_runtime.rs),
+[Claude Code public Mod types](https://github.com/anthropics/claude-code/blob/e791a1c41eee7504672a109fd6eb66b11566b8a1/mods/types/claude-code.d.ts),
+[OpenCode V2 permission implementation](https://github.com/anomalyco/opencode/blob/c0ad18b402eb2827fc1ee71c171b1177b3fc02d1/packages/core/src/permission.ts)
+and [Pi extension API](https://github.com/earendil-works/pi/blob/faac585884ae2c013a6b1400f3e9e77f10b34bac/packages/coding-agent/src/core/extensions/types.ts).
+Claude's public types describe the Mod contract. Its engine is distributed as a binary.
+OpenCode publishes separate V1 and V2 lines. Pi's event-only extension uses
+`agent_settled`, `session_shutdown` and the void-returning `sendUserMessage`.
+The read-only render result does not affect this extension. The previous
+0.163.0 / 2.1.301 / 2.1.0 / 1.3.0 results retain their original versions in
+[validation](validation.md). See the [November host runs](validation.md#2026-11-23-agent-tui-compatibility-round-1-v10) for the installed packages and observed results.
 
 The pinned test samples live in `testdata/compatibility-samples.json`. Go tests
 check minimum/current against the production descriptor in `compatibility.go` and
@@ -33,7 +49,7 @@ changing the minimum or recording a new validation reference. No CLI release is
 needed merely to unlock a higher stable Agent version using the same contract.
 
 For real npm tests, Linux exercises the semantic minimum and current endpoints.
-The macOS Intel `macos-config` sample overrides only Codex to 0.163.0. The eight
+The macOS Intel `macos-config` sample overrides only Codex to 0.171.0. The eight
 native jobs on Linux and macOS use the historical pair. OpenAI identifies
 0.119.0 as the first Codex CLI with the updated macOS signing certificate,
 and May 8, 2026 as the revocation date for the old certificate. macOS real
@@ -214,7 +230,7 @@ the adapter. A future type is ignored, never inferred from message text.
 
 ## Verification scope
 
-Official latest stable release pages were rechecked on 2026-10-16:
+Earlier fixed release references (2026-10-16):
 [Codex 0.163.0](https://github.com/openai/codex/releases/tag/rust-v0.163.0),
 [Claude Code 2.1.301](https://github.com/anthropics/claude-code/releases/tag/v2.1.301).
 They are pinned references, not a production ceiling. No claim is made that every
@@ -385,7 +401,7 @@ completion still comes exclusively from `session.execution.succeeded`.
 Pi means the official `@earendil-works/pi-coding-agent` package in
 [earendil-works/pi](https://github.com/earendil-works/pi). Minimum 1.1.0
 (`abe508e1b89912adde45528136c3221eb69acdd7`) adds explicit settled cancellation;
-current reference 1.3.0 (`71023aec1546d6d677a65669c5665c0927ce0dd0`).
+earlier reference 1.3.0 (`71023aec1546d6d677a65669c5665c0927ce0dd0`).
 The extension uses host-resolved `VERSION`, `ctx.mode === "tui"`,
 `sessionManager.getSessionId()`, observed `agent_start` and final `agent_settled`.
 Only explicit `aborted:false` completes. Retry/compaction/continuation intermediate
@@ -514,7 +530,7 @@ requires migration. Pending multi-file operations use journal version 2; version
 and do not understand JSON native ownership; complete recovery/removal with the
 new CLI before downgrading.
 
-Claude 2.1.301 is the current fixed schema reference for tool observations and
+Claude 2.1.301 was the October schema reference for tool observations and
 PermissionRequest. Stop records a cycle boundary without completing the run;
 only idle for that still-current stopped cycle completes it. A late prior-cycle
 idle after the next prompt is ignored. Generic permission/elicitation callbacks

@@ -43,18 +43,20 @@ type InteractionFrame struct {
 	Proof            string `json:"proof,omitempty"`
 }
 type InteractionDecision struct {
-	RequestID    string `json:"request_id"`
-	Digest       string `json:"digest"`
-	Action       string `json:"action"`
-	ResponseJSON string `json:"response_json"`
-	ExpiresAt    int64  `json:"expires_at"`
-	OwnerToken   string `json:"owner_token"`
+	RequestVersion int    `json:"request_version,omitempty"`
+	RequestID      string `json:"request_id"`
+	Digest         string `json:"digest"`
+	Action         string `json:"action"`
+	ResponseJSON   string `json:"response_json"`
+	ExpiresAt      int64  `json:"expires_at"`
+	OwnerToken     string `json:"owner_token"`
 }
 type InteractionOutput struct {
 	Value     any
 	RequestID string
 }
 type InteractionRecord struct {
+	PermissionGroup      string            `json:"permission_group,omitempty"`
 	LogicalSession       string            `json:"logical_session,omitempty"`
 	ChildRunKey          string            `json:"claude_child_run_key,omitempty"`
 	ExpectedNativeID     string            `json:"expected_native_id,omitempty"`
@@ -467,6 +469,9 @@ func interactionCommand(ctx context.Context, s Store, api API, command string, i
 	if e = interactionAnswers(spec, f.Action, f.ResponseJSON); e != nil {
 		return nil, e
 	}
+	if r.Agent == "opencode" && f.Action == "deny" {
+		r.PermissionGroup = openCodeDispatchGroup(s, r, spec)
+	}
 	r.Frame = &f
 	r.State = "decision_recorded"
 	if command == "release" {
@@ -633,6 +638,9 @@ func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a A
 		a.Run = run.Run
 	}
 	spec.V = 1
+	if spec.DenyScope != nil {
+		spec.V = 2
+	}
 	spec.RequestID = randomID()
 	spec.Agent = a.Agent
 	spec.SessionID = a.Session
@@ -651,6 +659,13 @@ func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a A
 	raw, e := json.Marshal(spec)
 	if e != nil {
 		return nil, e
+	}
+	if len(raw) > interactionRequestLimit && spec.DenyScope != nil {
+		spec.V, spec.DenyScope, spec.SupportedActions = 1, nil, []string{"allow_once", "release"}
+		raw, e = json.Marshal(spec)
+		if e != nil {
+			return nil, e
+		}
 	}
 	if len(raw) > interactionRequestLimit {
 		// No record or dispatch exists yet. This helper owns the sole reminder;
@@ -859,7 +874,11 @@ func interactionNativeWait(ctx context.Context, s Store, api API, l Locator, a A
 		if e != nil {
 			return nil, e
 		}
-		return &InteractionDecision{RequestID: r.RequestID, Digest: r.Digest, Action: f.Action, ResponseJSON: f.ResponseJSON, ExpiresAt: expires, OwnerToken: r.OwnerToken}, nil
+		decision := &InteractionDecision{RequestID: r.RequestID, Digest: r.Digest, Action: f.Action, ResponseJSON: f.ResponseJSON, ExpiresAt: expires, OwnerToken: r.OwnerToken}
+		if f.Action == "deny" && spec.openCodeDenyValid() {
+			decision.RequestVersion = spec.V
+		}
+		return decision, nil
 	}
 }
 
@@ -927,6 +946,7 @@ func interactionUnavailable(ctx context.Context, s Store, api API, l Locator, a 
 	}
 	now := time.Now().Unix()
 	spec.V = 1
+	spec.DenyScope = nil
 	spec.RequestID = randomID()
 	spec.Agent = a.Agent
 	spec.SessionID = a.Session
@@ -1222,6 +1242,14 @@ func interactionAuthorize(ctx context.Context, s Store, api API, in io.Reader) (
 			}
 			cancel()
 			allowed = e == nil
+		}
+	}
+	if allowed && r.Agent == "opencode" && r.Frame.Action == "deny" {
+		var spec InteractionSpec
+		allowed = interactionJSON([]byte(r.RequestJSON), &spec) == nil && spec.openCodeDenyValid()
+		if allowed {
+			birth, err := processIdentity(spec.DenyScope.ServerPID)
+			allowed = err == nil && birth == spec.DenyScope.ServerBirth
 		}
 	}
 	if allowed {

@@ -53,18 +53,22 @@ func serveClaudeFixtureCompletion(w http.ResponseWriter, model string, stream bo
 }
 
 func TestLivePiReboundReply(t *testing.T) {
-	testLiveReboundReply(t, "pi", os.Getenv("PI_BINARY"))
+	testLiveAgentHost(t, "pi", os.Getenv("PI_BINARY"), false)
 }
 
 func TestLiveClaudeReboundReply(t *testing.T) {
-	testLiveReboundReply(t, "claude", os.Getenv("CLAUDE_BINARY"))
+	testLiveAgentHost(t, "claude", os.Getenv("CLAUDE_BINARY"), false)
 }
 
 func TestLiveOpenCodeReboundReply(t *testing.T) {
-	testLiveReboundReply(t, "opencode", os.Getenv("OPENCODE_BINARY"))
+	testLiveAgentHost(t, "opencode", os.Getenv("OPENCODE_BINARY"), false)
 }
 
-func testLiveReboundReply(t *testing.T, agent, binary string) {
+func TestLiveOpenCodePermissionScope(t *testing.T) {
+	testLiveAgentHost(t, "opencode", os.Getenv("OPENCODE_BINARY"), true)
+}
+
+func testLiveAgentHost(t *testing.T, agent, binary string, permissionCase bool) {
 	t.Helper()
 	if binary == "" {
 		t.Skipf("set %s_BINARY for the interactive reply test", strings.ToUpper(agent))
@@ -102,7 +106,7 @@ func testLiveReboundReply(t *testing.T, agent, binary string) {
 				t.Errorf("invalid envelope: %v", err)
 				return
 			}
-			if envelope.Kind == "turn_completed" && strings.HasSuffix(r.URL.Path, "/events") {
+			if (envelope.Kind == "turn_completed" || permissionCase && envelope.Kind == "needs_input") && strings.HasSuffix(r.URL.Path, "/events") {
 				events <- envelope
 			}
 			printJSON(w, map[string]any{"v": 2, "event_id": envelope.EventID, "state": "accepted", "outbox_handoff": true})
@@ -116,12 +120,18 @@ func testLiveReboundReply(t *testing.T, agent, binary string) {
 		t.Fatal(err)
 	}
 	api := API{relay.Client()}
-	cfg := replyTestConfig(p, 3, 0, true)
-	cfg.Agent = agent
-	key, _ := decode64(p.EncryptionKey, 32)
-	cfg.Proof, _ = cfg.mac(key)
-	if _, err := replyCommand(ctx, s, api, "configure", bytes.NewReader(interactionFrameBytes(cfg))); err != nil {
-		t.Fatal(err)
+	if permissionCase {
+		if err := s.writeJSON("interaction-policy-v1.json", InteractionPolicy{p.PairID: {agent: {"approval": 3}}}); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		cfg := replyTestConfig(p, 3, 0, true)
+		cfg.Agent = agent
+		key, _ := decode64(p.EncryptionKey, 32)
+		cfg.Proof, _ = cfg.mac(key)
+		if _, err := replyCommand(ctx, s, api, "configure", bytes.NewReader(interactionFrameBytes(cfg))); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	const seed = "first fixture input"
@@ -135,6 +145,7 @@ func testLiveReboundReply(t *testing.T, agent, binary string) {
 		var body struct {
 			Stream   bool
 			Model    string
+			Tools    []json.RawMessage
 			Messages []struct {
 				Role    string
 				Content json.RawMessage
@@ -143,6 +154,19 @@ func testLiveReboundReply(t *testing.T, agent, binary string) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Error(err)
 			return
+		}
+		if permissionCase && len(body.Tools) > 0 {
+			firstStep := true
+			for _, message := range body.Messages {
+				if message.Role == "tool" {
+					firstStep = false
+					break
+				}
+			}
+			if firstStep {
+				serveOpenCodeParallelReads(w)
+				return
+			}
 		}
 		var users []string
 		for _, m := range body.Messages {
@@ -203,7 +227,14 @@ data: [DONE]
 	if agent == "pi" {
 		check(os.WriteFile(filepath.Join(config, "models.json"), []byte(fmt.Sprintf(`{"providers":{"fixture":{"baseUrl":%q,"api":"openai-completions","apiKey":"synthetic-local","models":[{"id":"local"}]}}}`, model.URL+"/v1")), 0600))
 	} else if agent == "opencode" {
-		configJSON := fmt.Sprintf(`{"model":"fixture/local","update":"disable","providers":{"fixture":{"package":"@opencode/ai/providers/openai-compatible","env":["MOBTERM_FIXTURE_KEY"],"settings":{"baseURL":%q},"models":{"local":{"name":"Fixture","capabilities":{"tools":true},"limit":{"context":32000,"output":1024}}}}}}`, model.URL+"/v1")
+		permission := ""
+		if permissionCase {
+			permission = `"permissions":[{"action":"read","resource":"*","effect":"ask"}],`
+			for _, name := range []string{"first.txt", "second.txt"} {
+				check(os.WriteFile(filepath.Join(root, name), []byte("fixture"), 0600))
+			}
+		}
+		configJSON := fmt.Sprintf(`{"model":"fixture/local","update":"disable",%s"providers":{"fixture":{"package":"@opencode/ai/providers/openai-compatible","env":["MOBTERM_FIXTURE_KEY"],"settings":{"baseURL":%q},"models":{"local":{"name":"Fixture","capabilities":{"tools":true},"limit":{"context":32000,"output":1024}}}}}}`, permission, model.URL+"/v1")
 		check(os.WriteFile(filepath.Join(config, "opencode.json"), []byte(configJSON), 0600))
 	} else {
 		configJSON := fmt.Sprintf(`{"hasCompletedOnboarding":true,"theme":"dark","projects":{%q:{"hasTrustDialogAccepted":true}},"customApiKeyResponses":{"approved":["offline-fixture"]}}`, root)
@@ -258,6 +289,24 @@ data: [DONE]
 	}
 	pane := tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-x", "120", "-y", "35", "-c", root, originalLaunch)
 	defer exec.Command("tmux", "-S", socket, "kill-server").Run()
+	// A short native sender can leave a durable notification for normal outbox recovery.
+	flushDue := func(kind string) {
+		records, e := outboxRecords(ctx, s, p.PairID, false)
+		if e == nil {
+			now := time.Now().Unix()
+			for _, d := range records {
+				if d.Kind == kind && d.State == "pending" && d.Lease <= now && d.Next <= now {
+					t.Log("recovering the pending source notification with outbox flush")
+					command(cli, "outbox", "flush", "--json")
+					return
+				}
+			}
+		}
+	}
+	if permissionCase {
+		verifyLivePermissionScope(t, ctx, s, api, p, events, flushDue)
+		return
+	}
 	var envelope Envelope
 	recoverDelivery := time.NewTicker(5 * time.Second)
 	defer recoverDelivery.Stop()
@@ -265,19 +314,7 @@ data: [DONE]
 		select {
 		case envelope = <-events:
 		case <-recoverDelivery.C:
-			// The short native hook may leave its durable event pending (especially
-			// under the race detector). Exercise the normal recovery entry point.
-			records, e := outboxRecords(ctx, s, p.PairID, false)
-			if e == nil {
-				for _, d := range records {
-					now := time.Now().Unix()
-					if d.Kind == "turn_completed" && d.State == "pending" && d.Lease <= now && d.Next <= now {
-						t.Log("recovering the pending source notification with outbox flush")
-						command(cli, "outbox", "flush", "--json")
-						break
-					}
-				}
-			}
+			flushDue("turn_completed")
 		case <-ctx.Done():
 			t.Fatal("original completion did not reach relay")
 		}
@@ -389,4 +426,90 @@ data: [DONE]
 	if status.State != wantReceipt || status.Decision != decision.DecisionID || durable.Frame == nil || durable.Frame.Text != "" || durable.Frame.DecisionID != decision.DecisionID {
 		t.Fatal("original decision did not remain queryable without its body after native exit")
 	}
+}
+
+// Each tool gets its own native request with a shared assistant message.
+func serveOpenCodeParallelReads(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	for index, name := range []string{"first.txt", "second.txt"} {
+		args, _ := json.Marshal(map[string]string{"path": name})
+		call := map[string]any{"index": index, "id": fmt.Sprintf("call_%d", index), "type": "function", "function": map[string]string{"name": "read", "arguments": string(args)}}
+		delta := map[string]any{"role": "assistant", "tool_calls": []any{call}}
+		payload, _ := json.Marshal(map[string]any{"id": "fixture", "model": "local", "created": 1, "object": "chat.completion.chunk", "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": nil}}})
+		fmt.Fprintf(w, "data: %s\n\n", payload)
+	}
+	fmt.Fprint(w, `data: {"id":"fixture","model":"local","created":1,"object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`)
+}
+
+func verifyLivePermissionScope(t *testing.T, ctx context.Context, s Store, api API, p Pair, events <-chan Envelope, flushDue func(string)) {
+	t.Helper()
+	// Observe both reminders at the test relay. Read the newest revision since
+	// the two network senders may finish in a different order.
+	notices := map[string]bool{}
+	recoverDelivery := time.NewTicker(5 * time.Second)
+	defer recoverDelivery.Stop()
+	var latest Envelope
+	var requestID string
+	for len(notices) < 2 {
+		select {
+		case e := <-events:
+			if e.Kind != "needs_input" || notices[e.EventID] {
+				continue
+			}
+			plain := summaryPlaintext(t, p, e)
+			hint, _ := plain["interaction"].(map[string]any)
+			id, _ := hint["request_id"].(string)
+			if id == "" {
+				t.Fatal("native reminder lacks interaction")
+			}
+			notices[e.EventID] = true
+			if e.Revision > latest.Revision {
+				latest, requestID = e, id
+			}
+		case <-recoverDelivery.C:
+			flushDue("needs_input")
+		case <-ctx.Done():
+			t.Fatal("two native permission reminders did not arrive")
+		}
+	}
+	r, err := interactionRead(s, requestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookup := InteractionFrame{V: 1, PairID: p.PairID, RequestID: requestID}
+	inspected, err := interactionCommand(ctx, s, api, "inspect", bytes.NewReader(interactionFrameBytes(lookup)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := inspected.(map[string]any)["request_json"].(string)
+	var spec InteractionSpec
+	if interactionJSON([]byte(raw), &spec) != nil || !spec.openCodeDenyValid() || spec.DenyScope.Kind != "message" || spec.DenyScope.ServerVersion != "2.3.2" || len(spec.DenyScope.PendingIDs) != 2 || digest(raw) != r.Digest {
+		t.Fatal("latest permission did not prove both tools from the same server/message")
+	}
+	reviewDecision(t, s, api, p, RunPayload{Interaction: &InteractionHint{RequestID: requestID}}, "deny", "{}")
+	// The waiter exits after handing the dispatch to the TUI. Status can report
+	// an indeterminate outcome until the separate receipt writer finishes.
+	for ctx.Err() == nil {
+		r, err := interactionRead(s, requestID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.State == "dispatching" || r.State == "decision_recorded" {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		status, err := interactionCommand(ctx, s, api, "status", bytes.NewReader(interactionFrameBytes(lookup)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state := status.(map[string]any)["state"]; state != "response_written" {
+			t.Fatalf("unexpected deny receipt %v", state)
+		}
+		return
+	}
+	t.Fatal("no response to native deny")
 }

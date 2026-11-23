@@ -21,13 +21,14 @@ type replyBinding struct {
 }
 
 type replyHead struct {
-	LegacyScope string `json:"legacy_scope,omitempty"`
-	SessionHint string `json:"session_hint,omitempty"`
-	Run         string `json:"run,omitempty"`
-	Instance    string `json:"instance,omitempty"`
-	Cursor      string `json:"cursor"`
-	Request     string `json:"request,omitempty"`
-	Until       int64  `json:"until"`
+	PermissionGroup string `json:"permission_group,omitempty"`
+	LegacyScope     string `json:"legacy_scope,omitempty"`
+	SessionHint     string `json:"session_hint,omitempty"`
+	Run             string `json:"run,omitempty"`
+	Instance        string `json:"instance,omitempty"`
+	Cursor          string `json:"cursor"`
+	Request         string `json:"request,omitempty"`
+	Until           int64  `json:"until"`
 }
 
 // Classic Hooks may run below a shell while Mod process.spawn is a direct
@@ -88,7 +89,17 @@ func advanceReplyHead(db *RunStore, a Activity, scope string, now int64) bool {
 	if a.Reminder == "turn_completed" && old.Run != "" && (old.Run != a.Run || old.Instance != a.Instance) {
 		return false
 	}
-	db.ReplyHeads[scope] = replyHead{SessionHint: digest(a.Agent + "\x00" + a.Session), Run: a.Run, Instance: a.Instance, Cursor: a.Occurrence, Request: request, Until: now + 86400}
+	// A different pending permission can arrive between a user's signed decision
+	// and the native reject. Remember only contiguous permission observations
+	// in the same activation/turn. Ordinary input and completion break the group.
+	var permissionGroup string
+	if a.Agent == "opencode" && a.Reminder == "needs_input" && a.State == "waiting_approval" {
+		permissionGroup = a.Occurrence
+		if old.Run == a.Run && old.Instance == a.Instance && old.PermissionGroup != "" {
+			permissionGroup = old.PermissionGroup
+		}
+	}
+	db.ReplyHeads[scope] = replyHead{PermissionGroup: permissionGroup, SessionHint: digest(a.Agent + "\x00" + a.Session), Run: a.Run, Instance: a.Instance, Cursor: a.Occurrence, Request: request, Until: now + 86400}
 	return true
 }
 
@@ -340,6 +351,21 @@ func replyCapacityLocked(s Store, registration *replyRecord) error {
 	return nil
 }
 
+// Eligibility to start a decision still belongs to the latest request. Only
+// its already recorded deny may continue across adjacent permission reminders.
+func openCodeDispatchGroup(s Store, r InteractionRecord, spec InteractionSpec) string {
+	if r.LogicalSession == "" || !spec.openCodeDenyValid() {
+		return ""
+	}
+	db, err := loadRuns(s)
+	scope := replyScope(r.Locator.InstallationID, r.LogicalSession)
+	h := db.ReplyHeads[scope]
+	if err != nil || db.retiredReplyScope(scope) || h.Run != spec.RunID || h.Instance != spec.RuntimeIdentity {
+		return ""
+	}
+	return h.PermissionGroup
+}
+
 func interactionSourceCurrent(s Store, r InteractionRecord) bool {
 	if r.ChildRunKey != "" || r.Agent == "codex" {
 		return true
@@ -350,6 +376,9 @@ func interactionSourceCurrent(s Store, r InteractionRecord) bool {
 	} // Already-settled receipt is read-only.
 	if interactionJSON([]byte(r.RequestJSON), &spec) != nil {
 		return false
+	}
+	if r.Frame != nil && r.Frame.Action == "deny" && r.PermissionGroup != "" {
+		return openCodeDispatchGroup(s, r, spec) == r.PermissionGroup
 	}
 	return nativeRequestCurrent(s, r.Agent, spec.SessionID, r.RequestID, r.Locator, r.LogicalSession)
 }

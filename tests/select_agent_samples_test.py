@@ -15,7 +15,7 @@ class SelectAgentSamplesTest(unittest.TestCase):
         minimum = select_samples(self.samples, "minimum", "Linux")
         self.assertEqual(minimum["codex"], "0.100.0")
         self.assertEqual(select_samples(self.samples, "macos-config", "Darwin"),
-                         {**minimum, "codex": "0.163.0"})
+                         {**minimum, "codex": "0.171.0"})
         for system in ("Darwin", "Linux"):
             self.assertEqual(select_samples(self.samples, "historical", system),
                              {"codex": "0.162.1", "claude": "2.1.282"})

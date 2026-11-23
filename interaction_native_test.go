@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -202,5 +204,105 @@ func TestRunningClaudeCannotBorrowPATHVersion(t *testing.T) {
 	t.Setenv("CLAUDE_PID", "1")
 	if v := runningClaudeVersion(context.Background()); v != "" {
 		t.Fatalf("accepted unrelated binary %s", v)
+	}
+}
+
+func TestOpenCodeDenyScopeBoundToServerAndNativeRequest(t *testing.T) {
+	s, config := setupNativeTest(t, "opencode")
+	cli, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = changeNativeHooks(context.Background(), s, "opencode", "install", config, cli, false); err != nil {
+		t.Fatal(err)
+	}
+	var installation nativeHookRecord
+	if err = s.readJSON(nativeRecordName("opencode"), &installation); err != nil {
+		t.Fatal(err)
+	}
+	db := filepath.Join(t.TempDir(), "opencode.db")
+	if err = os.WriteFile(db, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	p := activityInput{NativeStorage: db, SessionID: "native", RequestID: "p1", Cwd: "/project", RuntimeVersion: "2.2.5"}
+	storage := nativeStorageKey("opencode", db)
+	route, err := logicalSession("opencode", "route")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := os.Getppid()
+	ownerBirth, err := processIdentity(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := os.Getpid()
+	birth, err := processIdentity(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := nativeHost{Agent: "opencode", Logical: sessionWithStorage(route, storage), Storage: storage, PID: owner, Birth: ownerBirth, Credential: digest(installation.HostToken), ServerPID: server, ServerBirth: birth}
+	saveHost := func(h nativeHost) {
+		t.Helper()
+		if err := s.writeJSON(nativeHostsFile, []nativeHost{h}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		version, kind, source, message string
+		valid                          bool
+	}{
+		{"2.2.5", "session", "", "", true}, {"2.3.0", "session", "", "", true},
+		{"2.3.1", "message", `,"source":{"type":"tool","id":"tool","messageID":"step"}`, "step", true},
+		{"2.3.2", "unassociated", "", "", true}, {"2.3.2", "message", "", "step", false},
+		{"2.3.2", "session", "", "", false}, {"2.3.2", "unassociated", `,"source":null`, "", false},
+		{"2.3.2", "message", `,"source":{"type":"tool","id":"tool","messageID":"other"}`, "step", false},
+		{"2.3.2", "message", `,"source":{"type":"tool","id":"tool","messageID":"step","extra":true}`, "step", false},
+		{"2.3.3", "session", "", "", false}, {"2.3.2-rc.1", "unassociated", "", "", false}, {"3.0.0", "session", "", "", false},
+	} {
+		host.ServerVersion = tc.version
+		saveHost(host)
+		p.ToolInput = json.RawMessage(`{"id":"p1","sessionID":"native","action":"edit","resources":["file"]` + tc.source + "}")
+		scope := map[string]any{"kind": tc.kind, "server_version": tc.version, "server_pid": server, "route_id": "route", "directory": p.Cwd, "pending_ids": []string{"p1", "p2"}}
+		if tc.message != "" {
+			scope["message_id"] = tc.message
+		}
+		p.PendingPermissions = json.RawMessage(`["p1","p2"]`)
+		if verifiedOpenCodeScope(s, p) != nil {
+			t.Fatal("an old adapter's session list supplied no server proof")
+		}
+		p.PendingPermissions, _ = json.Marshal(scope)
+		proof := verifiedOpenCodeScope(s, p)
+		if (proof != nil) != tc.valid {
+			t.Fatalf("unexpected scope for %+v", tc)
+		}
+		if proof == nil {
+			continue
+		}
+		spec := InteractionSpec{V: 2, Agent: "opencode", Kind: "approval", DenyScope: proof, SessionID: p.SessionID, NativeID: p.RequestID, Cwd: p.Cwd, NativeInput: p.ToolInput, ToolInput: p.ToolInput, SupportedActions: []string{"allow_once", "deny", "release"}}
+		if err := interactionAnswers(spec, "deny", "{}"); err != nil {
+			t.Fatal(err)
+		}
+		spec.V = 1
+		if interactionAnswers(spec, "deny", "{}") == nil || interactionAnswers(spec, "allow_once", "{}") != nil {
+			t.Fatal("legacy request action policy")
+		}
+		for key, value := range map[string]any{"server_pid": server + 1, "server_version": "0.0.0", "route_id": "other", "directory": "/other", "pending_ids": []string{"p1", "p1"}, "workspace_id": nil, "server_birth": birth} {
+			changed := make(map[string]any, len(scope))
+			for k, v := range scope {
+				changed[k] = v
+			}
+			changed[key] = value
+			p.PendingPermissions, _ = json.Marshal(changed)
+			if verifiedOpenCodeScope(s, p) != nil {
+				t.Fatalf("accepted conflicting %s", key)
+			}
+		}
+		p.PendingPermissions, _ = json.Marshal(scope)
+		changed := host
+		changed.ServerBirth = digest("restarted")
+		saveHost(changed)
+		if verifiedOpenCodeScope(s, p) != nil {
+			t.Fatal("server incarnation changed")
+		}
 	}
 }

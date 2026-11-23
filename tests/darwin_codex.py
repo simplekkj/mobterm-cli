@@ -14,14 +14,20 @@ from select_agent_samples import require_macos_codex_version
 
 
 # SHA-256 of vendor/<triple>/bin/codex in each fixed @openai/codex npm
-# platform tarball. Both root packages ship the same bin/codex.js.
+# platform tarball, and the matching launcher from its root package.
 NATIVE_SHA256 = {
     ('0.162.1', 'x64'): 'f86b8cfd3de94dc70763d251da3ff292e94f4a53ad41b81faab3619a7bcb626c',
     ('0.162.1', 'arm64'): '74c6a6d263f40d65f99c27a815275f5b4ed0bcc2baecc396b4cf3255498bdfc0',
     ('0.163.0', 'x64'): '73697f229103f463acaafd8659976caaa4892ec11e2c246c7fa97f93d523f90e',
     ('0.163.0', 'arm64'): '8813367285524ac798dd96d1b071aea30d58708c7226fd236cd275cf1cfdee31',
+    ('0.171.0', 'x64'): '0cc2c99ee61041ecde0c848f85861ea9cb6e45c5c136fd66383a7eb2198e307c',
+    ('0.171.0', 'arm64'): 'fc8d77cf7585aded2b9bc487dad29c4ee2f066123e4e76dd3b17653a8322ce42',
 }
-LAUNCHER_SHA256 = '61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70'
+LAUNCHER_SHA256 = {
+    '0.162.1': '61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70',
+    '0.163.0': '61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70',
+    '0.171.0': '0e0c66f50074965a40cbd12f625b0a35963baf41bbd8c201a93e32fddbe2e073',
+}
 SIGNING_REQUIREMENT = ('anchor apple generic and identifier "codex" and '
                        'certificate leaf[subject.OU] = "2DC432GLL2" and notarized')
 
@@ -88,7 +94,7 @@ def pin_codex(prefix, version, search_path, bindir):
     selected = shutil.which('codex', path=search_path)
     if (not selected or Path(selected).resolve(strict=True) != launcher
             or (prefix / 'bin/codex').resolve(strict=True) != launcher
-            or digest(launcher) != LAUNCHER_SHA256):
+            or digest(launcher) != LAUNCHER_SHA256.get(version)):
         raise ValueError('refused PATH entry: expected the official launcher from --agent-prefix')
     manifest = package_matches(package, name='@openai/codex', version=version,
                                bin={'codex': 'bin/codex.js'})
