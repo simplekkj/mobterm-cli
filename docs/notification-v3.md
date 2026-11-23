@@ -1,8 +1,6 @@
 # QuickCommand completion notification v3
 
-The wire codec represents one terminal result for one Pair and event. The CLI
-outbox can deliver an already-frozen record. Creating that record from a
-completed background job still requires a job producer.
+The [one-shot job worker](quick-command-job-v1.md) commits its encrypted result and terminal fact before checking the submitting Pair's current completion policy. It seals one event and hands its durable outbox record to the regular delivery path. The worker's delivery budget is 35 seconds. Policy denial or an unavailable policy at completion cannot authorize a later re-seal. A frozen, unacknowledged outbox entry retains its identity for a subsequent explicit flush within its TTL.
 
 ## Pair policy and identity
 

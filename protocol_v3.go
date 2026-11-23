@@ -33,13 +33,16 @@ type QuickCommandCompletion struct {
 
 func (c QuickCommandCompletion) valid() bool {
 	if c.V != 1 || !opaqueID.MatchString(c.InstallationID) || !notificationUUID.MatchString(c.JobID) ||
-		!notificationUUID.MatchString(c.CommandID) || c.OccurredAt <= 0 || c.CommandName == "" ||
-		len(c.CommandName) > 512 || !utf8.ValidString(c.CommandName) || utf8.RuneCountInString(c.CommandName) > 120 ||
-		strings.TrimFunc(c.CommandName, quickCommandNameSpace) != c.CommandName || cleanTerminalText(c.CommandName) != c.CommandName ||
-		strings.ContainsAny(c.CommandName, "\t\r\n\u2028\u2029") {
+		!notificationUUID.MatchString(c.CommandID) || c.OccurredAt <= 0 || !validQuickCommandName(c.CommandName) {
 		return false
 	}
 	return validQuickCommandTermination(c.State, c.ExitCode, c.Signal)
+}
+
+func validQuickCommandName(name string) bool {
+	return name != "" && len(name) <= 512 && utf8.ValidString(name) && utf8.RuneCountInString(name) <= 120 &&
+		strings.TrimFunc(name, quickCommandNameSpace) == name && cleanTerminalText(name) == name &&
+		!strings.ContainsAny(name, "\t\r\n\u2028\u2029")
 }
 
 // Foundation's whitespacesAndNewlines also trims U+200B at the two ends.

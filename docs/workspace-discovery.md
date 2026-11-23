@@ -6,7 +6,7 @@
 `server_time`, `operations`, `execution_backends`, numeric `limits`, and the
 existing `installation_id` when initialized. The probe reads local state without
 creating a directory, lock or identity. Invalid private state fails the probe.
-The independent `quick_command_result_protocols` field advertises [existing result receipt reads](quick-command-result-v1.md). The execution backend list is empty in this version. Unrecognized
+The independent `quick_command_result_protocols` field advertises [existing result receipt reads](quick-command-result-v1.md). The execution backend list includes `quick_command_native_v1` when the UID's configured shell is supported. See [native jobs](quick-command-job-v1.md). Unrecognized
 commands on older CLIs fail before user command submission. The client may use
 its previous SSH discovery path on a trusted connection.
 

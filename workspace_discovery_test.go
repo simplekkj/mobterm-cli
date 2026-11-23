@@ -24,7 +24,7 @@ func TestWorkspaceCapabilitiesNoInitialization(t *testing.T) {
 	if json.Unmarshal(out.Bytes(), &v) != nil || v["v"] != float64(1) || v["installation_id"] != nil || len(v["operations"].([]any)) != 4 {
 		t.Fatal("invalid capability response")
 	}
-	if backends, ok := v["execution_backends"].([]any); !ok || len(backends) != 0 {
+	if backends, ok := v["execution_backends"].([]any); !ok || (len(backends) > 1 || len(backends) == 1 && backends[0] != quickNativeBackend) {
 		t.Fatal("unexpected execution backend")
 	}
 	if protocols, ok := v["quick_command_result_protocols"].([]any); !ok || len(protocols) != 1 || protocols[0] != float64(1) {

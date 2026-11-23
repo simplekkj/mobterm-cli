@@ -148,6 +148,8 @@ func commandTimeout(args []string) time.Duration {
 		return 10 * time.Second
 	}
 	switch args[0] {
+	case "job":
+		return 20 * time.Second
 	case "activity":
 		if len(args) == 2 && args[1] == "dispatch" {
 			return activityDispatchBudget
@@ -205,7 +207,7 @@ func commandTimeout(args []string) time.Duration {
 
 func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "mobterm-cli capabilities --json | job output --stdin-frame | discovery tmux.discovery|herdr.list|herdr.probe|herdr.snapshot --stdin-frame | setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | reply inspect|send|status|latest|configure|configuration --stdin-frame | message read --stdin-frame | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | pairs retire --stdin-frame --json | upgrade --version vX.Y.Z | version")
+		fmt.Fprintln(out, "mobterm-cli capabilities --json | job submit|status|cancel|output|foreground --stdin-frame | discovery tmux.discovery|herdr.list|herdr.probe|herdr.snapshot --stdin-frame | setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | reply inspect|send|status|latest|configure|configuration --stdin-frame | message read --stdin-frame | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | pairs retire --stdin-frame --json | upgrade --version vX.Y.Z | version")
 		return 0
 	}
 	if args[0] == "version" || args[0] == "--version" {
@@ -219,6 +221,12 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 			printJSON(out, map[string]any{"v": 1, "ok": false, "error": "operation_failed", "failure": pairingFailureMetadata(pairingFailure("configuration", "local_config_failed", err))})
 		}
 		return 1
+	}
+	if len(args) == 2 && args[0] == "job" && args[1] == "worker" {
+		if err := quickWorker(s, newAPI()); err != nil {
+			return 1
+		}
+		return 0
 	}
 	base, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -238,14 +246,35 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 			value, err = readCapabilities(s)
 		}
 	case "job":
-		if len(args) != 3 || args[1] != "output" || args[2] != "--stdin-frame" {
+		if len(args) != 3 || args[2] != "--stdin-frame" {
 			err = errors.New("invalid_request")
-		} else {
+			break
+		}
+		switch args[1] {
+		case "submit":
+			value, err = submitQuickJob(ctx, s, in, out)
+		case "foreground":
+			err = foregroundQuickJob(base, in, out)
+		case "status", "cancel":
+			var id quickResultIdentity
+			var raw json.RawMessage
+			if readStrictFrame(ctx, in, &raw, maxFrame) != nil || decodeQuickResultObject(raw, &id) != nil || !id.valid() {
+				err = errors.New("invalid_request")
+				break
+			}
+			var reply quickJobReply
+			reply, err = quickStatus(ctx, s, id, args[1] == "cancel")
+			if err == nil {
+				value = reply
+			}
+		case "output":
 			var receipt quickResultReceipt
 			receipt, err = readQuickResult(ctx, s, in, time.Now)
 			if err == nil {
 				value = receipt
 			}
+		default:
+			err = errors.New("invalid_request")
 		}
 	case "discovery":
 		if len(args) != 3 || args[2] != "--stdin-frame" {

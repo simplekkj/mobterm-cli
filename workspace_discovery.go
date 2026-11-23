@@ -31,6 +31,10 @@ func readCapabilities(s Store) (map[string]any, error) {
 		"limits": map[string]int{"frame_bytes": maxFrame, "response_bytes": maxDiscoveryOutput,
 			"tmux_sessions": maxDiscoverySessions, "panes_per_session": maxPanesPerSession},
 	}
+	if _, err := quickAccountShell(context.Background()); err == nil {
+		result["execution_backends"] = []string{quickNativeBackend}
+		result["quick_command_foreground_protocols"] = []int{1}
+	}
 	id, err := s.existingInstallation()
 	if err == nil {
 		result["installation_id"] = id

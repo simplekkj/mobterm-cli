@@ -5,6 +5,8 @@ Each installation has a random local ID. Each paired phone has an independent
 0600 files in a mode 0700 directory. The API stores credential hashes and cannot
 decrypt target locators or message summaries. The CLI does not contain global service secrets.
 
+A user can submit one [QuickCommand job](quick-command-job-v1.md) over their authenticated SSH account. A one-shot worker uses the real account shell, inherits the trusted session's working directory and environment, and gets the command and independent result key through a private inherited pipe. The shell gets the original command as its single `-c` operand. Its standard input is closed to interaction and it inherits neither private descriptor. The worker retains only the last 4096 combined bytes from this command's own stdout/stderr in memory. Job keys and command text never enter the outbox or a plaintext remote spool. UID-level access to the target account retains normal authority over its own processes and files.
+
 A [QuickCommand result receipt](quick-command-result-v1.md) uses an independent
 per-job key. The SSH reader returns at most one authenticated-encryption envelope
 bound to the original installation, job, command and request digest. It reads

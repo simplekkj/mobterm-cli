@@ -26,7 +26,8 @@ type delivery struct {
 	PairID         string           `json:"pair_id"`
 	EventID        string           `json:"event_id"`
 	Kind           string           `json:"kind"`
-	LocatorHash    string           `json:"locator_hash"`
+	LocatorHash    string           `json:"locator_hash,omitempty"`
+	CompletionHash string           `json:"completion_hash,omitempty"`
 	Created        int64            `json:"created"`
 	Expires        int64            `json:"expires_at"`
 	State          string           `json:"state"`
@@ -405,6 +406,11 @@ func enqueueBoundDelivery(ctx context.Context, s Store, p Pair, kind, identity s
 		}
 	}
 	d := delivery{Reply: bindReply(reply, e), Body: bindBody(ref, e), PairID: p.PairID, EventID: eventID, Kind: kind, LocatorHash: hash, Created: now, Expires: e.ExpiresAt, State: "pending", Envelope: &e}
+	return s.insertDeliveryLocked(ctx, key, old, sh, d)
+}
+
+// Caller holds the store lock and has checked the existing event identity.
+func (s Store) insertDeliveryLocked(ctx context.Context, key string, old, sh outboxShard, d delivery) (delivery, error) {
 	sh.Records[key] = d
 	idx, err := s.outboxLoad(true)
 	if err != nil {

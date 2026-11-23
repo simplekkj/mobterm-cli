@@ -4,8 +4,7 @@ An authenticated SSH client can read a previously sealed receipt with
 `mobterm-cli job output --stdin-frame`. Discover the reader through
 `quick_command_result_protocols: [1]` in `capabilities --json`. An omitted
 field means that the client has no evidence of this capability. Execution
-backends are advertised separately. This revision has a result codec and
-reader. Producing receipts from a remote job remains pending.
+backends are advertised separately. The [one-shot native worker](quick-command-job-v1.md) seals a receipt from the real shell wait status and the tail of its two output streams before enqueueing a completion notification.
 
 ## Read request
 

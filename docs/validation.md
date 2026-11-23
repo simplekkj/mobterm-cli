@@ -15,6 +15,67 @@ and [fixed compatibility samples](#mobterm-cli-compatibility--round-1-v10--2026-
 The earlier records below retain their original scope; they are not rerun by
 documentation maintenance.
 
+## 2026-11-24 — Native QuickCommand submission and foreground stream v1
+
+The CLI on Intel macOS 15.8.1 (Go 1.27.1) ran two three-second commands through
+separate loopback OpenSSH submissions. Each kept the same SSH exec for preparation,
+the start frame and the durable ACK. The two SSH clients exited in 0.72 and
+0.34 seconds while their respective user products were absent. Both commands
+subsequently generated the requested file, separate stdout/stderr markers and
+exit code 7. After both jobs finished, the original ID still returned exactly
+the first receipt and the second ID returned different ciphertext. This fixture
+used an offline synthetic Pair. Local Worker/APNs-substitute acceptance is a
+separate delivery observation.
+
+The Go subprocess checks exercised the production worker, account shell,
+encrypted result reader, stream mask, active/expiry/aggregate storage limits,
+request/key conflicts, dedup, and real success, failure, signal, timeout and
+stop. A client closed its receipt pipe immediately after preparation. The
+start frame still resulted in one eventual user product. Actual E2BIG at the
+1 MiB input boundary reported not started. Output over 2 MiB drained through
+both pipes and left a 4096-byte truncated result. During development macOS
+returned EPERM on group KILL when TERM had already left a zombie. The final
+worker confirms the original child's wait status in that branch; timeout and
+stop both passed.
+
+Over the same isolated SSH server, the foreground v1 stream emitted exec
+acknowledgement, byte-identical stdout/stderr and the same exit 7 as the
+direct account shell. A separate real OS E2BIG sent only `not_started`. Bash, zsh, sh and dash matched direct shell
+invocation for quotes, Unicode, here-doc and exec/exit in isolated startup
+environments. A zsh startup fixture supplied an exported value. An explicit
+Bash BASH_ENV script measurably executed twice when nested; this case is
+declined before submission. A CGO-disabled linux/amd64 cross-build passed.
+Native Linux execution was unavailable (no local Docker daemon). The Go/Swift
+result-v1 fixtures and three repositories' notification-v3 fixtures were
+byte identical. This run used no production server, device or APNs account.
+
+The first ordinary full suite (660.279 s) hit the original 5-second asdf
+launcher probes while simulators were starting, in
+`TestAsdfCompatibilityEntrypoints` and `TestAsdfProbeIsolationAndFailure`.
+A lower-load full rerun passed in 576.303 s. That rerun started before the
+final foreground stream and ACK-loss tests were added. The full ordinary batch with the foreground protocol, required live tmux
+and checksum-pinned Herdr 0.9.3 passed in 682.300 s. The full race batch
+with required live tmux passed in 799.648 s. The final change bounded the
+post-KILL wait and preserved unconfirmed state when the kernel would not
+supply a termination. All QuickCommand race tests ran again on that source
+and passed in 15.693 s. Formatting, vet, trimpath builds, document links,
+cross-language fixtures, diff checks and the two disconnected SSH jobs were
+checked on the shipping sources. The historical v1.1 first-run failure
+retains its original scope.
+
+On the final source, simultaneous ordinary/race runs during simulator startup
+failed only the existing five-second asdf launcher preflight
+(`TestAsdfCompatibilityEntrypoints`, 735.491 s ordinary and 861.445 s race
+for the full packages). The failing one-probe subcase then passed on its own.
+After shutting down the simulator, separate full runs used Go 1.27.1,
+`TMPDIR=/tmp`, `GOMAXPROCS=2`, `-p 2 -timeout=45m -count=1`, required
+tmux 3.7c and checksum-pinned Herdr 0.9.3. The ordinary run passed in
+535.203 s; the full race run passed in 639.456 s. Both included the two
+asdf suites, live tmux/Herdr discovery and the real native job tests.
+Each reported 915 passing named tests/subtests and six existing opt-in Agent
+reply/navigation fixtures skipped. Neither shell time limit nor test assertions
+were changed.
+
 ## 2026-11-23 — QuickCommand result receipt v1
 
 On Intel macOS 15.8.1 with Go 1.27.1, the result vector authenticated and

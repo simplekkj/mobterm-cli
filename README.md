@@ -17,6 +17,7 @@ repositories. See [LICENSE](LICENSE) and [THIRD_PARTY.md](THIRD_PARTY.md).
   [Upgrade](#upgrade), [Build and verify](#build-and-verify), and the
   [current command budgets and diagnostics](#notification-api-request-deadlines).
 - [Read-only capabilities and workspace discovery](docs/workspace-discovery.md) over an authenticated SSH connection.
+- Start a [native QuickCommand job](docs/quick-command-job-v1.md) from a trusted SSH session. The short submission returns after the one-shot worker accepts the command. The worker keeps running after disconnect and sends completion to the original Pair.
 - [Read an encrypted QuickCommand result receipt](docs/quick-command-result-v1.md) for its original job and compare its terminal state with the [completion notification](docs/notification-v3.md).
 - **Protocol and operation:** [v1 setup, notifications and targets](docs/protocol-v1.md),
   [v2 state/inbox/badge and legacy approval wire v3](docs/protocol-v2.md),

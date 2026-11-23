@@ -165,29 +165,24 @@ func TestQuickCommandFrozenOutbox(t *testing.T) {
 	}
 	c.OccurredAt = time.Now().Unix()
 	base := f.Envelope
-	var err error
-	original, err = sealQuickCommand(p, base.PairID, base.EventID, quickCommandTestPolicy(c, p.PairID), c, c.OccurredAt, nil)
-	if err != nil {
-		t.Fatal(err)
+	policy := quickCommandTestPolicy(c, p.PairID)
+	d, err := s.queueQuickJobCompletion(ctx, p, base.EventID, policy, c)
+	if err != nil || d.Envelope == nil {
+		t.Fatal("failed to freeze the authorized completion", err)
 	}
-	// Seed only a verified completion; there is no CLI command to inject one.
-	if err = s.migrateOutbox(); err != nil {
-		t.Fatal(err)
+	original = *d.Envelope
+	again, err := s.queueQuickJobCompletion(ctx, p, base.EventID, policy, c)
+	if err != nil || again.Envelope == nil || *again.Envelope != original {
+		t.Fatal("same completion was resealed", err)
 	}
-	idx, err := s.outboxLoad(true)
-	if err != nil {
-		t.Fatal(err)
+	other := c
+	other.CommandName = "Another job"
+	if _, err := s.queueQuickJobCompletion(ctx, p, base.EventID, policy, other); err == nil {
+		t.Fatal("event ID was reused for a different completion")
 	}
-	k := deliveryKey(p.PairID, base.EventID)
-	sh, err := s.loadShard(k)
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := cloneShard(sh)
-	d := delivery{PairID: p.PairID, EventID: base.EventID, Kind: base.Kind, Created: c.OccurredAt, Expires: original.ExpiresAt, State: "pending", Envelope: &original}
-	sh.Records[k] = d
-	if err = s.saveShard(idx, k, old, sh); err != nil {
-		t.Fatal(err)
+	policy.Completed = false
+	if _, err := s.queueQuickJobCompletion(ctx, p, randomID(), policy, c); err == nil {
+		t.Fatal("queued completion with disabled policy")
 	}
 	api := API{server.Client()}
 	if _, err = deliverOne(ctx, s, api, d); err == nil {
