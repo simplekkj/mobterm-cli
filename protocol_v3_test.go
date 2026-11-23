@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -91,6 +92,40 @@ func TestQuickCommandV3Golden(t *testing.T) {
 	}
 	if _, err := sealQuickCommand(pair, "", f.Envelope.EventID, policy, c, c.OccurredAt, nonce); err == nil {
 		t.Fatal("missing original notification intent")
+	}
+}
+
+func TestQuickCommandDisplayNameBoundariesAndTerminalEvidence(t *testing.T) {
+	_, completion := quickCommandFixture(t)
+	for _, entry := range []struct {
+		name  string
+		valid bool
+	}{
+		{strings.Repeat("a", 120), true}, {strings.Repeat("a", 121), false},
+		{strings.Repeat("🙂", 120), true}, {strings.Repeat("🙂", 129), false},
+		{"编译 👩‍👩‍👧‍👦", true}, {"QuickCommand", true}, {" foo", false}, {"foo\u200b", false},
+		{"foo\u202e", false}, {"foo\x1b[0m", false}, {"a\tb", false},
+	} {
+		completion.CommandName = entry.name
+		if completion.valid() != entry.valid {
+			t.Errorf("name %q: expected valid=%v", entry.name, entry.valid)
+		}
+	}
+	completion.CommandName = "QuickCommand"
+	exit, signal := 7, 15
+	for _, state := range []string{"timed_out", "stopped"} {
+		completion.State = state
+		for _, fields := range []struct {
+			exit, signal *int
+			valid        bool
+		}{{nil, nil, true}, {&exit, nil, true}, {nil, &signal, true}, {&exit, &signal, false}} {
+			completion.ExitCode, completion.Signal = fields.exit, fields.signal
+			result := quickResultPlain{State: state, ExitCode: fields.exit, Signal: fields.signal,
+				StartedAt: 1, OccurredAt: 2, Output: []byte{}, StderrMask: []byte{}}
+			if completion.valid() != fields.valid || result.valid() != fields.valid {
+				t.Errorf("%s: inconsistent termination evidence", state)
+			}
+		}
 	}
 }
 

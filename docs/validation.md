@@ -2430,3 +2430,23 @@ synthetic Pair. This run did not exercise a remote job, real APNs, an iPhone
 notification, or navigation. CLI automatic completion-policy evaluation and
 terminal-to-outbox creation are still pending. No Linux runtime was exercised
 in this notification interop run.
+
+## 2026-11-23 — QuickCommand terminal evidence and display-name compatibility
+
+On darwin/amd64 with Go 1.27.1, the Go v3 codec and result-v1 codec checked
+identical rules for exit code and signal for all five terminal states. The
+boundary test exercises 120/121 scalars, multi-byte names, surrounding
+whitespace and disallowed control characters. The public v3 fixture agrees
+with the App and Worker copies; the public result-v1 fixture agrees with the
+App copy. The read-only CLI command returned `result_unavailable` for an
+uninitialized fixture without creating its store, and `result_expired` for
+the expired result vector. This run did not launch a background command.
+
+Formatting, vet and trimpath build passed. The initial ordinary suite reached
+Go's default ten-minute package timeout on an unrelated message-body test.
+The suite with the repository's 45-minute package timeout passed 903 tests
+and subtests with six opt-in fixture skips; tmux 3.7c and Herdr 0.9.3 were
+available for their interoperability tests.
+
+The race suite on the same source passed the same 903 tests and subtests
+with the same six skips in 760.268 seconds. No race reports were emitted.

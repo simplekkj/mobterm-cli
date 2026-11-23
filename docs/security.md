@@ -9,6 +9,9 @@ A [QuickCommand result receipt](quick-command-result-v1.md) uses an independent
 per-job key. The SSH reader returns at most one authenticated-encryption envelope
 bound to the original installation, job, command and request digest. It reads
 an existing private receipt without writing a result key or extending its expiry.
+The optional encrypted completion notification carries a bounded display name.
+The App authenticates the event against its original Pair and job binding,
+including when multiple configurations have the same display name.
 
 Only routing metadata (opaque IDs, event kind, expiry, ciphertext length) reaches
 the API/APNs. Encryption does not hide timing, kind, or traffic volume. Server,

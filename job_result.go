@@ -60,22 +60,7 @@ func (p quickResultPlain) valid() bool {
 	if bits := len(p.Output) % 8; bits != 0 && p.StderrMask[len(p.StderrMask)-1]>>bits != 0 {
 		return false
 	}
-	if p.ExitCode != nil && (*p.ExitCode < 0 || *p.ExitCode > 255 || p.Signal != nil) ||
-		p.Signal != nil && (*p.Signal <= 0 || *p.Signal > 127) {
-		return false
-	}
-	switch p.State {
-	case "succeeded":
-		return p.ExitCode != nil && *p.ExitCode == 0
-	case "failed":
-		return p.ExitCode != nil && *p.ExitCode != 0
-	case "signaled":
-		return p.Signal != nil
-	case "timed_out", "stopped":
-		return true
-	default:
-		return false
-	}
+	return validQuickCommandTermination(p.State, p.ExitCode, p.Signal)
 }
 
 type quickResultReceipt struct {

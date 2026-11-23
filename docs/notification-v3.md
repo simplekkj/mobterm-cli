@@ -39,9 +39,14 @@ quick_command_completed
 The plaintext contains `v=1`, `installation_id`, UUIDs `job_id` and
 `command_id`, `command_name`, `state`, optional `exit_code` and `signal`, and
 `occurred_at` (Unix seconds). Use a single-line display name of at most 120
-Unicode scalars and 512 UTF-8 bytes. `succeeded` requires exit zero, `failed`
+Unicode scalars and 512 UTF-8 bytes. The App retains the full configuration
+name locally and freezes a separate display name in the job binding. It trims
+outer whitespace, takes a prefix ending at a complete grapheme, and uses
+`QuickCommand` if the resulting name is empty or contains disallowed text.
+The CLI validates the frozen value as received. `succeeded` requires exit zero, `failed`
 a nonzero exit and `signaled` a signal. A confirmed timeout or stop uses
-`timed_out` or `stopped`. The CLI sets expiry to one hour after completion, within the API's 86400-second limit.
+`timed_out` or `stopped`. All five states allow at most one of exit code
+and signal, including stop and timeout. The CLI sets expiry to one hour after completion, within the API's 86400-second limit.
 The cross-language public vector is [protocol-v3.json](../testdata/protocol-v3.json).
 
 ## Admission and redelivery

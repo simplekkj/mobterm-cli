@@ -56,7 +56,8 @@ decrypted completion time against the outer field and the expected job and
 terminal state. Both `exit_code` (0–255) and `signal` (1–127) are optional,
 mutually exclusive integers. `succeeded` requires exit zero, `failed` requires
 a nonzero exit, and `signaled` requires a signal. `timed_out` and `stopped`
-can include the observed exit or signal.
+can include the observed exit or signal. The v3 completion payload uses the
+same state, exit and signal rules as this result.
 
 `output` is standard padded Base64 containing the retained bytes in observation
 order, at most 4096 combined for stdout and stderr. `stderr_mask` encodes

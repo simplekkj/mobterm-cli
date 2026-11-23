@@ -9,6 +9,7 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -34,20 +35,27 @@ func (c QuickCommandCompletion) valid() bool {
 	if c.V != 1 || !opaqueID.MatchString(c.InstallationID) || !notificationUUID.MatchString(c.JobID) ||
 		!notificationUUID.MatchString(c.CommandID) || c.OccurredAt <= 0 || c.CommandName == "" ||
 		len(c.CommandName) > 512 || !utf8.ValidString(c.CommandName) || utf8.RuneCountInString(c.CommandName) > 120 ||
-		strings.TrimSpace(c.CommandName) != c.CommandName || cleanTerminalText(c.CommandName) != c.CommandName ||
+		strings.TrimFunc(c.CommandName, quickCommandNameSpace) != c.CommandName || cleanTerminalText(c.CommandName) != c.CommandName ||
 		strings.ContainsAny(c.CommandName, "\t\r\n\u2028\u2029") {
 		return false
 	}
-	if c.ExitCode != nil && (*c.ExitCode < 0 || *c.ExitCode > 255) || c.Signal != nil && (*c.Signal < 1 || *c.Signal > 127) {
+	return validQuickCommandTermination(c.State, c.ExitCode, c.Signal)
+}
+
+// Foundation's whitespacesAndNewlines also trims U+200B at the two ends.
+func quickCommandNameSpace(r rune) bool { return unicode.IsSpace(r) || r == '\u200b' }
+
+func validQuickCommandTermination(state string, exitCode, signal *int) bool {
+	if exitCode != nil && (*exitCode < 0 || *exitCode > 255 || signal != nil) || signal != nil && (*signal < 1 || *signal > 127) {
 		return false
 	}
-	switch c.State {
+	switch state {
 	case "succeeded":
-		return c.ExitCode != nil && *c.ExitCode == 0 && c.Signal == nil
+		return exitCode != nil && *exitCode == 0
 	case "failed":
-		return c.ExitCode != nil && *c.ExitCode != 0 && c.Signal == nil
+		return exitCode != nil && *exitCode != 0
 	case "signaled":
-		return c.Signal != nil && c.ExitCode == nil
+		return signal != nil
 	case "timed_out", "stopped":
 		return true
 	default:
