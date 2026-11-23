@@ -15,6 +15,37 @@ and [fixed compatibility samples](#mobterm-cli-compatibility--round-1-v10--2026-
 The earlier records below retain their original scope; they are not rerun by
 documentation maintenance.
 
+## 2026-11-23 — Read-only capabilities and workspace discovery
+
+The CLI work started from clean `main` at
+`e91bbd5505c2510fbd60bb005ff3b3914bd159ac`. This change advertises only
+`tmux.discovery`, `herdr.list`, `herdr.probe` and `herdr.snapshot`.
+The binary reported an empty execution backend list and reading a missing
+private store left the filesystem untouched.
+
+On Intel macOS 15.8.1 and Go 1.27.1, `TestLiveTmuxDirectory` exercised real
+tmux 3.7c against a dedicated socket, with the server initially absent and
+then running. It checked directory topology, server identity and input framing.
+`TestLiveHerdrDirectory` ran the App's previously verified v0.9.3 x86_64 Herdr
+fixture (SHA-256 `db62d548ff3e832b087a96b1894a08d26be3905f1830309cd556783f215d4054`).
+An explicit namespace retained its socket incarnation and pane terminal IDs with
+unrelated inherited HERDR variables. `TestWorkspaceCapabilitiesNoInitialization`
+also checked absent, initialized and malformed stores. All three passed on the
+isolated read-only source. The tests use temporary homes, sockets and server
+processes. To exercise Herdr, supply its absolute path in
+`MOBTERM_DISCOVERY_TEST_HERDR`. To require tmux, set `MOBTERM_REQUIRE_TMUX=1`.
+The targeted ordinary and race runs both passed all three tests. The ordinary
+full suite also exposed the existing asdf launch-fixture five-second setup
+timeout in two test groups under host contention. Re-running those two groups
+on the same source passed all 96 tests/subtests in 138.717 seconds. No assertion
+or timeout was relaxed. The full race suite reported the same two launcher
+setup timeouts, with 893 passing and six opt-in skips; the two failing leaf
+cases passed again with the race detector in isolated runs (7.126 and 5.764
+seconds, respectively). The three new discovery tests
+passed in both full runs. The CLI also passed gofmt, vet, a trimmed macOS build
+and a CGO-disabled Linux amd64 cross-build. This CLI verification does not
+exercise iOS rendering, production APIs or APNs.
+
 ## 2026-11-23 — Codex notification conversation append, round 1 v1.0
 
 The CLI started from clean `main` at `9ba9255e88c3435bc096c4d114754bb0a6ade9ae`. The Go protocol vector covers inspect, send, status and configure and uses the same expected proofs as the Swift tests. A storage fixture covers same-event retry, independent homes, changed daemon birth, seven-day expiry, replay after collection and malformed/unknown stores. A synthetic two-Pair TLS grant fixture exercises new completion outbox fan-out, old-grant denial, independent local activation, invalidated old lease, concurrent claim and restart readback of retained ACK evidence. These fixtures do not exercise an iPhone or APNs.

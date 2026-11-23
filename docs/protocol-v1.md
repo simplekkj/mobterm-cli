@@ -1,5 +1,7 @@
 # Mobterm notification protocol v1
 
+[Workspace discovery over SSH](workspace-discovery.md) defines the passive capability probe and structured tmux/Herdr queries.
+
 Codex conversation append uses the paired host’s private delivery mapping and explicit SSH discovery of `reply_protocols:[1,2]` and `reply_modes:["thread_append"]`. The encrypted notification and pairing wire identities have the same format. See [reply wire v2](reply-v2.md).
 
 Latest-source ordinary message replies use trusted SSH [reply wire v1](reply-v1.md)

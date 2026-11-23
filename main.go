@@ -205,7 +205,7 @@ func commandTimeout(args []string) time.Duration {
 
 func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "mobterm-cli setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | reply inspect|send|status|latest|configure|configuration --stdin-frame | message read --stdin-frame | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | pairs retire --stdin-frame --json | upgrade --version vX.Y.Z | version")
+		fmt.Fprintln(out, "mobterm-cli capabilities --json | discovery tmux.discovery|herdr.list|herdr.probe|herdr.snapshot --stdin-frame | setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | reply inspect|send|status|latest|configure|configuration --stdin-frame | message read --stdin-frame | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | pairs retire --stdin-frame --json | upgrade --version vX.Y.Z | version")
 		return 0
 	}
 	if args[0] == "version" || args[0] == "--version" {
@@ -231,6 +231,18 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	a := newAPI()
 	var value any
 	switch args[0] {
+	case "capabilities":
+		if len(args) != 2 || args[1] != "--json" {
+			err = errors.New("invalid_request")
+		} else {
+			value, err = readCapabilities(s)
+		}
+	case "discovery":
+		if len(args) != 3 || args[2] != "--stdin-frame" {
+			err = errors.New("invalid_request")
+		} else {
+			value, err = discoverWorkspace(ctx, args[1], in)
+		}
 	case "activity":
 		if len(args) == 2 && args[1] == "dispatch" {
 			if dispatchActivity(ctx, s, a, os.NewFile(3, "activity-pending-lock")) != nil {
@@ -549,6 +561,9 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		}
 		if value == nil {
 			code := "operation_failed"
+			if args[0] == "discovery" {
+				code = safeCode(err.Error())
+			}
 			if args[0] == "target" {
 				code = targetErrorCode(err)
 			}
