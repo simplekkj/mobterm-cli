@@ -621,7 +621,7 @@ polling while newer writers reacquire it. The caller's deadline is unchanged;
 an expired waiter can only release/close a subsequently acquired lock, never
 perform a late state write. No second activity queue is introduced.
 This is not an identity/target cache. Target validation is not cached or
-weakened. [Measurement evidence](evidence/codex-p1-latency/README.md) separates controlled
+weakened. [Measurement evidence](https://github.com/simplekkj/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/codex-p1-latency/README.md) separates controlled
 fixtures from real terminal/device evidence.
 
 G0 remains blocked: Stop hooks can request continuation of the same turn before

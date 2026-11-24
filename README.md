@@ -29,7 +29,7 @@ repositories. See [LICENSE](LICENSE) and [THIRD_PARTY.md](THIRD_PARTY.md).
   version upgrade; v1 AAD and compatibility remain supported.
 - **Engineering constraints:** [AGENTS.md](AGENTS.md).
 - **History and provenance:** [dated validation records](docs/validation.md),
-  [Codex P1 measurement evidence](docs/evidence/codex-p1-latency/README.md),
+  [Codex P1 measurement evidence](https://github.com/simplekkj/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/codex-p1-latency/README.md),
   [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY.md). Historical PASS
   results do not establish current runtime, release or phone delivery status.
 

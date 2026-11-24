@@ -682,7 +682,7 @@ Its hook behavior is separate from the fixed source build. The package matrix
 uses controlled GitHub responses and local `v0.0.0` archives that include the
 working-tree changes; base-SHA metadata does not imply a clean tagged release.
 
-Sanitized logs and source hashes are retained under ignored `.cache/linux-e2e/`.
+The Linux run recorded sanitized logs and source hashes locally.
 The final instance `108108945` and dedicated firewall `206363275` were deleted;
 cleanup confirmed both exact IDs absent with HTTP 404. Earlier disposable
 preparation/validation instances and their dedicated firewalls were also removed.
@@ -739,9 +739,7 @@ The temporary instance (ID `108093358`) was deleted as requested at
 evidence, cloud resource versions, final repository SHAs and remaining physical
 checks are recorded in the
 [implementation handoff](https://app.notion.com/p/3f9cede2082381f5b08ce58e98e075ce).
-Local sanitized evidence lives in the sibling API repository's ignored
-`.wrangler/push-r1/`; simulator screenshots/xcresult live in the App's ignored
-`build/push-r1/`. Documentation checks: `git diff --check`. Existing historical
+Documentation checks: `git diff --check`. Existing historical
 unit/race results below remain distinct from this task's actual Linux execution.
 
 ## Initial implementation — 2026-10-13
@@ -1119,7 +1117,7 @@ at the unchanged 20s limit. No assertion, production deadline or system security
 setting was weakened. Clean final-commit CI, including the real asdf step and
 minimum/current configuration runs, must succeed before closing the task.
 
-Local evidence/packages: `/tmp/mobterm-r2.2vskUV`, outside Git. Native model
+Native model
 interaction/resume, live API/APNs, phone display/navigation and publishing were
 not performed. Configuration and synthetic HTTP tests do not establish those.
 
@@ -1182,7 +1180,7 @@ limiting, real APNs acceptance, phone display or navigation. Old CLI runtime
 behavior already supports bounded exit with the new API; no forced simultaneous
 CLI release is required.
 
-Sanitized local evidence is under `/tmp/mobterm-r1-evidence/`: `cli-test.log`,
+Sanitized local evidence was written under `/tmp/mobterm-r1-evidence/`: `cli-test.log`,
 `cli-race.log`, `cli-race-focused.log`, `cli-race-final.log`,
 `cli-baseline-race.log`, `cli-r8-race.log` and `r8-report.txt`. Temporary paths
 are local evidence, not committed artifacts or hosted CI results. No packaging,
@@ -1352,7 +1350,7 @@ No live model, production API/APNs, iPhone notification display/tap or user remo
 SSH/Mosh/Herdr navigation was executed. Release remains v0.1.4 at this check and
 does not include these adapters; source push is not publication through the App
 updater. No Release/tag/deployment or second external review is part of this round.
-Local detailed evidence is in `/tmp/mobterm-r2-host-evidence/` and
+Local detailed evidence was written to `/tmp/mobterm-r2-host-evidence/` and
 `/tmp/mobterm-r2-*.log`; this committed summary is the shareable evidence.
 
 ## 2026-10-21 — Agent Jump to reliability, round 1 v1.0
@@ -1529,8 +1527,6 @@ Final-source checks after the environment settled:
   including compilation.
   The earlier race process was interrupted by an agent-server restart before a
   final result could be confirmed, so only this unconfirmed check was rerun.
-  Its output and exit/elapsed record are retained locally in ignored
-  `.cache/agent-discovery-v1/race-final.log` and `race-final-result.json`.
 - `git diff --check`: PASS.
 
 Real Agent runtime activation, real SSH/jump-host selection, notification API/APNs
@@ -1601,7 +1597,6 @@ local test result; the final task commit and push evidence are recorded in the
 single Notion delivery page by the primary agent.
 
 Environment: macOS/Darwin x86_64, Go 1.27.1, Node 22.22.2, npm 11.21.0.
-Logs are retained at `/tmp/mobterm-round2-cli-evidence/`.
 
 | Review item | Implementation and focused evidence |
 | --- | --- |
@@ -1782,7 +1777,7 @@ hint ownership, Claude/OpenCode native schema and Hook migration, MCP/legacy
 approval scope, and the four Codex queue groups. No data races were reported.
 Final `go vet ./...`, `gofmt -l .` (empty) and `git diff --check`: PASS.
 Reviewable sanitized output and the exact focused selector are recorded in
-[delivery evidence](evidence/interaction-v1.txt). No full race PASS is claimed;
+[delivery evidence](https://github.com/simplekkj/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/interaction-v1.txt). No full race PASS is claimed;
 the original full-suite timing failures and the isolated successful rerun remain
 part of the evidence above.
 
@@ -1815,8 +1810,7 @@ response_digest/evidence are visible only to the submitting pair, never answer
 body. App matches that tuple; no wire migration is necessary.
 
 Environment: Go 1.27.1 darwin/amd64, Node v22.22.2. Final checks use the task
-working tree included in this round's commit. Logs are retained in /tmp with the
-mobterm-cli-r2 prefix; sanitized, committed evidence below is the portable record.
+working tree included in this round's commit. The run wrote temporary logs under the mobterm-cli-r2 prefix.
 Early focused test failures are retained: the first test harness decoded variable
 ciphertext with an exact-size helper and incorrectly expected a URL-only fallback
 under disabled general needs_input. Corrected those fixtures; a real R4 suppressed
@@ -1859,7 +1853,7 @@ Final complete race check, no Xcode work: `go test -race -timeout 20m ./...`
 for this round, unlike the preserved first-round full-race failures. No code,
 assertion or per-operation budget changed between the serial ordinary and race
 runs. Final production and tests are frozen; only these validation facts and
-[portable sanitized output](evidence/interaction-r2.txt) were appended afterward.
+[portable sanitized output](https://github.com/simplekkj/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/interaction-r2.txt) were appended afterward.
 
 R1–R5 task changes now have no unresolved related actual failure. API remained
 read-only/clean; App's unrelated Binding/Pairing baseline failures are documented
@@ -1886,7 +1880,7 @@ that consumer and API notification-v2's independent revisioned state path were
 read. App/API received no task changes, tests or deployments.
 
 Environment: macOS 15.8.1 (24H32), Intel Core i7-8569U, x86_64, Go 1.27.1
-(darwin/amd64). [Raw subprocess measurements and limitations](evidence/codex-p1-latency/README.md)
+(darwin/amd64). [Raw subprocess measurements and limitations](https://github.com/simplekkj/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/codex-p1-latency/README.md)
 record baseline/after build fingerprints, sample counts, percentiles, synchronous
 HTTP, durable receipt and sampled worker/target metrics. Counts from fixtures
 are not real Codex/native approval or API/APNs delivery evidence. No real Herdr
@@ -1952,7 +1946,7 @@ that Codex fixture to `tool_pending`; Claude/OpenCode assertions remain intact.
 The measured Go-source manifest still exactly matches the working tree; only
 this expected-result fixture and documentation changed after measurement.
 A fresh full ordinary/vet/race sequence follows, with the failed initial record
-preserved in [checks-initial](evidence/codex-p1-checks-initial.json).
+preserved in [checks-initial](https://github.com/simplekkj/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/codex-p1-checks-initial.json).
 
 Final full-matrix measurement: 3,080 actual CLI calls, including 2,920 ordinary
 Pre/Post observations; every ordinary observation was immediately durable, emitted
@@ -1969,7 +1963,7 @@ Final ordinary suite: `go test -json -timeout 20m ./...` PASS, 465.984s, 742 tes
 items passed, no failures or skips. `go vet ./...` PASS, 0.520s. JSON output and a
 20-minute suite ceiling only improve traceability; no per-operation test or Hook
 budget was relaxed. Portable command results are in
-[checks](evidence/codex-p1-checks.json). Full race results follow.
+[checks](https://github.com/simplekkj/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/codex-p1-checks.json). Full race results follow.
 
 Final race suite: `go test -race -json -timeout 20m ./...` PASS, 571.214s, 742
 items passed, no failures, skips or data race report. `test -z "$(gofmt -l .)"`
