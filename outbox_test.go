@@ -165,12 +165,16 @@ func TestOutboxRecoveryEnvelopeConcurrencyAndReceipts(t *testing.T) {
 		t.Fatal(err)
 	}
 	ready.Store(true)
-	children := []*exec.Cmd{}
-	for i := 0; i < 2; i++ {
+	var outputs [2]bytes.Buffer
+	var children []*exec.Cmd
+	for i := range outputs {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestOutboxRecoveryEnvelopeConcurrencyAndReceipts$")
 		cmd.Env = append(os.Environ(), "MOBTERM_FLUSH_CHILD="+s.Dir)
+		cmd.Stdout = &outputs[i]
+		cmd.Stderr = &outputs[i]
 		if err := cmd.Start(); err != nil {
-			t.Fatal(err)
+			t.Errorf("start flush child %d: %v", i+1, err)
+			break
 		}
 		children = append(children, cmd)
 	}
@@ -183,10 +187,13 @@ func TestOutboxRecoveryEnvelopeConcurrencyAndReceipts(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	for _, cmd := range children {
+	for i, cmd := range children {
 		if err := cmd.Wait(); err != nil {
-			t.Fatal("cross-process flush failed", err)
+			t.Errorf("flush child %d failed: %v\n%s", i+1, err, outputs[i].String())
 		}
+	}
+	if t.Failed() {
+		t.FailNow()
 	}
 	mu.Lock()
 	if len(bodies) != 2 || !bytes.Equal(bodies[0], bodies[1]) {

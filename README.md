@@ -376,8 +376,10 @@ all four targets on two OS versions each:
 Each job checks the OS/CPU and Go host/target architecture, rejects Rosetta,
 installs/checks tmux, and runs uncached, verbose Go tests and race checks with
 `MOBTERM_REQUIRE_TMUX=1`: a missing tmux fails instead of skipping its live test.
-Jobs also build and execute the native binary and cross-build all four packages
-for offline installer regression and native installation smoke tests. This matrix
+On Intel macOS, both Go test commands allow 45 minutes per package.
+Each job builds and executes the native binary. One Ubuntu job cross-builds all
+four test packages and uploads them with their checksums. Each native job downloads
+the same artifact for offline installer regression and its native smoke test. This matrix
 does not establish compatibility with other Linux distributions or OS versions.
 Release tag pushes reuse this CI from the same commit. All eight native
 jobs must succeed before the Ubuntu release build cross-compiles the four assets;

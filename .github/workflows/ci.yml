@@ -7,10 +7,29 @@ on:
 permissions:
   contents: read
 jobs:
+  package:
+    name: Build installer test packages
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.1'
+      - run: python3 scripts/package.py --version v0.0.0 --commit "$GITHUB_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: installer-test-packages
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+
   test:
+    needs: package
     name: Native ${{ matrix.goos }}/${{ matrix.goarch }} (${{ matrix.runner }})
     env:
       MOBTERM_REQUIRE_TMUX: '1'
+      GO_TEST_TIMEOUT: ${{ matrix.goos == 'darwin' && matrix.goarch == 'amd64' && '45m' || '10m' }}
     strategy:
       fail-fast: false
       matrix:
@@ -98,9 +117,9 @@ jobs:
           fi
           tmux -V
       - run: test -z "$(gofmt -l .)"
-      - run: go test -count=1 -v ./...
+      - run: go test -timeout="$GO_TEST_TIMEOUT" -count=1 -v ./...
       - run: go vet ./...
-      - run: go test -race -count=1 -v ./...
+      - run: go test -race -timeout="$GO_TEST_TIMEOUT" -count=1 -v ./...
       - name: Build and run native binary
         run: |
           go build -trimpath -o mobterm-cli .
@@ -133,8 +152,10 @@ jobs:
               --expect-codex-version "$CODEX_TEST_VERSION" --expect-claude-version "$CLAUDE_TEST_VERSION" -v
           fi
       - run: sh -n install.sh
-      - name: Package all supported targets without publishing
-        run: python3 scripts/package.py --version v0.0.0 --commit "$GITHUB_SHA"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: installer-test-packages
+          path: dist
       - name: Offline installer regression and native package smoke test
         run: python3 tests/install_test.py --dist dist --commit "$GITHUB_SHA"
 
