@@ -50,14 +50,19 @@ func TestHelpNarrowLayout(t *testing.T) {
 	if !renderHelp(&text, h.caps, []string{"upgrade"}) {
 		t.Fatal("missing upgrade help")
 	}
+	url := "https://github.com/simplekkj/mobterm-cli/releases"
 	for _, line := range strings.Split(text.String(), "\n") {
-		if cellWidth(line) > h.caps.Width {
+		if cellWidth(line) > h.caps.Width && line != "  "+url {
 			t.Errorf("help exceeds %d columns: %q", h.caps.Width, line)
 		}
 	}
-	// Narrow layout can wrap the release URL but must keep every character.
-	joined := strings.Join(strings.Fields(text.String()), "")
-	if !strings.Contains(joined, "https://github.com/simplekkj/mobterm-cli/releases") {
-		t.Errorf("release URL was truncated:\n%s", text.String())
+	if !strings.Contains(text.String(), "\n  "+url+"\n") {
+		t.Error("narrow help broke the release URL")
+	}
+	text.Reset()
+	h.caps.Hyperlinks = true
+	renderHelp(&text, h.caps, []string{"upgrade"})
+	if !strings.Contains(text.String(), "\x1b]8;;"+url+"\x1b\\"+url+"\x1b]8;;") {
+		t.Error("narrow help lost its hyperlink or visible address")
 	}
 }

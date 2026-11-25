@@ -14,7 +14,8 @@ import (
 
 type displayOptions struct {
 	color, progress string
-	plain, help     bool
+	plain           bool
+	helpPath        []string
 }
 
 // Options with a value use the documented --name=value form. Leave invalid
@@ -33,16 +34,23 @@ func (o *displayOptions) take(arg string) bool {
 	return true
 }
 
-// Only these commands have a human result. Everything else, including hooks
-// invoked by Agents, retains its own argument parser and output contract.
+// Recognize display flags on human commands and help on public maintenance
+// commands. Agent invocations and framed protocols keep their own parsers.
 func resultOptions(args []string) ([]string, displayOptions, bool) {
 	var options displayOptions
 	start := 1
+	maintenance := false
 	switch args[0] {
 	case "hooks":
 		if len(args) < 2 || args[1] != "install" && args[1] != "uninstall" {
 			return args, options, false
 		}
+		start = 2
+	case "outbox", "pairs":
+		if len(args) < 2 || args[1] == "retire" || !slices.Contains(args, "--help") && !slices.Contains(args, "-h") {
+			return args, options, false
+		}
+		maintenance = true
 		start = 2
 	case "status", "test", "upgrade":
 	default:
@@ -60,7 +68,7 @@ func resultOptions(args []string) ([]string, displayOptions, bool) {
 			continue
 		}
 		if arg == "--help" || arg == "-h" {
-			options.help = true
+			options.helpPath = args[:start]
 		}
 		clean = append(clean, arg)
 		name, _, hasValue := strings.Cut(strings.TrimLeft(arg, "-"), "=")
@@ -73,6 +81,12 @@ func resultOptions(args []string) ([]string, displayOptions, bool) {
 		case "json", "agents-json", "installation-json", "read-only", "stdin-frame":
 			human = false
 		}
+	}
+	if !human {
+		options.helpPath = nil
+	}
+	if maintenance {
+		return args, options, false
 	}
 	return clean, options, human
 }
@@ -114,6 +128,26 @@ type terminalCaps struct {
 	Width, ColorDepth                 int
 }
 
+// These TERM families use ANSI EL/ED, the two operations our live line
+// needs. A color-depth hint by itself says nothing about cursor control.
+func ansiSupport(terminal, colorTerm string) (erase, color bool) {
+	family := terminal
+	if end := strings.IndexAny(terminal, "-."); end >= 0 {
+		family = terminal[:end]
+	}
+	switch family {
+	case "dumb", "unknown", "vt52":
+		return false, false
+	case "vt100", "vt101", "vt102", "vt125", "vt132", "vt220", "vt240", "vt320", "vt420", "vt520":
+		return true, false
+	case "xterm", "rxvt", "screen", "tmux", "ansi", "linux", "cygwin", "st", "putty",
+		"alacritty", "foot", "kitty", "wezterm", "ghostty", "konsole", "vte", "contour", "eterm":
+		return true, !strings.HasSuffix(terminal, "-mono")
+	}
+	return false, !strings.HasSuffix(terminal, "-mono") && (colorTerm == "truecolor" || colorTerm == "24bit" ||
+		strings.HasSuffix(terminal, "-256color") || strings.HasSuffix(terminal, "-direct"))
+}
+
 func detectTerminal(w io.Writer, options displayOptions) terminalCaps {
 	c := terminalCaps{Width: 80}
 	if file, ok := w.(*os.File); ok && file != nil {
@@ -130,7 +164,8 @@ func detectTerminal(w io.Writer, options displayOptions) terminalCaps {
 	}
 	terminal := strings.ToLower(os.Getenv("TERM"))
 	colorTerm := strings.ToLower(os.Getenv("COLORTERM"))
-	ansiTerminal := c.TTY && terminal != "dumb" && terminal != "unknown" && (terminal != "" || colorTerm != "")
+	erase, hasColor := ansiSupport(terminal, colorTerm)
+	ansiTerminal := c.TTY && erase
 	c.Dynamic = ansiTerminal && os.Getenv("CI") == "" && options.progress != "plain" && options.progress != "never"
 	for _, key := range []string{"LC_ALL", "LC_CTYPE", "LANG"} {
 		if locale := os.Getenv(key); locale != "" {
@@ -138,9 +173,7 @@ func detectTerminal(w io.Writer, options displayOptions) terminalCaps {
 			break
 		}
 	}
-	// The VT100 family implements cursor control on monochrome displays.
-	monochrome := strings.HasPrefix(terminal, "vt100") || terminal == "vt102" || terminal == "vt220" || strings.HasSuffix(terminal, "-mono")
-	color := ansiTerminal && !monochrome
+	color := c.TTY && hasColor
 	switch {
 	case options.color == "always":
 		color = true

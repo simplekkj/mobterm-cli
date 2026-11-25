@@ -24,6 +24,11 @@ path absent. Redirected stdout with `TERM=xterm-256color`, truecolor and forced
 color returned parseable JSON. Checks covered independent stdout/stderr, an
 explicit JSON command on a PTY, combined capability output, single-line
 version, unknown command errors, `TERM=dumb` and `NO_COLOR=0`.
+Real upgrade invocations on PTYs configured as VT52, VT320 and tmux-256color
+produced static, monochrome live and colored live feedback respectively.
+At 24 and 38 columns the visible release URL stayed contiguous with OSC 8
+both enabled and disabled. Maintenance help with an explicit pair succeeded
+even with HOME and the configuration directory unset.
 
 An interactive upgrade downloaded the existing official v0.1.19 release and
 replaced a temporary copy of the CLI. The copy subsequently reported v0.1.19.

@@ -274,10 +274,7 @@ func (h helpLayout) topic(t *helpTopic, path string) {
 	if path == "upgrade" {
 		h.heading("Release tags")
 		url := "https://github.com/" + releaseRepo + "/releases"
-		if cellWidth(url)+2 <= h.caps.Width {
-			fmt.Fprintln(h.out, "  "+h.caps.link(url))
-		} else {
-			h.line(2, "", url)
-		}
+		// Soft wrapping preserves the address when copied from a narrow pane.
+		fmt.Fprintln(h.out, "  "+h.caps.link(url))
 	}
 }

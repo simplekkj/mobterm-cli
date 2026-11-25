@@ -214,17 +214,12 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		return 0
 	}
 	args, display, candidate := resultOptions(args)
+	if display.helpPath != nil && renderHelp(out, detectTerminal(out, display), display.helpPath) {
+		return 0
+	}
 	var stdout terminalCaps
 	if candidate {
 		stdout = detectTerminal(out, display)
-		if display.help {
-			path := args[:1]
-			if args[0] == "hooks" {
-				path = args[:2]
-			}
-			renderHelp(out, stdout, path)
-			return 0
-		}
 	}
 	human := candidate && stdout.TTY
 	s, err := defaultStore()

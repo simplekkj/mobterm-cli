@@ -354,7 +354,9 @@ Phone display requires observation on the device.
   symbols, dynamic updates and hyperlinks. It preserves the selected result
   format. `NO_COLOR` alone preserves layout and live progress.
 - Width, UTF-8 locale, color and refresh capability are evaluated separately.
-  Links retain their visible URL. Help adds clickable release links on
+  Monochrome ANSI terminals can still refresh progress. Unrecognized cursor
+  capabilities use static stages. Terminals soft-wrap the continuous release
+  URL so it can be copied even in a narrow pane. Help adds clickable links on
   recognized direct terminals such as iTerm2, WezTerm and Ghostty.
 - Machine protocols, stdin frames, Agent callbacks and the single-line
   `version` probe keep their established formats, including with forced color.

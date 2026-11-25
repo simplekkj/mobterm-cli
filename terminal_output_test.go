@@ -16,7 +16,7 @@ func (forbiddenHelpInput) Read([]byte) (int, error) { panic("help tried to read 
 func TestRunHelpWithoutConfiguration(t *testing.T) {
 	t.Setenv("HOME", "")
 	t.Setenv("MOBTERM_CONFIG_DIR", "")
-	for _, args := range [][]string{nil, {"-h"}, {"help", "upgrade"}, {"upgrade", "--help"}, {"hooks", "install", "-h", "--plain"}, {"hooks", "install", "--agent", "codex", "--help"}, {"upgrade", "--version", "v1.0.0", "-h"}, {"job", "submit", "--help"}} {
+	for _, args := range [][]string{nil, {"-h"}, {"help", "upgrade"}, {"upgrade", "--help"}, {"hooks", "install", "-h", "--plain"}, {"hooks", "install", "--agent", "codex", "--help"}, {"upgrade", "--version", "v1.0.0", "-h"}, {"job", "submit", "--help"}, {"outbox", "status", "--pair", "first_pair_123456", "--help"}, {"pairs", "reconcile", "--pair", "first_pair_123456", "-h"}} {
 		var out, diagnostic bytes.Buffer
 		if code := run(args, forbiddenHelpInput{}, &out, &diagnostic); code != 0 || diagnostic.Len() != 0 || !strings.Contains(out.String(), "Usage") {
 			t.Fatalf("%v returned %d: %s / %s", args, code, &out, &diagnostic)
@@ -84,6 +84,37 @@ func TestColorPrecedence(t *testing.T) {
 	} {
 		if got := detectTerminal(&out, tc.opts); (got.ColorDepth > 0) != tc.colored {
 			t.Fatal(tc, got)
+		}
+	}
+}
+
+func TestMaintenanceHelpArgumentOwnership(t *testing.T) {
+	for _, argv := range [][]string{
+		{"outbox", "status", "--pair", "--help"},
+		{"pairs", "reconcile", "--", "-h"},
+		{"pairs", "retire", "--stdin-frame", "--json", "--help"},
+		{"outbox", "status", "--pair", "first_pair_123456", "--help", "--json"},
+	} {
+		clean, opts, human := resultOptions(argv)
+		if opts.helpPath != nil || human || !slices.Equal(clean, argv) {
+			t.Fatalf("changed maintenance invocation %v", argv)
+		}
+	}
+}
+
+func TestANSISupport(t *testing.T) {
+	for _, tc := range []struct {
+		term, colorTerm string
+		erase, color    bool
+	}{
+		{"vt52", "truecolor", false, false}, {"vt320", "truecolor", true, false},
+		{"dumb", "truecolor", false, false}, {"xterm-mono", "", true, false},
+		{"unknown-terminal", "", false, false}, {"custom", "truecolor", false, true},
+		{"xterm-256color", "", true, true}, {"tmux-256color", "truecolor", true, true}, {"screen.xterm-256color", "", true, true},
+	} {
+		erase, color := ansiSupport(tc.term, tc.colorTerm)
+		if erase != tc.erase || color != tc.color {
+			t.Errorf("%s: got erase=%t color=%t", tc.term, erase, color)
 		}
 	}
 }
