@@ -1,13 +1,11 @@
 # Dependencies
 
-The CLI uses Go's standard library and `github.com/pelletier/go-toml/v2` v2.2.4
-(MIT), pinned in go.mod/go.sum. The TOML parser identifies the root notify
-assignment so unrelated comments and configuration remain byte-for-byte intact.
+The following Go modules use the MIT license reproduced below. Versions are
+pinned in go.mod and go.sum.
 
-go-toml is copyright its contributors. Its MIT license is reproduced below.
-
-go-toml v2
-Copyright (c) 2021 - 2023 Thomas Pelletier
+- `github.com/pelletier/go-toml/v2` parses Agent configuration. Copyright (c) 2021 - 2023 Thomas Pelletier.
+- `github.com/clipperhouse/displaywidth` measures grapheme and terminal escape sequence widths. Copyright (c) 2025 Matt Sherman.
+- `github.com/clipperhouse/uax29/v2`. Copyright (c) 2020 Matt Sherman.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -27,11 +25,11 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-## Go runtime, standard library and golang.org/x/sys
+## Go runtime, standard library and golang.org/x packages
 
 The statically linked executables include Go 1.27.1 runtime and standard library
-code. Darwin process-birth queries additionally use `golang.org/x/sys` v0.46.0,
-pinned in go.mod/go.sum and distributed under the same BSD-3-Clause license
+code. Process queries use `golang.org/x/sys` and terminal capability checks
+use `golang.org/x/term`. Both are distributed under the same BSD-3-Clause license
 and copyright notice reproduced below. No cgo or runtime helper is required.
 
 Copyright 2009 The Go Authors.

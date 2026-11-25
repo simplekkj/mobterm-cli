@@ -33,7 +33,7 @@ func trustedReleaseURL(raw string) bool {
 	}
 	return u.Host == "github.com" || u.Host == "api.github.com" || u.Host == "release-assets.githubusercontent.com" || u.Host == "objects.githubusercontent.com"
 }
-func download(ctx context.Context, c *http.Client, raw string, limit int64) ([]byte, error) {
+func download(ctx context.Context, c *http.Client, raw string, limit int64, progress *upgradeProgress) ([]byte, error) {
 	if !trustedReleaseURL(raw) {
 		return nil, errors.New("untrusted download source")
 	}
@@ -43,13 +43,27 @@ func download(ctx context.Context, c *http.Client, raw string, limit int64) ([]b
 	}
 	resp, e := c.Do(r)
 	if e != nil {
+		if progress != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, errors.New("release download failed")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("release download HTTP %d", resp.StatusCode)
 	}
-	b, e := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	body := io.LimitReader(resp.Body, limit+1)
+	if progress != nil && progress.mode != "never" {
+		progress.startBody(resp.ContentLength)
+		body = io.TeeReader(body, progress)
+	}
+	b, e := io.ReadAll(body)
+	if e != nil && progress != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, errors.New("release download interrupted")
+	}
 	if e != nil || int64(len(b)) > limit {
 		return nil, errors.New("release asset exceeds limit")
 	}
@@ -146,6 +160,11 @@ func verifyExecutable(data []byte, system, arch string) error {
 	return errors.New("unsupported executable platform")
 }
 func upgrade(ctx context.Context, version, destination string) error {
+	return upgradeWithProgress(ctx, version, destination, nil)
+}
+
+func upgradeWithProgress(ctx context.Context, version, destination string, progress *upgradeProgress) error {
+	defer progress.finish()
 	if !releaseVersion.MatchString(version) {
 		return errors.New("upgrade requires explicit --version vX.Y.Z")
 	}
@@ -161,7 +180,8 @@ func upgrade(ctx context.Context, version, destination string) error {
 		}
 		return nil
 	}}
-	meta, e := download(ctx, c, "https://api.github.com/repos/"+releaseRepo+"/releases/tags/"+version, 1024*1024)
+	progress.begin("Fetching release metadata", "Release")
+	meta, e := download(ctx, c, "https://api.github.com/repos/"+releaseRepo+"/releases/tags/"+version, 1024*1024, progress)
 	if e != nil {
 		return e
 	}
@@ -197,24 +217,33 @@ func upgrade(ctx context.Context, version, destination string) error {
 	if assets["checksums.txt"] == "" {
 		return errors.New("release checksum unavailable")
 	}
-	checks, e := download(ctx, c, assets["checksums.txt"], 16384)
+	progress.begin("Downloading checksums", "Checksums")
+	checks, e := download(ctx, c, assets["checksums.txt"], 16384, progress)
 	if e != nil {
 		return e
 	}
-	archive, e := download(ctx, c, assets[name], 64*1024*1024)
+	progress.begin("Downloading package", "Package")
+	archive, e := download(ctx, c, assets[name], 64*1024*1024, progress)
 	if e != nil {
 		return e
 	}
+	progress.begin("Verifying SHA-256", "SHA-256")
 	if e = verifyChecksum(archive, checks, name); e != nil {
 		return e
 	}
+	progress.begin("Extracting executable", "Extract")
 	binary, e := extractBinary(archive)
 	if e != nil {
 		return e
 	}
+	progress.begin("Checking executable platform", "Platform")
 	if e = verifyExecutable(binary, runtime.GOOS, runtime.GOARCH); e != nil {
 		return e
 	}
+	if e := ctx.Err(); e != nil {
+		return e
+	}
+	progress.begin("Replacing executable", "Replace")
 	info, e := os.Lstat(destination)
 	if e != nil || !info.Mode().IsRegular() {
 		return errors.New("upgrade destination must be current regular executable")

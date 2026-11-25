@@ -206,18 +206,31 @@ func commandTimeout(args []string) time.Duration {
 }
 
 func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
-	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprintln(out, "mobterm-cli capabilities --json | job submit|status|cancel|output|foreground --stdin-frame | discovery tmux.discovery|herdr.list|herdr.probe|herdr.snapshot --stdin-frame | setup --stdin-frame | hooks install|uninstall --agent codex|claude|opencode|pi | notify --source codex|claude|opencode|pi | test --pair ID --json | status --json [--pair ID] | status --installation-json | status --agents-json | reply inspect|send|status|latest|configure|configuration --stdin-frame | message read --stdin-frame | target verify|resolve --stdin-frame | outbox flush|refresh|status --json | pairs reconcile|abandon --pair ID --json | pairs retire --stdin-frame --json | upgrade --version vX.Y.Z | version")
-		return 0
+	if code, handled := handleHelp(args, out, diagnostic); handled {
+		return code
 	}
 	if args[0] == "version" || args[0] == "--version" {
 		fmt.Fprintf(out, "mobterm-cli %s %s %s/%s\n", version, commit, platformOS, platformArch)
 		return 0
 	}
+	args, display, candidate := resultOptions(args)
+	var stdout terminalCaps
+	if candidate {
+		stdout = detectTerminal(out, display)
+		if display.help {
+			path := args[:1]
+			if args[0] == "hooks" {
+				path = args[:2]
+			}
+			renderHelp(out, stdout, path)
+			return 0
+		}
+	}
+	human := candidate && stdout.TTY
 	s, err := defaultStore()
 	if err != nil {
 		fmt.Fprintln(diagnostic, "mobterm-cli: configuration unavailable")
-		if pairingCommand(args) {
+		if !human && pairingCommand(args) {
 			printJSON(out, map[string]any{"v": 1, "ok": false, "error": "operation_failed", "failure": pairingFailureMetadata(pairingFailure("configuration", "local_config_failed", err))})
 		}
 		return 1
@@ -238,6 +251,7 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	}
 	a := newAPI()
 	var value any
+	var progress *upgradeProgress
 	switch args[0] {
 	case "capabilities":
 		if len(args) != 2 || args[1] != "--json" {
@@ -563,7 +577,10 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		return 0
 	case "upgrade":
 		var target string
-		f, e := flags("upgrade", args[1:], func(f *flag.FlagSet) { f.StringVar(&target, "version", "", "") })
+		f, e := flags("upgrade", args[1:], func(f *flag.FlagSet) {
+			f.StringVar(&target, "version", "", "")
+			f.Bool("json", false, "")
+		})
 		if e != nil || f.NArg() != 0 {
 			err = errors.New("invalid upgrade arguments")
 			break
@@ -573,8 +590,18 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 			err = e
 			break
 		}
-		err = upgrade(ctx, target, dest)
-		value = map[string]any{"version": target, "upgraded": err == nil}
+		if human {
+			progress = newUpgradeProgress(diagnostic, func() terminalCaps { return detectTerminal(diagnostic, display) }, display.progress)
+		}
+		err = upgradeWithProgress(ctx, target, dest, progress)
+		if human {
+			if err == nil {
+				fmt.Fprintln(out, stdout.style("success", wrapCells("Installed mobterm-cli "+target, stdout.Width)))
+				fmt.Fprintln(out, wrapCells("Path: "+terminalText(dest), stdout.Width))
+			}
+		} else {
+			value = map[string]any{"version": target, "upgraded": err == nil}
+		}
 	default:
 		err = errors.New("unknown command")
 	}
@@ -590,9 +617,18 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		}
 	}
 	if value != nil {
-		printJSON(out, value)
+		if human {
+			writeHumanResult(out, stdout, args, value)
+		} else {
+			printJSON(out, value)
+		}
 	}
 	if err != nil {
+		if human {
+			caps := detectTerminal(diagnostic, display)
+			writeHumanError(diagnostic, caps, args, progress, err)
+			return 1
+		}
 		if pairingCommand(args) {
 			fmt.Fprintln(diagnostic, "mobterm-cli:", pairingFailureMetadata(err))
 		} else {

@@ -333,11 +333,44 @@ Revoke a pair in the App. The CLI cannot create a new receiver or revive a revok
 pair. Multiple devices have separate pair credentials and encryption keys.
 Uninstalling hooks does not revoke pairs or delete credentials.
 
+## Terminal output
+
+Run `mobterm-cli --help` for grouped commands and examples. Use
+`mobterm-cli help upgrade` or `mobterm-cli hooks install --help` for the
+options at a specific command. Help reads the output terminal size and wraps
+wide text and long paths to fit.
+
+When stdout is a terminal, `status`, `hooks install`, `hooks uninstall`,
+`test` and `upgrade` show human-readable results. Redirecting stdout or
+passing `--json` selects the existing JSON format. For a test notification,
+the result distinguishes local queuing, API acceptance and APNs acceptance.
+Phone display requires observation on the device.
+
+- Append `--color=auto|always|never` to help or a human command (choose one
+  value). In auto mode, nonempty `NO_COLOR` (including `0`) disables color,
+  then nonzero `CLICOLOR_FORCE` can force it, then `CLICOLOR=0` disables it.
+  Otherwise color follows the output descriptor and terminal environment.
+- `--plain` takes precedence over color settings and turns off decorative
+  symbols, dynamic updates and hyperlinks. It preserves the selected result
+  format. `NO_COLOR` alone preserves layout and live progress.
+- Width, UTF-8 locale, color and refresh capability are evaluated separately.
+  Links retain their visible URL. Help adds clickable release links on
+  recognized direct terminals such as iTerm2, WezTerm and Ghostty.
+- Machine protocols, stdin frames, Agent callbacks and the single-line
+  `version` probe keep their established formats, including with forced color.
+
 ## Upgrade
 
 ```sh
 mobterm-cli upgrade --version vX.Y.Z
 ```
+
+On an interactive run, progress goes to stderr and the installed version and
+path go to stdout. `--progress=auto` draws a single line for slower updates.
+Known response lengths show actual bytes and a percentage. Unknown lengths show
+bytes and elapsed time. CI and redirected stderr use static stages. Select
+`--progress=plain` for stage lines or `--progress=never` to suppress them.
+`upgrade --json` and redirected stdout suppress progress on both streams.
 
 Use an existing, explicit stable version. Upgrade accepts only this repository's
 GitHub release assets, checks the four-platform manifest, selected asset name and

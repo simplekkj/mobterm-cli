@@ -15,6 +15,24 @@ and [fixed compatibility samples](#mobterm-cli-compatibility--round-1-v10--2026-
 The earlier records below retain their original scope; they are not rerun by
 documentation maintenance.
 
+## 2026-11-25 — CLI terminal output and upgrade progress
+
+On Intel macOS with Go 1.27.1, the compiled CLI rendered grouped help within
+24-, 38- and 96-column PTYs. A real 40-column tmux split displayed the nested
+hook help, wrapped parameters and example. Root and nested help left an isolated configuration
+path absent. Redirected stdout with `TERM=xterm-256color`, truecolor and forced
+color returned parseable JSON. Checks covered independent stdout/stderr, an
+explicit JSON command on a PTY, combined capability output, single-line
+version, unknown command errors, `TERM=dumb` and `NO_COLOR=0`.
+
+An interactive upgrade downloaded the existing official v0.1.19 release and
+replaced a temporary copy of the CLI. The copy subsequently reported v0.1.19.
+An offline HTTP fixture exercised a slow body with and without a length,
+resizing a PTY from 36 to 20 columns, checksum failure, SIGINT and SIGTERM.
+The interrupted fixture kept its original executable. These observations cover
+local PTYs, the updater and its receipts. Phone display and live Mosh rendering
+were outside the observed environments.
+
 ## 2026-11-24 — Native QuickCommand submission and foreground stream v1
 
 The CLI on Intel macOS 15.8.1 (Go 1.27.1) ran two three-second commands through

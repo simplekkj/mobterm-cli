@@ -16,6 +16,11 @@ unchanged; unknown peers receive only a meaningful supported v1 reminder.
 This is the public, implementation-independent wire contract. The normative
 cross-language fixture is [protocol-v1.json](../testdata/protocol-v1.json).
 
+The CLI emits unstyled results for explicit JSON modes and SSH frame commands.
+The App may merge stderr into stdout for a successful `capabilities --json`
+probe. Human display options and forced color never add decoration to that
+stream. See [Terminal output](../README.md#terminal-output) for interactive use.
+
 ## Pair setup over SSH
 
 `mobterm-cli status --installation-json` returns one JSON line containing `v:1`,
