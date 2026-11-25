@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -169,11 +170,18 @@ func TestActivityDispatchBoundsChildrenAndPreservesExitWakeup(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	time.Sleep(100 * time.Millisecond)
-	raw, err := os.ReadFile(starts)
+	// The successor inherits its admission lock at exec. Its test entry point
+	// may not yet have been scheduled to record its PID.
+	pending, err := os.OpenFile(filepath.Join(s.Dir, ".activity-pending-lock"), os.O_RDWR, 0)
+	if err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	err = syscall.Flock(int(pending.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	pending.Close()
 	close(release)
-	if err != nil || len(strings.Fields(string(raw))) != 2 {
-		t.Fatalf("expected one active and one pending child, got %q: %v", raw, err)
+	if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
+		t.Fatalf("expected a pending child to hold the admission lock, got %v", err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for events.Load() < 2 && time.Now().Before(deadline) {
@@ -193,6 +201,10 @@ func TestActivityDispatchBoundsChildrenAndPreservesExitWakeup(t *testing.T) {
 			t.Fatal(err)
 		}
 		unlock()
+	}
+	raw, err := os.ReadFile(starts)
+	if err != nil || len(strings.Fields(string(raw))) != 2 {
+		t.Fatalf("expected exactly two children across the burst, got %q: %v", raw, err)
 	}
 }
 
