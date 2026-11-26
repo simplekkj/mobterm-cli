@@ -57,8 +57,11 @@ func TestReconcileClassicNotifyOnly(t *testing.T) {
 					mtimes[name] = i.ModTime().UnixNano()
 				}
 			}
-			if reconcile(false).Status != "current" {
-				t.Fatal("migration was not idempotent")
+			// A reconnect has no copy of the original write receipt.
+			for _, check := range []bool{true, false} {
+				if recovered := reconcile(check); recovered.Status != "current" || recovered.Activation != "native_review_required" {
+					t.Fatalf("lost disk or trust guidance on reconnect: %+v", recovered)
+				}
 			}
 			for name, stamp := range mtimes {
 				i, err := os.Stat(name)

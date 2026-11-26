@@ -182,10 +182,8 @@ func planClassic(r HookRecord, executable string, probe agentProbe, data, jsonDa
 		if parseErr != nil || root.kind != '{' {
 			return tx, classicAttention("ownership_conflict")
 		}
-		for _, key := range []string{"disableAllHooks", "allowManagedHooksOnly"} {
-			if setting := root.keys[key]; setting != nil && setting.kind != 'f' {
-				return tx, classicAttention("disabled")
-			}
+		if claudeHooksDisabled(root) {
+			return tx, classicAttention("disabled")
 		}
 		policy := agentCompatibilities["claude"]
 		policy.minimum = stableVersion{2, 1, 301}
@@ -219,6 +217,11 @@ func planClassic(r HookRecord, executable string, probe agentProbe, data, jsonDa
 	// Rendering can move an unchanged hook past a later user hook. If the
 	// verified owned fragments already match the target, keep every byte.
 	if reflect.DeepEqual(r, next) {
+		// A fresh disk check can recover from a lost SSH receipt, but cannot
+		// verify which hooks the running Codex instance trusts or has loaded.
+		if r.Agent == "codex" && (r.CodexJSON != "" || r.CodexNative != "") {
+			return tx, classicResult("current", "current", "native_review_required")
+		}
 		return tx, classicResult("current", "current", "unknown")
 	}
 	tx = hookTransaction{ReconcileVersion: version, V: 3, Agent: r.Agent, Path: r.Path, Action: "install", BeforeSHA: digest(string(data)), BeforeExists: true, After: result, AfterSHA: digest(string(result)), BeforeRecord: &r, AfterRecord: &next}

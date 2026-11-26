@@ -16,6 +16,17 @@ func nativeComponent(status, reason string) reconcileComponent {
 	return result
 }
 
+func nativeMigrationFailure(err error) reconcileComponent {
+	switch {
+	case errors.Is(err, errAdapterDisabled):
+		return nativeComponent("attention", "disabled")
+	case errors.Is(err, errAdapterSettings):
+		return nativeComponent("attention", "ownership_conflict")
+	default:
+		return nativeComponent("attention", "write_failed")
+	}
+}
+
 func reconcileNative(ctx context.Context, s Store, agent, executable string, probe agentProbe, check bool) reconcileComponent {
 	policy, ok := agentCompatibilities[agent]
 	if agent == "claude" {
@@ -61,7 +72,7 @@ func reconcileNative(ctx context.Context, s Store, agent, executable string, pro
 		return result
 	}
 	if err = plan.apply(ctx, s); err != nil {
-		return nativeComponent("attention", "write_failed")
+		return nativeMigrationFailure(err)
 	}
 	if plan.recovering {
 		// An earlier compatible transaction can finish with an old revision
@@ -69,7 +80,7 @@ func reconcileNative(ctx context.Context, s Store, agent, executable string, pro
 		plan, result = planNativeReconcile(ctx, s, agent, path, executable)
 		if result.Status == "available" {
 			if err = plan.apply(ctx, s); err != nil {
-				return nativeComponent("attention", "write_failed")
+				return nativeMigrationFailure(err)
 			}
 		} else if result.Status != "current" {
 			return result
@@ -187,6 +198,9 @@ func planNativeReconcile(ctx context.Context, s Store, agent, path, executable s
 	// is left for the explicit operation which originally requested removal.
 	if r.Pending == "uninstall" || (r.ReconcileVersion != "" && r.ReconcileVersion != version) {
 		return p, pendingConflict
+	}
+	if err := checkNativeSettings(ctx, agent, path); err != nil {
+		return p, nativeMigrationFailure(err)
 	}
 	p.recovering = r.Pending == "install"
 	p.next = r

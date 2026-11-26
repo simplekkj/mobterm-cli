@@ -409,7 +409,10 @@ installation identity, repairs pending writes or contacts the notification API.
 No record or journal means skipped. A missing, disabled, edited or ambiguous
 owned component needs review. Reconciliation keeps third-party settings and
 the Codex notify chain. It never installs a new Agent integration or grants
-trust. Claude hooks and its reply adapter have separate results.
+trust. Claude hooks and its reply adapter have separate results. Both respect
+the account's hooks-disabled settings. Pi migration checks the personal
+`extensions` settings, including exact overrides and common exclusion globs.
+A filter the CLI cannot interpret leaves the adapter and record untouched.
 
 Restart or reload the affected Agent as indicated; review changed native
 Codex hooks in `/hooks`. Disk state alone cannot confirm runtime loading or
@@ -443,7 +446,9 @@ adapter). Each component carries its `component`, `status`, `reason` and
 An Agent can report `partial` when one component is verified and another
 requires attention. The `activation` code is `unknown`, `restart_required`
 or `native_review_required`. A check's activation describes what would follow
-the change. `requires_action` covers remaining configuration work, separately
+the change. A current Codex native configuration retains the `/hooks` review
+indication on a fresh check because trust and loading are observed in the TUI.
+`requires_action` covers remaining configuration work, separately
 from activation. Exit 0 has a complete result, including a check with available
 updates. Exit 2 carries a full attention result. Exit 1 means the operation
 could not supply a migration receipt. Parse the bounded receipt even on exit 2.

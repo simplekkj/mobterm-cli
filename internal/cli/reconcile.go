@@ -206,16 +206,16 @@ func (r reconcileReceipt) display(h humanResult) {
 			line := fmt.Sprintf("%s %s: %s (%s)", a.Agent, c.Component, c.Status, strings.ReplaceAll(c.Reason, "_", " "))
 			switch c.Activation {
 			case "native_review_required":
-				line += "; review in Codex /hooks"
+				line += ". Verify trust in Codex /hooks. Runtime loading unknown."
 			case "restart_required":
-				line += "; restart the Agent"
+				line += ". Restart the Agent."
 			default:
 				if c.Reason != "unmanaged" {
-					line += "; runtime loading unknown"
+					line += ". Runtime loading unknown."
 				}
 			}
 			if c.Reason == "pending_conflict" {
-				line += "; inspect the pending operation with its original CLI"
+				line += " Inspect the pending operation with its original CLI."
 			}
 			h.line("", line)
 		}

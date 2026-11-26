@@ -478,6 +478,12 @@ func commitNativeInstall(ctx context.Context, s Store, r nativeHookRecord, files
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	reconciling := r.ReconcileVersion != "" || recovering
+	if reconciling {
+		if err := checkNativeSettings(ctx, r.Agent, r.Path); err != nil {
+			return err
+		}
+	}
 	if !recovering {
 		if err := s.writeJSON(nativeRecordName(r.Agent), r); err != nil {
 			return err
@@ -487,7 +493,7 @@ func commitNativeInstall(ctx context.Context, s Store, r nativeHookRecord, files
 		if err := ctx.Err(); err != nil {
 			return nativeIncomplete(err)
 		}
-		if r.ReconcileVersion != "" || recovering {
+		if reconciling {
 			if err := nativeMigrationNode(asset, true); err != nil {
 				return nativeIncomplete(err)
 			}
@@ -500,6 +506,11 @@ func commitNativeInstall(ctx context.Context, s Store, r nativeHookRecord, files
 			return nativeIncomplete(errors.New("native asset changed concurrently"))
 		}
 		if !exists || !bytes.Equal(current, data) {
+			if reconciling {
+				if err := checkNativeSettings(ctx, r.Agent, r.Path); err != nil {
+					return nativeIncomplete(err)
+				}
+			}
 			if err = atomicWrite(asset, data, currentMode&0600); err != nil {
 				return nativeIncomplete(err)
 			}
@@ -509,7 +520,7 @@ func commitNativeInstall(ctx context.Context, s Store, r nativeHookRecord, files
 		return nativeIncomplete(err)
 	}
 	if r.Agent == "opencode" {
-		if r.ReconcileVersion != "" || recovering {
+		if reconciling {
 			if err := nativeMigrationNode(r.Path, false); err != nil {
 				return nativeIncomplete(err)
 			}
@@ -528,6 +539,11 @@ func commitNativeInstall(ctx context.Context, s Store, r nativeHookRecord, files
 		}
 	}
 
+	if reconciling {
+		if err := checkNativeSettings(ctx, r.Agent, r.Path); err != nil {
+			return nativeIncomplete(err)
+		}
+	}
 	r.Pending = ""
 	r.ReconcileVersion = ""
 	for asset, file := range r.Files {
