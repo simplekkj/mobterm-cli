@@ -321,6 +321,13 @@ func editCodex(data []byte, action, path, executable string, r HookRecord) ([]by
 	}
 	return append([]byte(managed), data...), r, nil
 }
+
+func knownClaudeCommand(event, text, command, managedExecutable string) bool {
+	return text == managedExecutable+" interaction wait --source claude" && (event == "PreToolUse" || event == "Elicitation") || text == command && (event == "UserPromptSubmit" || event == "Notification") || text == managedExecutable+" observe --source claude" && (event == "PreToolUse" || event == "PostToolUse" || event == "PostToolUseFailure" || event == "Stop" || event == "Elicitation") || text == managedExecutable+" approval wait --source claude" && event == "PermissionRequest"
+}
+
+var errClaudeHookMissing = errors.New("managed Claude hook was edited or removed; config left unchanged")
+
 func editClaude(data []byte, action, path, executable string, r HookRecord) ([]byte, HookRecord, error) {
 	return editClaudeWithNative(data, action, path, executable, r, true)
 }
@@ -376,7 +383,10 @@ func editClaudeWithNative(data []byte, action, path, executable string, r HookRe
 				for _, cmd := range cmds {
 					var text string
 					_ = json.Unmarshal(cmd["command"], &text)
-					validManaged := text == managedExecutable+" interaction wait --source claude" && (event == "PreToolUse" || event == "Elicitation") || text == command && (event == "UserPromptSubmit" || event == "Notification") || text == managedExecutable+" observe --source claude" && (event == "PreToolUse" || event == "PostToolUse" || event == "PostToolUseFailure" || event == "Stop" || event == "Elicitation") || text == managedExecutable+" approval wait --source claude" && event == "PermissionRequest"
+					validManaged := knownClaudeCommand(event, text, command, managedExecutable)
+					if action == "reconcile" && validManaged && r.ClaudeOwned[event] == "" {
+						return nil, r, errors.New("Claude hook command has no ownership")
+					}
 					if !validManaged && looksManagedClaude(text, command) {
 						return nil, r, errors.New("managed Claude command was moved or modified; config unchanged")
 					}
@@ -390,6 +400,11 @@ func editClaudeWithNative(data []byte, action, path, executable string, r HookRe
 	}
 	changed := false
 	for _, event := range events {
+		// A historical record need not own every event. Only an explicit install
+		// may add an unowned event (including one subsequently removed by hand).
+		if action == "reconcile" && owned[event.name] == "" {
+			continue
+		}
 		eventCommand := command
 		timeout := 10
 		if event.name == "PermissionRequest" {
@@ -423,6 +438,9 @@ func editClaudeWithNative(data []byte, action, path, executable string, r HookRe
 				return nil, r, errors.New("invalid owned command")
 			}
 			expectedCommand = commands[0].Command
+			if action == "reconcile" && !knownClaudeCommand(event.name, expectedCommand, command, managedExecutable) {
+				return nil, r, errors.New("unrecognized Claude hook ownership")
+			}
 		}
 		entries := hooks[event.name]
 		found := false
@@ -490,7 +508,7 @@ func editClaudeWithNative(data []byte, action, path, executable string, r HookRe
 			}
 		}
 		if expected != nil && ownedMatches == 0 && action != "install" {
-			return nil, r, errors.New("managed Claude hook was edited or removed; config left unchanged")
+			return nil, r, errClaudeHookMissing
 		}
 		if action == "install" && !found {
 			out = append(out, managedEntry)

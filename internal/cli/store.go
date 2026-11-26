@@ -58,7 +58,7 @@ func secureRead(path string, limit int64) ([]byte, error) {
 
 // Read content and permissions from the same no-follow, regular-file handle.
 func secureReadWithMode(path string, limit int64) ([]byte, os.FileMode, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, 0, err
 	}

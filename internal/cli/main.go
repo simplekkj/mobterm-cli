@@ -170,10 +170,19 @@ func commandTimeout(args []string) time.Duration {
 	case "interaction":
 		return 335 * time.Second
 	case "upgrade":
+		for _, arg := range args[1:] {
+			name, _, _ := strings.Cut(arg, "=")
+			if name == "--with-integrations" || name == "-with-integrations" {
+				return 2*time.Minute + reconcileTimeout + 12*time.Second
+			}
+		}
 		return 2 * time.Minute
 	case "setup", "notify", "test":
 		return networkCommandTimeout
 	case "hooks":
+		if len(args) > 1 && args[1] == "reconcile" {
+			return reconcileTimeout
+		}
 		if len(args) > 1 && args[1] == "install" {
 			return agentProbeTimeout + 5*time.Second
 		}
@@ -245,6 +254,7 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		ctx = withDeliveryRetries(ctx)
 	}
 	a := newAPI()
+	exitCode := 0
 	var value any
 	var progress *upgradeProgress
 	switch args[0] {
@@ -507,7 +517,26 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		}
 	case "hooks":
 		if len(args) < 2 {
-			err = errors.New("hooks requires install or uninstall")
+			err = errors.New("hooks requires install, uninstall or reconcile")
+			break
+		}
+		if args[1] == "reconcile" {
+			var check bool
+			f, e := flags("hooks reconcile", args[2:], func(f *flag.FlagSet) { f.BoolVar(&check, "check", false, ""); f.Bool("json", false, "") })
+			if e != nil || f.NArg() != 0 {
+				err = errors.New("invalid reconcile arguments")
+				break
+			}
+			executable, e := os.Executable()
+			if e != nil {
+				err = e
+				break
+			}
+			receipt := reconcile(ctx, s, executable, check)
+			if receipt.Overall == "attention" {
+				exitCode = 2
+			}
+			value = receipt
 			break
 		}
 		var agent string
@@ -572,8 +601,10 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		return 0
 	case "upgrade":
 		var target string
+		var withIntegrations bool
 		f, e := flags("upgrade", args[1:], func(f *flag.FlagSet) {
 			f.StringVar(&target, "version", "", "")
+			f.BoolVar(&withIntegrations, "with-integrations", false, "")
 			f.Bool("json", false, "")
 		})
 		if e != nil || f.NArg() != 0 {
@@ -588,7 +619,17 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		if human {
 			progress = newUpgradeProgress(diagnostic, func() terminalCaps { return detectTerminal(diagnostic, display) }, display.progress)
 		}
-		err = upgradeWithProgress(ctx, target, dest, progress)
+		downloadCtx, stopDownload := context.WithTimeout(ctx, 2*time.Minute)
+		err = upgradeWithProgress(downloadCtx, target, dest, progress)
+		stopDownload()
+		if err == nil && withIntegrations {
+			result := upgradeIntegrations(ctx, dest, target)
+			if result.IntegrationState != "complete" {
+				exitCode = 2
+			}
+			value = result
+			break
+		}
 		if human {
 			if err == nil {
 				fmt.Fprintln(out, stdout.style("success", wrapCells("Installed mobterm-cli "+target, stdout.Width)))
@@ -644,7 +685,7 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 		}
 		return 1
 	}
-	return 0
+	return exitCode
 }
 
 // encoding/json includes Go package names in type errors. Keep the original

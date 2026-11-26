@@ -340,7 +340,7 @@ Run `mobterm-cli --help` for grouped commands and examples. Use
 options at a specific command. Help reads the output terminal size and wraps
 wide text and long paths to fit.
 
-When stdout is a terminal, `status`, `hooks install`, `hooks uninstall`,
+When stdout is a terminal, `status`, `hooks install`, `hooks uninstall`, `hooks reconcile`,
 `test` and `upgrade` show human-readable results. Redirecting stdout or
 passing `--json` selects the existing JSON format. For a test notification,
 the result distinguishes local queuing, API acceptance and APNs acceptance.
@@ -380,6 +380,79 @@ SHA-256, then atomically replaces the current regular executable. Download,
 checksum, extraction, or pre-rename write failure keeps the old executable.
 No remote scripts execute, and pair/config/hook files are unchanged. The binary's
 directory must be writable; use a user-owned installation to avoid elevated access.
+
+### Updating existing Agent integrations
+
+Once running a version that supports migration, opt in with:
+
+```sh
+mobterm-cli upgrade --version vX.Y.Z --with-integrations
+```
+
+This runs the newly installed executable at its verified absolute path. It
+checks the version and migration capability before updating any integrations.
+The plain upgrade above keeps its binary-only behavior. On a CLI that predates
+this flag, use the two commands below. Replace the example version with a
+**published stable release containing migration support** and use your actual
+installation path both times:
+
+```sh
+"$HOME/.local/bin/mobterm-cli" upgrade --version vX.Y.Z && \
+  "$HOME/.local/bin/mobterm-cli" hooks reconcile
+```
+
+After a manual binary replacement or an Agent upgrade, run
+`hooks reconcile --check` to inspect existing integrations. Run
+`hooks reconcile` to apply safe differences. Both operate in the invoking
+account's effective Agent configuration directories. A check never creates
+installation identity, repairs pending writes or contacts the notification API.
+No record or journal means skipped. A missing, disabled, edited or ambiguous
+owned component needs review. Reconciliation keeps third-party settings and
+the Codex notify chain. It never installs a new Agent integration or grants
+trust. Claude hooks and its reply adapter have separate results.
+
+Restart or reload the affected Agent as indicated; review changed native
+Codex hooks in `/hooks`. Disk state alone cannot confirm runtime loading or
+notification delivery. If interrupted, run the check before continuing. Keep
+an incompatible pending journal in place and use the original CLI to inspect
+or finish its operation before retrying. Inspect pending operations and the
+adapter revision before downgrading; an older binary may not understand them.
+
+#### Migration receipts over SSH
+
+`capabilities --json` advertises top-level `"hooks_reconcile": 1`.
+For version 1, compare `hooks_reconcile_path` to the verified executable path before writing.
+No version-1 declaration means leave migration to Agent management.
+Existing `status --agents-json` values are unchanged.
+
+`hooks reconcile [--check] --json` returns at most 32 KiB. Version 1 includes
+`v`, `operation` (check or reconcile), `cli_version`, `cli_path`, `overall`,
+`requires_action`, and `agents`. Each Agent has an `agent`, a `status`, and
+`components` (Codex hooks, Claude hooks and adapter, OpenCode adapter, Pi
+adapter). Each component carries its `component`, `status`, `reason` and
+`activation`. Reasons are codes and contain no hook payloads.
+
+| Component status | Reason | Interpretation |
+| --- | --- | --- |
+| current | current | Owned configuration already matches |
+| available | template_changed | Check found a safe update or compatible unfinished transaction |
+| updated | updated | Reconciliation completed the on-disk change |
+| skipped | unmanaged / missing_agent / probe_failed / unsupported | No ownership evidence, or the Agent is unavailable or unsupported |
+| attention | ownership_conflict / disabled / unsupported / pending_conflict / write_failed | Review this component before continuing |
+
+An Agent can report `partial` when one component is verified and another
+requires attention. The `activation` code is `unknown`, `restart_required`
+or `native_review_required`. A check's activation describes what would follow
+the change. `requires_action` covers remaining configuration work, separately
+from activation. Exit 0 has a complete result, including a check with available
+updates. Exit 2 carries a full attention result. Exit 1 means the operation
+could not supply a migration receipt. Parse the bounded receipt even on exit 2.
+
+For a combined upgrade, JSON records binary replacement (`upgraded`), version
+readback (`verified`), `integration_state` and an optional `integrations`
+receipt. Exit 2 preserves the fact of replacement even if readback failed,
+migration is unsupported or the integration result is unconfirmed. Recheck
+the reported installation before continuing; do not automatically replay writes.
 
 ## Build and verify
 
@@ -496,6 +569,7 @@ remain in [approval](docs/protocol-v2.md#native-approval-over-ssh) and
 | `setup`, `notify`, `test`, full/pair `status`, `outbox flush/refresh`, `pairs reconcile` | 125 seconds total, including retries/readback and persistence |
 | One notification API request | 60 seconds across DNS, connection, TLS, headers and body; TLS negotiation is included, not added |
 | Agent version probe | 20 seconds |
+| `hooks reconcile` | 60 seconds total; parallel candidate probes up to 20 seconds, then up to 8 seconds per Agent for local planning, locking and writing |
 | `hooks install`, `status --agents-json` | 25 seconds including probe and cleanup |
 | `status --installation-json`, hook removal and other default local commands | 10 seconds |
 | `observe` | 2 seconds |
@@ -503,7 +577,7 @@ remain in [approval](docs/protocol-v2.md#native-approval-over-ssh) and
 | Other `activity` commands | 5 seconds |
 | `approval` commands | 125 seconds; native permission request lifetime is at most 120 seconds within the configured 130-second host Hook deadline |
 | `interaction` commands | 335 seconds; supported native question/helper lifetimes have a separate 300-second maximum |
-| `upgrade` | 2 minutes |
+| `upgrade` | 2 minutes for download and replacement; combined upgrade additionally allows 10 seconds for readback and capability detection, and 62 seconds for migration and process cleanup |
 
 The independent API transport preserves certificate verification, proxy rules,
 HTTP/2 and redirect refusal. Shorter parent deadlines or cancellation win; API

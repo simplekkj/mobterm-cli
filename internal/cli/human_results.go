@@ -19,6 +19,14 @@ func (r humanResult) line(role, text string) {
 }
 
 func writeHumanResult(w io.Writer, caps terminalCaps, args []string, value any) {
+	switch result := value.(type) {
+	case reconcileReceipt:
+		result.display(humanResult{w, caps})
+		return
+	case integrationUpgrade:
+		result.display(humanResult{w, caps})
+		return
+	}
 	object, ok := value.(map[string]any)
 	if !ok || object == nil || len(args) == 0 {
 		return

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -81,15 +80,24 @@ func targetSocketInfo(path string) (os.FileInfo, error) {
 }
 
 type limitBuffer struct {
-	bytes.Buffer
-	limit int
+	data     []byte
+	limit    int
+	exceeded bool
 }
+
+// Keep io.Copy on the bounded Write path (embedding bytes.Buffer promotes
+// ReadFrom, which can bypass Write when collecting subprocess output).
+func (b *limitBuffer) Bytes() []byte  { return b.data }
+func (b *limitBuffer) Len() int       { return len(b.data) }
+func (b *limitBuffer) String() string { return string(b.data) }
 
 func (b *limitBuffer) Write(p []byte) (int, error) {
 	if b.Len()+len(p) > b.limit {
+		b.exceeded = true
 		return 0, errors.New("command output limit")
 	}
-	return b.Buffer.Write(p)
+	b.data = append(b.data, p...)
+	return len(p), nil
 }
 
 var errTmuxQuery = errors.New("target query failed")

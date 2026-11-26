@@ -58,13 +58,13 @@ func download(ctx context.Context, c *http.Client, raw string, limit int64, prog
 		body = io.TeeReader(body, progress)
 	}
 	b, e := io.ReadAll(body)
-	if e != nil && progress != nil {
+	if e != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		return nil, errors.New("release download interrupted")
 	}
-	if e != nil || int64(len(b)) > limit {
+	if int64(len(b)) > limit {
 		return nil, errors.New("release asset exceeds limit")
 	}
 	return b, nil

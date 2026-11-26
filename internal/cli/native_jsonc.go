@@ -166,11 +166,14 @@ func parseJSONC(data []byte) (*jsoncNode, error) {
 	}
 	return n, nil
 }
+
+var errNativeReferenceRemoved = errors.New("managed plugin reference removed; config unchanged")
+
 func editNativePlugin(data []byte, reference, action string, owned, pending bool) ([]byte, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		if action == "uninstall" {
 			if owned && !pending {
-				return nil, errors.New("managed plugin reference removed; config unchanged")
+				return nil, errNativeReferenceRemoved
 			}
 			return data, nil
 		}
@@ -184,12 +187,12 @@ func editNativePlugin(data []byte, reference, action string, owned, pending bool
 	if plugins == nil {
 		if action == "uninstall" {
 			if owned && !pending {
-				return nil, errors.New("managed plugin reference removed; config unchanged")
+				return nil, errNativeReferenceRemoved
 			}
 			return data, nil
 		}
 		if owned && !pending {
-			return nil, errors.New("managed plugin reference removed; config unchanged")
+			return nil, errNativeReferenceRemoved
 		}
 		encoded, _ := json.Marshal(reference)
 		addition := append([]byte("\"plugins\": ["), encoded...)
@@ -236,7 +239,7 @@ func editNativePlugin(data []byte, reference, action string, owned, pending bool
 	}
 	if found < 0 {
 		if owned && !pending {
-			return nil, errors.New("managed plugin reference removed; config unchanged")
+			return nil, errNativeReferenceRemoved
 		}
 		if action == "uninstall" {
 			return data, nil

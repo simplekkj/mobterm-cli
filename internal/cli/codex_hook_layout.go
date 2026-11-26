@@ -111,6 +111,40 @@ func stripCodexJSON(data []byte, owned string) ([]byte, error) {
 	return encodeCodexJSON(root, hooks), nil
 }
 
+// The caller has verified the exact old groups with stripCodexJSON. Replace
+// each in its own slot so a user's later handlers retain their order and keys.
+func updateCodexGroups(data []byte, previous, target string) ([]byte, error) {
+	root, hooks, err := parseCodexJSON(data)
+	if err != nil {
+		return nil, err
+	}
+	var old, next map[string][]json.RawMessage
+	if json.Unmarshal([]byte(previous), &old) != nil || json.Unmarshal([]byte(target), &next) != nil {
+		return nil, errors.New("invalid Codex JSON ownership")
+	}
+	for event, owned := range old {
+		for i, group := range hooks[event] {
+			if !equalHookJSON(group, owned[0]) {
+				continue
+			}
+			if len(next[event]) != 0 {
+				hooks[event][i] = next[event][0]
+			} else {
+				hooks[event] = append(hooks[event][:i], hooks[event][i+1:]...)
+				if len(hooks[event]) == 0 {
+					delete(hooks, event)
+				}
+			}
+			delete(next, event)
+			break
+		}
+	}
+	for event, entries := range next {
+		hooks[event] = append(hooks[event], entries...)
+	}
+	return encodeCodexJSON(root, hooks), nil
+}
+
 // Trust state is stored under hooks.state even for JSON definitions. It is not
 // an inline event source and must never be moved or granted by the installer.
 func codexTOMLEvents(data []byte) (bool, error) {
@@ -193,16 +227,20 @@ func editCodexLayout(data []byte, action, path, executable string, r HookRecord,
 		result, record, err := editCodexWithNative(data, action, path, executable, r, false)
 		return result, record, nil, err
 	}
+	jsonData, file, err := readHookFile(filepath.Join(filepath.Dir(path), "hooks.json"))
+	if err != nil {
+		return nil, r, nil, err
+	}
+	return renderCodexLayout(data, jsonData, file, action, path, executable, r)
+}
+
+func renderCodexLayout(data, jsonData []byte, file hookFileChange, action, path, executable string, r HookRecord) ([]byte, HookRecord, *hookFileChange, error) {
 	original := r
 	if r.CodexNative != "" && r.CodexJSON != "" {
 		return nil, r, nil, errors.New("ambiguous Codex hook ownership")
 	}
 	if r.CodexNative == "" && bytes.Contains(data, []byte("# mobterm-cli managed native hooks")) {
 		return nil, r, nil, errors.New("Codex native hook ownership missing; unchanged")
-	}
-	jsonData, file, err := readHookFile(filepath.Join(filepath.Dir(path), "hooks.json"))
-	if err != nil {
-		return nil, r, nil, err
 	}
 	cleanTOML, err := stripCodexNative(data, r.CodexNative)
 	if err != nil {

@@ -11,21 +11,22 @@ import (
 // The private journal stores bounded replacements and hashes, not an
 // unbounded history. No discovery operation writes or resumes this journal.
 type hookTransaction struct {
-	V               int             `json:"v"`
-	Agent           string          `json:"agent"`
-	Path            string          `json:"path"`
-	Action          string          `json:"action"`
-	BeforeSHA       string          `json:"before_sha"`
-	BeforeExists    bool            `json:"before_exists"`
-	After           []byte          `json:"after"`
-	AfterSHA        string          `json:"after_sha"`
-	Mode            uint32          `json:"mode"`
-	BeforeRecord    *HookRecord     `json:"before_record,omitempty"`
-	AfterRecord     *HookRecord     `json:"after_record,omitempty"`
-	BeforeRecordSHA string          `json:"before_record_sha"`
-	AfterRecordSHA  string          `json:"after_record_sha"`
-	JSONFile        *hookFileChange `json:"json_file,omitempty"`
-	JSONFirst       bool            `json:"json_first,omitempty"`
+	ReconcileVersion string          `json:"reconcile_version,omitempty"`
+	V                int             `json:"v"`
+	Agent            string          `json:"agent"`
+	Path             string          `json:"path"`
+	Action           string          `json:"action"`
+	BeforeSHA        string          `json:"before_sha"`
+	BeforeExists     bool            `json:"before_exists"`
+	After            []byte          `json:"after"`
+	AfterSHA         string          `json:"after_sha"`
+	Mode             uint32          `json:"mode"`
+	BeforeRecord     *HookRecord     `json:"before_record,omitempty"`
+	AfterRecord      *HookRecord     `json:"after_record,omitempty"`
+	BeforeRecordSHA  string          `json:"before_record_sha"`
+	AfterRecordSHA   string          `json:"after_record_sha"`
+	JSONFile         *hookFileChange `json:"json_file,omitempty"`
+	JSONFirst        bool            `json:"json_first,omitempty"`
 }
 
 // v2 journals also guard the adjacent hooks.json, including absence. Each file
@@ -90,10 +91,15 @@ func readHookTransaction(s Store, agent string) (hookTransaction, error) {
 	if err != nil {
 		return tx, err
 	}
-	if json.Unmarshal(b, &tx) != nil || (tx.V != 1 && tx.V != 2) || tx.Agent != agent || (tx.Action != "install" && tx.Action != "uninstall") || !filepath.IsAbs(tx.Path) || len(tx.After) > 2*1024*1024 || len(tx.BeforeSHA) != 64 || tx.AfterSHA != digest(string(tx.After)) || tx.BeforeRecordSHA != hookRecordDigest(tx.BeforeRecord) || tx.AfterRecordSHA != hookRecordDigest(tx.AfterRecord) || tx.Mode&^0777 != 0 || tx.Action == "install" && tx.AfterRecord == nil || tx.Action == "uninstall" && tx.AfterRecord != nil {
+	if json.Unmarshal(b, &tx) != nil || (tx.V < 1 || tx.V > 3) || tx.Agent != agent || (tx.Action != "install" && tx.Action != "uninstall") || !filepath.IsAbs(tx.Path) || len(tx.After) > 2*1024*1024 || len(tx.BeforeSHA) != 64 || tx.AfterSHA != digest(string(tx.After)) || tx.BeforeRecordSHA != hookRecordDigest(tx.BeforeRecord) || tx.AfterRecordSHA != hookRecordDigest(tx.AfterRecord) || tx.Mode&^0777 != 0 || tx.Action == "install" && tx.AfterRecord == nil || tx.Action == "uninstall" && tx.AfterRecord != nil {
 		return tx, errors.New("hook recovery journal invalid; configuration unchanged")
 	}
-	if tx.V == 1 && (tx.JSONFile != nil || tx.JSONFirst) || tx.V == 2 && (agent != "codex" || tx.JSONFile == nil) {
+	// V3 is reserved for reconciliation. Earlier binaries reject these
+	// journals instead of accidentally replaying a newer migration.
+	if tx.V == 3 && (tx.Action != "install" || tx.ReconcileVersion == "") ||
+		tx.V != 3 && tx.ReconcileVersion != "" ||
+		tx.V == 1 && tx.JSONFile != nil || tx.V == 2 && tx.JSONFile == nil ||
+		tx.JSONFirst && tx.JSONFile == nil || tx.JSONFile != nil && agent != "codex" {
 		return tx, errors.New("hook recovery layout invalid")
 	}
 	if f := tx.JSONFile; f != nil {
@@ -158,6 +164,9 @@ func removeHookFile(path string) error {
 	return d.Sync()
 }
 func finishHookTransaction(s Store, tx hookTransaction) error {
+	if tx.ReconcileVersion != "" && tx.ReconcileVersion != version {
+		return errors.New("finish pending hook reconciliation using its original CLI version")
+	}
 	data, after, err := hookTransactionState(s, tx)
 	if err != nil {
 		return err

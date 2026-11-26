@@ -42,7 +42,7 @@ func resultOptions(args []string) ([]string, displayOptions, bool) {
 	maintenance := false
 	switch args[0] {
 	case "hooks":
-		if len(args) < 2 || args[1] != "install" && args[1] != "uninstall" {
+		if len(args) < 2 || args[1] != "install" && args[1] != "uninstall" && args[1] != "reconcile" {
 			return args, options, false
 		}
 		start = 2

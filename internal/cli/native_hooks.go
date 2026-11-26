@@ -32,6 +32,7 @@ type nativeHookRecord struct {
 	Store             string                     `json:"store"`
 	Revision          int                        `json:"revision"`
 	Pending           string                     `json:"pending,omitempty"`
+	ReconcileVersion  string                     `json:"reconcile_version,omitempty"`
 	ReferenceRequired bool                       `json:"reference_required,omitempty"`
 	Files             map[string]nativeOwnedFile `json:"files"`
 }
@@ -103,18 +104,14 @@ func nativeRead(path string) ([]byte, bool, os.FileMode, error) {
 	if err := nativeRealParents(path); err != nil {
 		return nil, false, 0, err
 	}
-	data, err := secureRead(path, 2*1024*1024)
+	data, mode, err := secureReadWithMode(path, 2*1024*1024)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, 0600, nil
 	}
 	if err != nil {
 		return nil, false, 0, err
 	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, false, 0, err
-	}
-	return data, true, info.Mode().Perm(), nil
+	return data, true, mode, nil
 }
 func nativeRenderedFiles(s Store, agent, path, executable string) (map[string][]byte, string, error) {
 	var record nativeHookRecord
@@ -178,7 +175,7 @@ func renderNativeAssets(s Store, agent, path, executable, hostToken string) (map
 }
 func nativeRecordName(agent string) string { return "native-hooks-" + agent + ".json" }
 
-func nativeOtherOpenCodeInstallation(data []byte, reference string) error {
+func nativeOtherOpenCodeInstallation(ctx context.Context, data []byte, reference string) error {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return nil
 	}
@@ -191,6 +188,9 @@ func nativeOtherOpenCodeInstallation(data []byte, reference string) error {
 		return nil
 	}
 	for _, entry := range plugins.children {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if entry.kind == '{' {
 			entry = entry.keys["package"]
 		}
@@ -214,7 +214,7 @@ func nativeValidateRecord(s Store, r nativeHookRecord, agent string) error {
 	if r.V != 1 || r.Agent != agent || r.Store != s.Dir || !filepath.IsAbs(r.Path) || !filepath.IsAbs(r.Executable) || r.Revision < 1 || len(r.Files) == 0 {
 		return errors.New("invalid native integration ownership record")
 	}
-	files, reference, err := nativeRenderedFiles(s, agent, r.Path, r.Executable)
+	files, reference, err := renderNativeAssets(s, agent, r.Path, r.Executable, r.HostToken)
 	if err != nil {
 		return err
 	}
@@ -295,6 +295,9 @@ func changeNativeHooks(ctx context.Context, s Store, agent, action, path, execut
 		return err
 	}
 	if owned {
+		if action == "install" && r.ReconcileVersion != "" && r.ReconcileVersion != version {
+			return errors.New("native migration incomplete; retry with the original CLI")
+		}
 		if err = nativeValidateRecord(s, r, agent); err != nil {
 			return err
 		}
@@ -322,7 +325,11 @@ func changeNativeHooks(ctx context.Context, s Store, agent, action, path, execut
 	if err = nativeRealParents(path); err != nil {
 		return err
 	}
-	if err = ensureDir(filepath.Dir(path), false); err != nil {
+	if action == "install" && r.ReconcileVersion != "" {
+		if err = nativeMigrationNode(path+".mobterm-lock", true); err != nil {
+			return err
+		}
+	} else if err = ensureDir(filepath.Dir(path), false); err != nil {
 		return err
 	}
 	configUnlock, err := lockFile(ctx, path+".mobterm-lock")
@@ -330,6 +337,15 @@ func changeNativeHooks(ctx context.Context, s Store, agent, action, path, execut
 		return err
 	}
 	defer configUnlock()
+	if action == "install" && r.ReconcileVersion != "" {
+		// Keep the stricter recorded preconditions on a retry through install.
+		// Its usual repair path permits missing references or removed files.
+		plan, result := planNativeReconcile(ctx, s, agent, path, executable)
+		if result.Status != "available" || !plan.recovering {
+			return errors.New("native migration incomplete; review the pending integration")
+		}
+		return plan.apply(ctx, s)
+	}
 	var config, result []byte
 	mode := os.FileMode(0600)
 	configExists := false
@@ -352,7 +368,7 @@ func changeNativeHooks(ctx context.Context, s Store, agent, action, path, execut
 	}
 	if agent == "opencode" {
 		if action == "install" {
-			if err = nativeOtherOpenCodeInstallation(config, reference); err != nil {
+			if err = nativeOtherOpenCodeInstallation(ctx, config, reference); err != nil {
 				return err
 			}
 		}
@@ -414,31 +430,11 @@ func changeNativeHooks(ctx context.Context, s Store, agent, action, path, execut
 				return err
 			}
 		}
-		// Persist intent before the first asset write. Interrupted installs are safely
-		// retryable without adopting files that existed before this transaction.
-		if err = s.writeJSON(nativeRecordName(agent), next); err != nil {
-			return err
-		}
-		for asset, data := range files {
-			current, exists, _, e := nativeRead(asset)
-			if e != nil {
-				return nativeIncomplete(e)
-			}
-			if !nativeAllowed(current, exists, next.Files[asset], "install") {
-				return nativeIncomplete(errors.New("native asset changed concurrently"))
-			}
-			if !bytes.Equal(current, data) {
-				if err = atomicWrite(asset, data, 0600); err != nil {
-					return nativeIncomplete(err)
-				}
-			}
-		}
-		r = next
-	} else {
-		r.Pending = "uninstall"
-		if err = s.writeJSON(nativeRecordName(agent), r); err != nil {
-			return err
-		}
+		return commitNativeInstall(ctx, s, next, files, config, result, configExists, mode, false)
+	}
+	r.Pending = "uninstall"
+	if err = s.writeJSON(nativeRecordName(agent), r); err != nil {
+		return err
 	}
 	if agent == "opencode" && !bytes.Equal(config, result) {
 		current, exists, _, e := nativeRead(path)
@@ -452,35 +448,93 @@ func changeNativeHooks(ctx context.Context, s Store, agent, action, path, execut
 			return nativeIncomplete(err)
 		}
 	}
-	if action == "uninstall" {
-		for asset, file := range r.Files {
-			current, exists, _, e := nativeRead(asset)
-			if e != nil {
-				return nativeIncomplete(e)
-			}
-			if !nativeAllowed(current, exists, file, r.Pending) {
-				return nativeIncomplete(errors.New("native asset changed concurrently"))
-			}
-			if exists {
-				if err = os.Remove(asset); err != nil {
-					return nativeIncomplete(err)
-				}
+	for asset, file := range r.Files {
+		current, exists, _, e := nativeRead(asset)
+		if e != nil {
+			return nativeIncomplete(e)
+		}
+		if !nativeAllowed(current, exists, file, r.Pending) {
+			return nativeIncomplete(errors.New("native asset changed concurrently"))
+		}
+		if exists {
+			if err = os.Remove(asset); err != nil {
+				return nativeIncomplete(err)
 			}
 		}
-		if err = os.Remove(filepath.Join(s.Dir, nativeRecordName(agent))); err != nil {
+	}
+	if err = os.Remove(filepath.Join(s.Dir, nativeRecordName(agent))); err != nil {
+		return nativeIncomplete(err)
+	}
+	if agent == "opencode" {
+		_ = os.Remove(reference)
+	} // Empty owned package directory only.
+	return nil
+}
+
+// The pending record is durable before the first asset change. A migration
+// resumes the exact recorded transition and never treats a new deletion as an
+// interrupted write. The reference is checked again before finalizing ownership.
+func commitNativeInstall(ctx context.Context, s Store, r nativeHookRecord, files map[string][]byte, config, result []byte, configExists bool, mode os.FileMode, recovering bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !recovering {
+		if err := s.writeJSON(nativeRecordName(r.Agent), r); err != nil {
+			return err
+		}
+	}
+	for asset, data := range files {
+		if err := ctx.Err(); err != nil {
 			return nativeIncomplete(err)
 		}
-		if agent == "opencode" {
-			_ = os.Remove(reference)
-		} // Empty owned package directory only.
-		return nil
+		if r.ReconcileVersion != "" || recovering {
+			if err := nativeMigrationNode(asset, true); err != nil {
+				return nativeIncomplete(err)
+			}
+		}
+		current, exists, currentMode, err := nativeRead(asset)
+		if err != nil {
+			return nativeIncomplete(err)
+		}
+		if !nativeAllowed(current, exists, r.Files[asset], "install") {
+			return nativeIncomplete(errors.New("native asset changed concurrently"))
+		}
+		if !exists || !bytes.Equal(current, data) {
+			if err = atomicWrite(asset, data, currentMode&0600); err != nil {
+				return nativeIncomplete(err)
+			}
+		}
 	}
+	if err := ctx.Err(); err != nil {
+		return nativeIncomplete(err)
+	}
+	if r.Agent == "opencode" {
+		if r.ReconcileVersion != "" || recovering {
+			if err := nativeMigrationNode(r.Path, false); err != nil {
+				return nativeIncomplete(err)
+			}
+		}
+		current, exists, currentMode, err := nativeRead(r.Path)
+		if err != nil {
+			return nativeIncomplete(err)
+		}
+		if exists != configExists || !bytes.Equal(current, config) || currentMode != mode {
+			return nativeIncomplete(errors.New("OpenCode config changed concurrently"))
+		}
+		if !bytes.Equal(config, result) {
+			if err = atomicWrite(r.Path, result, mode); err != nil {
+				return nativeIncomplete(err)
+			}
+		}
+	}
+
 	r.Pending = ""
+	r.ReconcileVersion = ""
 	for asset, file := range r.Files {
 		file.PreviousSHA = ""
 		r.Files[asset] = file
 	}
-	if err = s.writeJSON(nativeRecordName(agent), r); err != nil {
+	if err := s.writeJSON(nativeRecordName(r.Agent), r); err != nil {
 		return nativeIncomplete(err)
 	}
 	return nil

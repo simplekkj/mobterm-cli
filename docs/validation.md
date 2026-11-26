@@ -17,6 +17,18 @@ and [fixed compatibility samples](#mobterm-cli-compatibility--round-1-v10--2026-
 The earlier records below retain their original scope; they are not rerun by
 documentation maintenance.
 
+## 2026-11-26 — Existing Agent integration migration
+
+On Intel macOS, CLI builds from v0.1.10 and v0.1.16 produced owned notify-only
+records in isolated homes. After same-path binary replacement, the new CLI
+checked, applied, and checked the Codex configuration again. The v0.1.16
+transition used loopback OpenSSH, a custom CODEX_HOME and the installed Codex
+version probe: the receipts showed available, updated with native review
+required, then current. The original third-party notification chain survived.
+A Pi run with isolated configuration likewise reported available, updated with
+restart required, then current. These observations concern disk configuration.
+Running Agent reload, user trust decisions and APNs delivery were unobserved.
+
 ## 2026-11-25 — CLI terminal output and upgrade progress
 
 On Intel macOS with Go 1.27.1, the compiled CLI rendered grouped help within

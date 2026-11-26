@@ -28,9 +28,15 @@ func readCapabilities(s Store) (map[string]any, error) {
 		"v": 1, "version": version, "commit": commit, "operations": workspaceOperations,
 		"server_time": time.Now().Unix(), "execution_backends": []string{},
 		"quick_command_result_protocols": []int{1},
+		"hooks_reconcile":                1,
 		"limits": map[string]int{"frame_bytes": maxFrame, "response_bytes": maxDiscoveryOutput,
 			"tmux_sessions": maxDiscoverySessions, "panes_per_session": maxPanesPerSession},
 	}
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, errors.New("executable_unavailable")
+	}
+	result["hooks_reconcile_path"] = reconcileInvocationPath(executable, os.Args[0])
 	if _, err := quickAccountShell(context.Background()); err == nil {
 		result["execution_backends"] = []string{quickNativeBackend}
 		result["quick_command_foreground_protocols"] = []int{1}
