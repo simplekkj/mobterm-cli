@@ -1,0 +1,668 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+)
+
+var version = "dev"
+var commit = "unknown"
+
+func printJSON(w io.Writer, v any) { _ = json.NewEncoder(w).Encode(v) }
+func flags(name string, args []string, defs func(*flag.FlagSet)) (*flag.FlagSet, error) {
+	f := flag.NewFlagSet(name, flag.ContinueOnError)
+	f.SetOutput(io.Discard)
+	defs(f)
+	return f, f.Parse(args)
+}
+func installationStatus(id string) map[string]any {
+	return map[string]any{"v": 1, "installation_id": id, "version": version, "commit": commit, "interaction_protocols": []int{1}, "message_body_protocols": []int{1}, "reply_protocols": []int{1, 2}, "reply_modes": []string{appendMode}, "read_only_target_protocols": []int{1}}
+}
+
+func status(ctx context.Context, s Store, a API, pairID string, installationOnly bool) (result map[string]any, err error) {
+	if pairID != "" && !opaqueID.MatchString(pairID) {
+		return nil, pairingFailure("pair_status", "pair_status_failed", errors.New("invalid pair identity"))
+	}
+	id, err := s.installation()
+	if err != nil {
+		return nil, pairingFailure("installation", "local_config_failed", err)
+	}
+	result = installationStatus(id)
+	if installationOnly {
+		return result, nil
+	}
+	if pairID != "" {
+		// Freeze the core result before auxiliary work consumes the remaining
+		// command budget. Cancellation remains authoritative; auxiliary deadline
+		// exhaustion only degrades its own diagnostic fields.
+		defer func() {
+			addStatusDiagnostics(ctx, s, pairID, result)
+			if errors.Is(ctx.Err(), context.Canceled) {
+				err = pairingFailure("pair_status", "cancelled", ctx.Err())
+			}
+		}()
+	} else {
+		addStatusDiagnostics(ctx, s, pairID, result)
+	}
+	pairs, err := s.pairs()
+	if err != nil {
+		return result, pairingFailure("pair_status", "local_config_failed", err)
+	}
+	if pairID != "" {
+		p, ok := pairs[pairID]
+		result["pair_id"] = pairID
+		result["local_saved"] = ok
+		if ok {
+			result["local_status"] = p.Status
+			if p.Status == "pending" || p.Status == "pending_review" {
+				result["action"] = "reconcile_or_abandon_pending"
+			} else if p.Status == "review_required" {
+				result["action"] = "reconcile_credentials"
+			}
+		}
+		if !ok {
+			result["status"] = "unpaired"
+			return result, pairingFailure("pair_status", "pair_status_failed", errors.New("local pair missing"))
+		}
+		if p.InstallationID != id || p.PairID != pairID {
+			return result, pairingFailure("pair_status", "installation_changed", errors.New("local pair identity changed"))
+		}
+		remote, err := a.pairQuery(ctx, s, p, "GET", "/v1/pairs/"+pairID, nil)
+		if remote != nil {
+			for k, v := range remote {
+				result[k] = v
+			}
+		}
+		if err != nil {
+			var ae *APIError
+			if errors.As(err, &ae) && ae.Status == 410 && (ae.Code == "pair_revoked" || ae.Code == "pair_expired") {
+				result["status"] = strings.TrimPrefix(ae.Code, "pair_")
+			} else {
+				result["status"] = "api_unavailable"
+			}
+		}
+		if err != nil {
+			return result, pairingFailure("pair_status", "pair_status_failed", err)
+		}
+		remoteInstallation, validInstallation := remote["installation_id"].(string)
+		if !validInstallation || !opaqueID.MatchString(remoteInstallation) {
+			return result, pairingFailure("pair_status", "pair_status_failed", errors.New("remote installation identity missing"))
+		}
+		if remoteInstallation != id {
+			return result, pairingFailure("pair_status", "installation_changed", errors.New("remote installation identity changed"))
+		}
+		if remote["pair_id"] != pairID || remote["status"] != "active" {
+			return result, pairingFailure("pair_status", "pair_status_failed", errors.New("pair status unconfirmed"))
+		}
+		return result, nil
+	}
+	list := []map[string]any{}
+	var firstErr error
+	for id, p := range pairs {
+		v, e := a.pairQuery(ctx, s, p, "GET", "/v1/pairs/"+id, nil)
+		if e != nil {
+			if firstErr == nil {
+				firstErr = e
+			}
+			v = map[string]any{"pair_id": id, "status": "api_unavailable"}
+			var ae *APIError
+			if errors.As(e, &ae) && ae.Status == 410 && (ae.Code == "pair_revoked" || ae.Code == "pair_expired") {
+				v["status"] = strings.TrimPrefix(ae.Code, "pair_")
+			}
+		}
+		v["local_saved"] = true
+		v["local_status"] = p.Status
+		list = append(list, v)
+	}
+	result["pairs"] = list
+	if len(list) == 0 {
+		result["status"] = "unpaired"
+	}
+	return result, firstErr
+}
+func addStatusDiagnostics(ctx context.Context, s Store, pairID string, result map[string]any) {
+	for key, value := range agentDiagnostics(ctx, s) {
+		result[key] = value
+	}
+	summary, err := outboxSummary(ctx, s, pairID)
+	if err != nil {
+		result["outbox"] = map[string]any{"error": safeCode(err.Error())}
+	} else {
+		result["outbox"] = summary
+	}
+}
+
+// Network commands allow two full API requests plus local persistence. Local-only
+// discovery and hook installation allow a full Agent probe plus local cleanup.
+func commandTimeout(args []string) time.Duration {
+	if len(args) == 0 {
+		return 10 * time.Second
+	}
+	switch args[0] {
+	case "job":
+		return 20 * time.Second
+	case "activity":
+		if len(args) == 2 && args[1] == "dispatch" {
+			return activityDispatchBudget
+		}
+		return 5 * time.Second
+	case "observe":
+		return 2 * time.Second
+	case "approval":
+		return 125 * time.Second
+	case "reply":
+		if len(args) > 1 && (args[1] == "reopen" || args[1] == "rebind") {
+			return 61 * time.Second
+		}
+		if len(args) > 1 && args[1] == "wait" {
+			return 301 * time.Second
+		}
+		return 10 * time.Second
+	case "interaction":
+		return 335 * time.Second
+	case "upgrade":
+		return 2 * time.Minute
+	case "setup", "notify", "test":
+		return networkCommandTimeout
+	case "hooks":
+		if len(args) > 1 && args[1] == "install" {
+			return agentProbeTimeout + 5*time.Second
+		}
+	case "status":
+		var installation, agents bool
+		f, err := flags("status", args[1:], func(f *flag.FlagSet) {
+			f.BoolVar(&installation, "installation-json", false, "")
+			f.Bool("read-only", false, "")
+			f.BoolVar(&agents, "agents-json", false, "")
+			f.Bool("json", false, "")
+			f.String("pair", "", "")
+		})
+		if err == nil && f.NArg() == 0 && (installation || agents) {
+			if agents {
+				return agentProbeTimeout + 5*time.Second
+			}
+			return 10 * time.Second
+		}
+		return networkCommandTimeout
+	case "outbox":
+		if len(args) > 1 && (args[1] == "flush" || args[1] == "refresh") {
+			return networkCommandTimeout
+		}
+	case "pairs":
+		if len(args) > 1 && args[1] == "reconcile" {
+			return networkCommandTimeout
+		}
+	}
+	return 10 * time.Second
+}
+
+func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
+	if code, handled := handleHelp(args, out, diagnostic); handled {
+		return code
+	}
+	if args[0] == "version" || args[0] == "--version" {
+		fmt.Fprintf(out, "mobterm-cli %s %s %s/%s\n", version, commit, platformOS, platformArch)
+		return 0
+	}
+	args, display, candidate := resultOptions(args)
+	if display.helpPath != nil && renderHelp(out, detectTerminal(out, display), display.helpPath) {
+		return 0
+	}
+	var stdout terminalCaps
+	if candidate {
+		stdout = detectTerminal(out, display)
+	}
+	human := candidate && stdout.TTY
+	s, err := defaultStore()
+	if err != nil {
+		fmt.Fprintln(diagnostic, "mobterm-cli: configuration unavailable")
+		if !human && pairingCommand(args) {
+			printJSON(out, map[string]any{"v": 1, "ok": false, "error": "operation_failed", "failure": pairingFailureMetadata(pairingFailure("configuration", "local_config_failed", err))})
+		}
+		return 1
+	}
+	if len(args) == 2 && args[0] == "job" && args[1] == "worker" {
+		if err := quickWorker(s, newAPI()); err != nil {
+			return 1
+		}
+		return 0
+	}
+	base, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(base, commandTimeout(args))
+	defer cancel()
+	ctx = withNetworkDiagnostics(ctx, diagnostic, os.Getenv("MOBTERM_NETWORK_DIAGNOSTICS") == "1")
+	if args[0] == "notify" || args[0] == "test" || args[0] == "outbox" && len(args) > 1 && args[1] == "flush" {
+		ctx = withDeliveryRetries(ctx)
+	}
+	a := newAPI()
+	var value any
+	var progress *upgradeProgress
+	switch args[0] {
+	case "capabilities":
+		if len(args) != 2 || args[1] != "--json" {
+			err = errors.New("invalid_request")
+		} else {
+			value, err = readCapabilities(s)
+		}
+	case "job":
+		if len(args) != 3 || args[2] != "--stdin-frame" {
+			err = errors.New("invalid_request")
+			break
+		}
+		switch args[1] {
+		case "submit":
+			value, err = submitQuickJob(ctx, s, in, out)
+		case "foreground":
+			err = foregroundQuickJob(base, in, out)
+		case "status", "cancel":
+			var id quickResultIdentity
+			var raw json.RawMessage
+			if readStrictFrame(ctx, in, &raw, maxFrame) != nil || decodeQuickResultObject(raw, &id) != nil || !id.valid() {
+				err = errors.New("invalid_request")
+				break
+			}
+			var reply quickJobReply
+			reply, err = quickStatus(ctx, s, id, args[1] == "cancel")
+			if err == nil {
+				value = reply
+			}
+		case "output":
+			var receipt quickResultReceipt
+			receipt, err = readQuickResult(ctx, s, in, time.Now)
+			if err == nil {
+				value = receipt
+			}
+		default:
+			err = errors.New("invalid_request")
+		}
+	case "discovery":
+		if len(args) != 3 || args[2] != "--stdin-frame" {
+			err = errors.New("invalid_request")
+		} else {
+			value, err = discoverWorkspace(ctx, args[1], in)
+		}
+	case "activity":
+		if len(args) == 2 && args[1] == "dispatch" {
+			if dispatchActivity(ctx, s, a, os.NewFile(3, "activity-pending-lock")) != nil {
+				return 1
+			}
+			return 0
+		}
+		if len(args) != 2 || args[1] != "flush" {
+			return 1
+		}
+		if flushRunSnapshots(ctx, s, a) != nil {
+			return 1
+		}
+		return 0
+	case "observe":
+		var source string
+		f, e := flags("observe", args[1:], func(f *flag.FlagSet) { f.StringVar(&source, "source", "", "") })
+		if e != nil || f.NArg() != 0 {
+			return 0
+		}
+		raw, e := readHook(in)
+		if e != nil {
+			return 0
+		}
+		value, err = observe(ctx, s, a, source, raw)
+		if value != nil {
+			_ = writeInteractionOutput(out, s, value)
+		}
+		return 0
+	case "approval":
+		if len(args) == 4 && args[1] == "wait" && args[2] == "--source" {
+			raw, e := readHook(in)
+			if e != nil {
+				return 0
+			}
+			value, err = observe(ctx, s, a, args[3], raw)
+			if value != nil {
+				printJSON(out, value)
+			}
+			return 0
+		}
+		if len(args) != 3 || args[2] != "--stdin-frame" {
+			err = errors.New("approval_requires_frame")
+		} else {
+			value, err = approvalCommand(ctx, s, a, args[1], in)
+		}
+	case "reply":
+		if len(args) == 4 && args[1] == "wait" && args[2] == "--source" {
+			value, err = replyWait(ctx, s, a, args[3], in)
+		} else if (len(args) == 3 || len(args) == 4 && args[3] == "--json") && args[2] == "--stdin-frame" {
+			value, err = replyCommand(ctx, s, a, args[1], in)
+		} else {
+			err = errors.New("reply_requires_frame")
+		}
+		if err != nil {
+			err = errors.New(safeCode(err.Error()))
+		}
+	case "interaction":
+		if len(args) == 2 && args[1] == "codex-followup" {
+			raw, e := readHook(in)
+			if e != nil {
+				return 1
+			}
+			value, err = interactionCodexFollowup(ctx, s, a, raw)
+		} else if len(args) == 4 && args[1] == "wait" && args[2] == "--source" {
+			raw, e := readHook(in)
+			if e != nil {
+				return 1
+			}
+			value, err = interactionObserve(ctx, s, a, args[3], raw)
+		} else if len(args) == 3 && args[2] == "--stdin-frame" {
+			value, err = interactionCommand(ctx, s, a, args[1], in)
+		} else {
+			err = errors.New("interaction_requires_frame")
+		}
+		if value != nil {
+			if e := writeInteractionOutput(out, s, value); e != nil {
+				return 1
+			}
+			value = nil
+		}
+	case "message":
+		if len(args) != 3 || args[1] != "read" || args[2] != "--stdin-frame" {
+			err = errors.New("message read requires --stdin-frame")
+		} else {
+			value, err = readMessageBody(ctx, s, in)
+		}
+	case "setup":
+		var framed bool
+		f, e := flags("setup", args[1:], func(f *flag.FlagSet) { f.BoolVar(&framed, "stdin-frame", false, "") })
+		if e != nil || !framed || f.NArg() != 0 {
+			err = pairingFailure("setup_frame", "invalid_frame", errors.New("setup requires --stdin-frame"))
+		} else {
+			value, err = setup(ctx, s, a, in)
+		}
+	case "target":
+		if len(args) == 4 && args[1] == "resolve" && args[2] == "--stdin-frame" && args[3] == "--read-only" {
+			value, err = checkTarget(ctx, s.existingInstallation, in, true)
+		} else if len(args) != 3 || (args[1] != "verify" && args[1] != "resolve") || args[2] != "--stdin-frame" {
+			err = errors.New("target verify requires --stdin-frame")
+		} else {
+			if args[1] == "resolve" {
+				value, err = resolveTarget(ctx, s, in)
+			} else {
+				value, err = verifyTarget(ctx, s, in)
+			}
+		}
+	case "status":
+		var pair string
+		var j, installation, agents, readOnly bool
+		f, e := flags("status", args[1:], func(f *flag.FlagSet) {
+			f.StringVar(&pair, "pair", "", "")
+			f.BoolVar(&j, "json", false, "")
+			f.BoolVar(&readOnly, "read-only", false, "")
+			f.BoolVar(&installation, "installation-json", false, "")
+			f.BoolVar(&agents, "agents-json", false, "")
+		})
+		// Presence (including =false) matters for exclusive modes. Reject repeated
+		// flags before doing any probe or installation initialization.
+		seen := map[string]bool{}
+		invalid := false
+		for _, argument := range args[1:] {
+			name, _, _ := strings.Cut(strings.TrimLeft(argument, "-"), "=")
+			if strings.HasPrefix(argument, "-") && (name == "read-only" || name == "agents-json" || name == "installation-json" || name == "json" || name == "pair") {
+				invalid = invalid || seen[name]
+				seen[name] = true
+			}
+		}
+		invalid = invalid || seen["agents-json"] && (!agents || seen["installation-json"] || seen["json"] || seen["pair"])
+		invalid = invalid || seen["read-only"] && (!readOnly || !installation || seen["json"] || seen["pair"] || seen["agents-json"])
+		if e != nil || f.NArg() != 0 || invalid {
+			err = errors.New("invalid status arguments")
+		} else if readOnly {
+			var id string
+			id, err = s.existingInstallation()
+			if err != nil {
+				err = pairingFailure("installation", "local_config_failed", err)
+			} else {
+				value = installationStatus(id)
+			}
+		} else if agents {
+			value, err = discoverAgents(ctx, s)
+		} else {
+			value, err = status(ctx, s, a, pair, installation)
+		}
+	case "outbox":
+		if len(args) < 2 || (args[1] != "flush" && args[1] != "refresh" && args[1] != "status") {
+			err = errors.New("outbox requires flush, refresh or status")
+			break
+		}
+		var pair string
+		var j bool
+		f, e := flags("outbox", args[2:], func(f *flag.FlagSet) { f.StringVar(&pair, "pair", "", ""); f.BoolVar(&j, "json", false, "") })
+		if e != nil || f.NArg() != 0 {
+			err = errors.New("invalid outbox arguments")
+		} else if args[1] == "status" {
+			value, err = outboxSummary(ctx, s, pair)
+		} else {
+			unlock, cleanupErr := s.lock(ctx)
+			if cleanupErr == nil {
+				cleanupErr = s.pruneBodies("", "", time.Now().Unix(), 0, 0)
+				unlock()
+			}
+			value, err = flushOutbox(ctx, s, a, pair, args[1] == "refresh")
+			if err == nil {
+				err = cleanupErr
+			}
+			if pair == "" {
+				if activityErr := flushRunSnapshots(ctx, s, a); err == nil {
+					err = activityErr
+				}
+			}
+		}
+	case "pairs":
+		if len(args) >= 2 && args[1] == "retire" {
+			var framed, j bool
+			f, e := flags("pairs retire", args[2:], func(f *flag.FlagSet) { f.BoolVar(&framed, "stdin-frame", false, ""); f.BoolVar(&j, "json", false, "") })
+			if e != nil || !framed || !j || f.NArg() != 0 {
+				err = errors.New("pairs retire requires --stdin-frame --json")
+			} else {
+				value, err = retireLocalPair(ctx, s, in)
+			}
+			break
+		}
+		if len(args) < 2 || (args[1] != "reconcile" && args[1] != "abandon") {
+			err = errors.New("pairs requires reconcile or abandon")
+			break
+		}
+		var pair string
+		var j bool
+		f, e := flags("pairs", args[2:], func(f *flag.FlagSet) { f.StringVar(&pair, "pair", "", ""); f.BoolVar(&j, "json", false, "") })
+		if e != nil || f.NArg() != 0 {
+			err = errors.New("invalid pair arguments")
+		} else if args[1] == "abandon" {
+			err = s.retirePair(ctx, pair, "abandoned", true)
+			value = map[string]any{"v": 1, "pair_id": pair, "status": "abandoned", "ok": err == nil}
+		} else {
+			value, err = reconcilePairs(ctx, s, a, pair)
+		}
+	case "test":
+		var pair string
+		var j bool
+		f, e := flags("test", args[1:], func(f *flag.FlagSet) { f.StringVar(&pair, "pair", "", ""); f.BoolVar(&j, "json", false, "") })
+		if e != nil || f.NArg() != 0 {
+			err = errors.New("invalid test arguments")
+		} else {
+			var results []map[string]any
+			results, err = notify(ctx, s, a, "", nil, pair, true)
+			if pair != "" && len(results) == 1 {
+				value = results[0]
+			} else {
+				value = map[string]any{"v": 1, "results": results}
+			}
+		}
+	case "hooks":
+		if len(args) < 2 {
+			err = errors.New("hooks requires install or uninstall")
+			break
+		}
+		var agent string
+		var j bool
+		f, e := flags("hooks", args[2:], func(f *flag.FlagSet) { f.StringVar(&agent, "agent", "", ""); f.BoolVar(&j, "json", false, "") })
+		if e != nil || f.NArg() != 0 {
+			err = errors.New("invalid hook arguments")
+			break
+		}
+		executable, e := os.Executable()
+		if e != nil {
+			err = e
+			break
+		}
+		err = changeHooks(ctx, s, agent, args[1], "", executable, true)
+		receipt := map[string]any{"v": 1, "agent": agent, "action": args[1], "ok": err == nil}
+		if err == nil && args[1] == "install" && (agent == "opencode" || agent == "pi") {
+			receipt["activation"] = "restart_required"
+		}
+		if err == nil && args[1] == "install" && agent == "codex" {
+			var record HookRecord
+			if s.readJSON("hooks-codex.json", &record) == nil && (record.CodexNative != "" || record.CodexJSON != "") {
+				receipt["activation"] = "native_review_required"
+			}
+		}
+		value = receipt
+	case "notify":
+		var source string
+		var chain bool
+		f, e := flags("notify", args[1:], func(f *flag.FlagSet) {
+			f.StringVar(&source, "source", "", "")
+			f.BoolVar(&chain, "mobterm-chain", false, "")
+		})
+		var payload []byte
+		if e != nil {
+			err = e
+		} else if source == "codex" && f.NArg() == 1 {
+			payload = []byte(f.Arg(0))
+		} else if (source == "claude" || source == "opencode" || source == "pi") && f.NArg() == 0 {
+			if (source == "pi" || source == "opencode") && os.Getenv("MOBTERM_NATIVE_COMPLETION") == "1" {
+				fmt.Fprintln(out, bodyPurpose)
+			}
+			payload, err = readHook(in)
+		} else {
+			err = errors.New("invalid hook invocation")
+		}
+		if err == nil {
+			_, err = notify(ctx, s, a, source, payload, "", false)
+		}
+		if errors.Is(err, errCodexPaneOwner) && source == "codex" {
+			s.noteCodexTargetRefusal(ctx)
+		}
+		if err != nil {
+			fmt.Fprintln(diagnostic, "mobterm-cli: notification unavailable (agent continues):", safeCode(err.Error()))
+			if source == "opencode" || source == "pi" {
+				return 1
+			}
+		}
+		if chain && source == "codex" && len(payload) > 0 {
+			return runNotifyChain(s, string(payload))
+		}
+		return 0
+	case "upgrade":
+		var target string
+		f, e := flags("upgrade", args[1:], func(f *flag.FlagSet) {
+			f.StringVar(&target, "version", "", "")
+			f.Bool("json", false, "")
+		})
+		if e != nil || f.NArg() != 0 {
+			err = errors.New("invalid upgrade arguments")
+			break
+		}
+		dest, e := os.Executable()
+		if e != nil {
+			err = e
+			break
+		}
+		if human {
+			progress = newUpgradeProgress(diagnostic, func() terminalCaps { return detectTerminal(diagnostic, display) }, display.progress)
+		}
+		err = upgradeWithProgress(ctx, target, dest, progress)
+		if human {
+			if err == nil {
+				fmt.Fprintln(out, stdout.style("success", wrapCells("Installed mobterm-cli "+target, stdout.Width)))
+				fmt.Fprintln(out, wrapCells("Path: "+terminalText(dest), stdout.Width))
+			}
+		} else {
+			value = map[string]any{"version": target, "upgraded": err == nil}
+		}
+	default:
+		err = errors.New("unknown command")
+	}
+	if object, ok := value.(map[string]any); ok && object == nil {
+		value = nil
+	}
+	if err != nil && pairingCommand(args) {
+		if value == nil {
+			value = map[string]any{"v": 1, "ok": false, "error": "operation_failed"}
+		}
+		if object, ok := value.(map[string]any); ok {
+			object["failure"] = pairingFailureMetadata(err)
+		}
+	}
+	if value != nil {
+		if human {
+			writeHumanResult(out, stdout, args, value)
+		} else {
+			printJSON(out, value)
+		}
+	}
+	if err != nil {
+		if human {
+			caps := detectTerminal(diagnostic, display)
+			writeHumanError(diagnostic, caps, args, progress, err)
+			return 1
+		}
+		if pairingCommand(args) {
+			fmt.Fprintln(diagnostic, "mobterm-cli:", pairingFailureMetadata(err))
+		} else {
+			fmt.Fprintln(diagnostic, "mobterm-cli:", commandErrorText(err))
+		}
+		if value == nil {
+			code := "operation_failed"
+			if args[0] == "discovery" || args[0] == "job" {
+				code = safeCode(err.Error())
+			}
+			if args[0] == "target" {
+				code = targetErrorCode(err)
+			}
+			if args[0] == "interaction" || args[0] == "reply" {
+				code = safeCode(err.Error())
+			}
+			printJSON(out, map[string]any{"v": 1, "ok": false, "error": code})
+		}
+		return 1
+	}
+	return 0
+}
+
+// encoding/json includes Go package names in type errors. Keep the original
+// executable's type names in diagnostics without changing the underlying error.
+func commandErrorText(err error) string {
+	message := err.Error()
+	var mismatch *json.UnmarshalTypeError
+	if errors.As(err, &mismatch) {
+		name := mismatch.Type.String()
+		if prefix, ok := strings.CutSuffix(message, " of type "+name); ok {
+			return prefix + " of type " + strings.ReplaceAll(name, "cli.", "main.")
+		}
+	}
+	return message
+}
+
+// Main starts the CLI with the version information supplied by the executable.
+func Main(buildVersion, buildCommit string) {
+	version, commit = buildVersion, buildCommit
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+}

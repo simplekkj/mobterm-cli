@@ -3,7 +3,7 @@
 ## Commands and local state
 
 - Keep commands short-lived. The CLI reports verified Agent events and supports opt-in native interactions over trusted SSH. Do not add a daemon, listener, terminal content collection, or API-driven remote execution.
-- Start at the command in `main.go`. The root Go package handles protocol and requests in `protocol*.go` and `api*.go`, events and configuration in `events.go` and `hooks.go`, and run state and bounded dispatch in `activity*.go`. Keep native approval in `approval*.go` and native interaction in `interaction*.go`. Use `target.go` for target verification, `store.go` for state, and `upgrade.go` for upgrades.
+- The root [main.go](main.go) passes build information to [internal/cli/main.go](internal/cli/main.go). The `internal/cli` package handles protocol and requests in `protocol*.go` and `api*.go`, events and configuration in `events.go` and `hooks.go`, and run state and bounded dispatch in `activity*.go`. Keep native approval in `approval*.go` and native interaction in `interaction*.go`. Use `target.go` for target verification, `store.go` for state, and `upgrade.go` for upgrades.
 - Check actual Agent versions and event schemas against [hook compatibility](docs/compatibility.md) before extending support. Preserve existing notifiers, unrelated settings, and later user edits. Leave unknown configuration shapes intact.
 - Accept pairing secrets only through bounded stdin frames. Preserve private permissions, locking, and atomic writes. If verification fails, stop without guessing a pane or creating a terminal. Keep credentials, keys, and hook payloads out of logs and Git. Keep build artifacts out of Git.
 

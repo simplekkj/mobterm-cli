@@ -5,7 +5,9 @@ passed every check. Records were both prepended and appended; file order does
 not establish recency. Preserve each record’s dates, source identifiers, failures,
 skips and environment limitations. Local artifact paths describe the original
 run and may no longer exist. Current contracts are routed from the
-[README documentation map](../README.md#documentation-map).
+[README documentation map](../README.md#documentation-map). To rerun a historical
+`go test` command targeting the former root package (`.`), use `./internal/cli`
+from the repository root.
 
 Topic entry points: [2026-11-09 sender cleanup](#2026-11-09--codex-hooks-round-2-v12-r1-sender-cleanup),
 [2026-11-06 Codex P1](#codex-hooks-第-1-轮-v10-p1-delivery-2026-11-06),
@@ -2395,7 +2397,7 @@ lifecycle from the 30-minute expiry calculation. These checks did not observe
 
 ### Live navigation on the original strong terminal
 
-Build `go build -trimpath -o "$CLI" .` and run `PI_BINARY="$PI_BINARY" MOBTERM_NAV_CLI="$CLI" go test -count=1 -v -run '^TestLivePiNavigation$' .` with an absolute Pi executable and CLI path. The opt-in fixture uses a private tmux server, temporary home and a real Pi TUI. An independent witness submits one synthetic reminder using the native session ID and actual parent PID. A local TLS fixture authenticates the signed Pair-status lookup. The installed production adapter and CLI handle the challenge. On tmux 3.7c, both Pi 1.5.0 and 1.5.2 returned a fresh strong locator for the original notification and the new window after moving its pane within the original tmux session. After `/new` in the same pane and foreground PID, another signed request for the same Pair, event and envelope returned `navigation_binding_unconfirmed` with no locator. No model, production Pair, phone or Apple service was involved.
+Build `go build -trimpath -o "$CLI" .` and run `PI_BINARY="$PI_BINARY" MOBTERM_NAV_CLI="$CLI" go test -count=1 -v -run '^TestLivePiNavigation$' ./internal/cli` with an absolute Pi executable and CLI path. The opt-in fixture uses a private tmux server, temporary home and a real Pi TUI. An independent witness submits one synthetic reminder using the native session ID and actual parent PID. A local TLS fixture authenticates the signed Pair-status lookup. The installed production adapter and CLI handle the challenge. On tmux 3.7c, both Pi 1.5.0 and 1.5.2 returned a fresh strong locator for the original notification and the new window after moving its pane within the original tmux session. After `/new` in the same pane and foreground PID, another signed request for the same Pair, event and envelope returned `navigation_binding_unconfirmed` with no locator. No model, production Pair, phone or Apple service was involved.
 
 The installed-adapter scripts above also issue read-only navigation challenges to the real OpenCode 2.3.2 and Pi 1.5.2 TUIs. Claude 2.1.328’s real Mod confirmed two distinct native sessions in the same foreground host around `/clear`. They validate the current native session and the direct parent of both child commands with a private fixture helper. The Go fixture exercises that helper boundary with the actual CLI. The tests do not establish navigation after a move to a different strong terminal.
 

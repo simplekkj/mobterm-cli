@@ -383,6 +383,9 @@ directory must be writable; use a user-owned installation to avoid elevated acce
 
 ## Build and verify
 
+The root [main.go](main.go) starts the CLI. Command dispatch, implementation,
+and Go tests live in [internal/cli](internal/cli/).
+
 ```sh
 sh -n install.sh
 python3 tests/install_test.py
@@ -482,9 +485,10 @@ See the [documentation map](#documentation-map) for contracts and evidence scope
 
 ### Notification API request deadlines
 
-This is the current command-budget reference, derived from `main.go:commandTimeout`,
-`api.go`, `compatibility.go` and `activity_dispatch.go`. Protocol-specific waiter
-lifetimes remain in [approval](docs/protocol-v2.md#native-approval-over-ssh) and
+The command budgets below come from `commandTimeout` in
+[internal/cli/main.go](internal/cli/main.go) and from `api.go`, `compatibility.go`,
+and `activity_dispatch.go` in the same package. Protocol-specific waiter lifetimes
+remain in [approval](docs/protocol-v2.md#native-approval-over-ssh) and
 [native interaction](docs/native-interactions.md) contracts.
 
 | Command or phase | Maximum budget |

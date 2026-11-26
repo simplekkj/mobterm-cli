@@ -43,7 +43,7 @@ The read-only render result does not affect this extension. The previous
 [validation](validation.md). See the [November host runs](validation.md#2026-11-23-agent-tui-compatibility-round-1-v10) for the installed packages and observed results.
 
 The pinned test samples live in `testdata/compatibility-samples.json`. Go tests
-check minimum/current against the production descriptor in `compatibility.go` and
+check minimum/current against the production descriptor in [internal/cli/compatibility.go](../internal/cli/compatibility.go) and
 this document; CI reads that manifest. Change these together when intentionally
 changing the minimum or recording a new validation reference. No CLI release is
 needed merely to unlock a higher stable Agent version using the same contract.

@@ -1,0 +1,946 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+type RunCapabilities struct {
+	NotificationsEnabled *bool           `json:"notifications_enabled,omitempty"`
+	V                    int             `json:"v"`
+	Enabled              bool            `json:"enabled"`
+	States               bool            `json:"states"`
+	Inbox                bool            `json:"inbox"`
+	CapabilityGeneration int64           `json:"capability_generation"`
+	PolicyGeneration     int64           `json:"policy_generation"`
+	ExpiresAt            int64           `json:"expires_at"`
+	Approvals            map[string]bool `json:"approvals"`
+	Policy               struct {
+		TurnCompleted bool `json:"turn_completed"`
+		NeedsInput    bool `json:"needs_input"`
+		AbnormalEnd   bool `json:"abnormal_end"`
+	} `json:"policy"`
+}
+
+func runCapabilities(ctx context.Context, s Store, a API, p Pair) (RunCapabilities, error) {
+	var c RunCapabilities
+	m, err := a.pairQuery(ctx, s, p, "GET", "/v2/pairs/"+p.PairID+"/capabilities", nil)
+	if err != nil {
+		var ae *APIError
+		if errors.As(err, &ae) && ae.Status == 404 {
+			return c, nil
+		}
+		return c, err
+	}
+	b, _ := json.Marshal(m)
+	if m["pair_id"] != p.PairID || m["installation_id"] != p.InstallationID {
+		return c, errors.New("invalid_capability_receipt")
+	}
+	for _, name := range []string{"enabled", "states", "inbox"} {
+		if _, ok := m[name].(bool); !ok {
+			return c, errors.New("invalid_capability_receipt")
+		}
+	}
+	for _, name := range []string{"capability_generation", "policy_generation", "expires_at"} {
+		n, ok := m[name].(float64)
+		if !ok || n < 0 || n >= 9007199254740991 || n != float64(int64(n)) {
+			return c, errors.New("invalid_capability_receipt")
+		}
+	}
+	policy, ok := m["policy"].(map[string]any)
+	if !ok {
+		return c, errors.New("invalid_capability_receipt")
+	}
+	for _, name := range []string{"turn_completed", "needs_input", "abnormal_end"} {
+		if _, ok := policy[name].(bool); !ok {
+			return c, errors.New("invalid_capability_receipt")
+		}
+	}
+	approvals, ok := m["approvals"].(map[string]any)
+	if !ok {
+		return c, errors.New("invalid_capability_receipt")
+	}
+	for _, name := range []string{"codex", "claude", "opencode", "pi"} {
+		if _, ok := approvals[name].(bool); !ok {
+			return c, errors.New("invalid_capability_receipt")
+		}
+	}
+	if json.Unmarshal(b, &c) != nil || c.V != 2 || c.ExpiresAt <= time.Now().Unix() || c.ExpiresAt > time.Now().Add(61*time.Second).Unix() || (c.Enabled && c.CapabilityGeneration <= 0) {
+		return c, errors.New("invalid_capability_receipt")
+	}
+	return c, nil
+}
+
+type PendingRequest struct {
+	Interaction *InteractionHint `json:"interaction,omitempty"`
+	State       string           `json:"state"`
+	Approval    *ApprovalHint    `json:"approval,omitempty"`
+}
+
+type Activity struct {
+	appendCreated  *int64
+	storageID      string
+	legacySession  string
+	NativeStorage  string `json:"-"`
+	LogicalSession string
+	CodexRuntime   *codexRuntimeSource
+	Body           assistantBody `json:"-"`
+	ClaudeStop     string        `json:"-"`
+	ChildWait      *claudeChildWait
+	Summary        string
+	CodexRoot      bool
+	Interaction    *InteractionHint
+	RequestID      string
+	ResolveRequest bool
+	Agent          string
+	Session        string
+	Run            string
+	Instance       string
+	Occurrence     string
+	State          string
+	ToolID         string
+	ToolCategory   string
+	ToolStatus     string
+	Reminder       string
+	Approval       *ApprovalHint
+}
+type StoredRun struct {
+	InstanceKey     string                    `json:"instance_key,omitempty"`
+	CodexRuntime    *codexRuntimeSource       `json:"codex_runtime,omitempty"`
+	SourceOrder     int64                     `json:"source_order,omitempty"`
+	LogicalSession  string                    `json:"logical_session,omitempty"`
+	ChildWait       *claudeChildWait          `json:"claude_child_wait,omitempty"`
+	Summary         string                    `json:"summary,omitempty"`
+	CodexRoot       bool                      `json:"codex_root_verified,omitempty"`
+	Interaction     *InteractionHint          `json:"interaction,omitempty"`
+	FirstOccurrence string                    `json:"first_occurrence,omitempty"`
+	Requests        map[string]PendingRequest `json:"requests,omitempty"`
+	Agent           string                    `json:"agent"`
+	Session         string                    `json:"session"`
+	Run             string                    `json:"run"`
+	Instance        string                    `json:"instance"`
+	Locator         Locator                   `json:"locator"`
+	Revision        int64                     `json:"revision"`
+	State           string                    `json:"state"`
+	Updated         int64                     `json:"updated"`
+	Seen            []string                  `json:"seen"`
+	Tools           map[string]RunTool        `json:"tools"`
+	Streams         map[string]string         `json:"streams"`
+	Pending         map[string]Envelope       `json:"pending"`
+	Approval        *ApprovalHint             `json:"approval,omitempty"`
+}
+type RunIntent struct {
+	AppendOrigin   string           `json:"append_origin,omitempty"`
+	AppendSource   string           `json:"append_source,omitempty"`
+	LegacyAudience string           `json:"legacy_audience,omitempty"`
+	Navigation     *navigationOwner `json:"navigation,omitempty"`
+	Reply          *replyBinding    `json:"reply,omitempty"`
+	Body           *bodyRef         `json:"body,omitempty"`
+	PairID         string           `json:"pair_id"`
+	Key            string           `json:"key"`
+	Occurrence     string           `json:"occurrence"`
+	Kind           string           `json:"kind"`
+	Payload        RunPayload       `json:"payload"`
+	ExpiresAt      int64            `json:"expires_at"`
+	Envelope       *Envelope        `json:"envelope,omitempty"`
+}
+type RunStore struct {
+	LastSourceOrder int64                    `json:"last_source_order,omitempty"`
+	Visible         map[string]visibleNotice `json:"visible,omitempty"`
+	ReplyHeads      map[string]replyHead     `json:"reply_heads,omitempty"`
+	LastPair        [2]string                `json:"last_pair,omitempty"`
+	Retired         map[string]int64         `json:"retired,omitempty"`
+	NextState       map[string]int64         `json:"next_state"`
+	Intents         map[string]RunIntent     `json:"intents"`
+	Runs            map[string]StoredRun     `json:"runs"`
+	Current         map[string]string        `json:"current"`
+}
+
+func loadRuns(s Store) (RunStore, error) {
+	r := RunStore{Runs: map[string]StoredRun{}, Current: map[string]string{}, Intents: map[string]RunIntent{}}
+	raw, err := secureRead(filepath.Join(s.Dir, "runs-v2.json"), runStoreLimit)
+	// One bounded legacy recovery allowance; never applied to keys/configuration.
+	// A compact rewrite still must fit the normal write budget, otherwise retain
+	// the original file and report capacity rather than destroying responsibility.
+	if err != nil && err.Error() == "configuration exceeds size limit" {
+		raw, err = secureRead(filepath.Join(s.Dir, "runs-v2.json"), 2*runStoreLimit)
+	}
+	if err == nil {
+		err = json.Unmarshal(raw, &r)
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		err = nil
+	}
+	if r.Retired == nil {
+		r.Retired = map[string]int64{}
+	}
+	if r.Intents == nil {
+		r.Intents = map[string]RunIntent{}
+	}
+	if r.NextState == nil {
+		r.NextState = map[string]int64{}
+	}
+	if r.Runs == nil || r.Current == nil {
+		return r, errors.New("run_store_corrupt")
+	}
+	return r, err
+}
+
+// Runs have their own bounded compact format. This accommodates the old valid
+// 128 x 256 occurrence ledger without increasing limits for keys/configuration.
+const runStoreLimit = 16 * 1024 * 1024
+
+func saveRuns(s Store, db RunStore) error {
+	raw, err := json.Marshal(db)
+	if err != nil {
+		return err
+	}
+	if len(raw) > runStoreLimit {
+		return errors.New("run_store_capacity")
+	}
+	return atomicWrite(filepath.Join(s.Dir, "runs-v2.json"), raw, 0600)
+}
+func reclaimRuns(db *RunStore, now int64, needSlot bool) {
+	for pair, next := range db.NextState {
+		if next <= now {
+			delete(db.NextState, pair)
+		}
+	}
+	for key, until := range db.Retired {
+		if until <= now {
+			delete(db.Retired, key)
+		}
+	}
+	busy := map[string]bool{}
+	for _, intent := range db.Intents {
+		if intent.ExpiresAt > now {
+			busy[intent.Key] = true
+		}
+	}
+	keys := []string{}
+	for key, run := range db.Runs {
+		childDone := run.ChildWait != nil && len(run.Requests) == 0
+		if !busy[key] && (terminalRun(run.State) || childDone) && (run.Approval == nil || run.Approval.ExpiresAt <= now) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool { return db.Runs[keys[i]].Updated < db.Runs[keys[j]].Updated })
+	for _, key := range keys {
+		run := db.Runs[key]
+		if run.Updated >= now-86400 && (!needSlot || len(db.Runs) < 128) {
+			continue
+		}
+		db.Retired[key] = now + 86400
+		if run.FirstOccurrence != "" {
+			instance := run.InstanceKey
+			if instance == "" {
+				instance = activityInstanceKey(run.Agent, run.Session, run.Instance, "", run.Locator)
+			}
+			db.Retired[digest(instance+"\x00occurrence\x00"+run.FirstOccurrence)] = now + 86400
+		}
+		delete(db.Runs, key)
+	}
+}
+func terminalRun(state string) bool {
+	return state == "turn_completed" || state == "failed" || state == "interrupted"
+}
+func toolCategory(name string) string {
+	switch strings.ToLower(name) {
+	case "bash", "shell", "exec_command":
+		return "shell"
+	case "read", "write", "edit", "apply_patch":
+		return "file"
+	case "grep", "glob", "search":
+		return "search"
+	case "webfetch", "websearch":
+		return "web"
+	}
+	if strings.HasPrefix(name, "mcp") {
+		return "mcp"
+	}
+	return "other"
+}
+func applyActivity(ctx context.Context, s Store, l Locator, a Activity) (string, StoredRun, bool, error) {
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return "", StoredRun{}, false, err
+	}
+	defer unlock()
+	return applyActivityLocked(s, l, a)
+}
+
+// Root input and visible-notice order follow the logical Agent session. Child
+// waiters and old records retain their original terminal-bound instance key.
+func activityInstanceKey(agent, session, instance, logical string, l Locator) string {
+	if logical != "" && agent != "codex" {
+		return digest(replyScope(l.InstallationID, logical) + "\x00" + instance)
+	}
+	target, _ := json.Marshal(l)
+	return digest(agent + "\x00" + session + "\x00" + instance + "\x00" + string(target))
+}
+
+// Caller owns Store.lock, including when persisting an approval lifecycle change.
+func applyActivityLocked(s Store, l Locator, a Activity) (string, StoredRun, bool, error) {
+	db, err := loadRuns(s)
+	if err != nil {
+		return "", StoredRun{}, false, err
+	}
+	if err = a.identifySession(); err != nil {
+		return "", StoredRun{}, false, err
+	}
+	scope := a.LogicalSession
+	if a.ChildWait != nil {
+		scope = ""
+	}
+	instance := activityInstanceKey(a.Agent, a.Session, a.Instance, scope, l)
+	if a.Run == "" {
+		if db.Retired[digest(instance+"\x00occurrence\x00"+a.Occurrence)] > time.Now().Unix() {
+			return "", StoredRun{}, false, nil
+		}
+		for key, r := range db.Runs {
+			if r.Agent == a.Agent && r.Session == a.Session && r.Instance == a.Instance && (r.InstanceKey == instance || r.InstanceKey == "" && r.Locator == l) {
+				for _, occurrence := range r.Seen {
+					if occurrence == a.Occurrence {
+						return key, r, false, nil
+					}
+				}
+			}
+		}
+		if a.State == "starting" || a.State == "running" {
+			a.Run = randomID()
+		} else {
+			a.Run = db.Current[instance]
+		}
+		if a.Run == "" {
+			a.Run = randomID()
+		}
+	}
+	key := digest(instance + "\x00" + a.Run)
+	r, exists := db.Runs[key]
+	now := time.Now().Unix()
+	if !exists {
+		reclaimRuns(&db, now, true)
+		if db.Retired[key] > now {
+			return key, r, false, nil
+		}
+		// 128 is the retained snapshot target, not a daily business limit.
+		// Reserve bounded overflow for critical obligations while active runs
+		// occupy all ordinary slots. Never evict a run with an unsent intent.
+		if len(db.Runs) >= 128 && a.Reminder == "" || len(db.Runs) >= 512 {
+			return "", r, false, errors.New("run_capacity_retry_after_flush")
+		}
+		r = StoredRun{InstanceKey: instance, ChildWait: a.ChildWait, FirstOccurrence: a.Occurrence, Agent: a.Agent, Session: a.Session, Run: a.Run, Instance: a.Instance, Locator: l, Tools: map[string]RunTool{}, Streams: map[string]string{}, Pending: map[string]Envelope{}}
+	}
+	for _, id := range r.Seen {
+		if id == a.Occurrence {
+			return key, r, false, nil
+		}
+	}
+	if terminalRun(r.State) || exists && r.ChildWait != nil && (!a.ResolveRequest || len(r.Requests) == 0) {
+		// A real native request can arrive after the completion for this same
+		// run. Keep its notification lifecycle closed, but revoke the ordinary
+		// source even when this activity cannot produce a new reminder.
+		scope := replyScope(l.InstallationID, a.LogicalSession)
+		if h, ok := db.ReplyHeads[scope]; ok && h.Run == a.Run && h.Instance == a.Instance && a.Reminder == "needs_input" && h.Cursor != a.Occurrence && h.Request == "" {
+			h.Cursor = a.Occurrence
+			db.ReplyHeads[scope] = h
+			if err = saveRuns(s, db); err != nil {
+				return key, r, false, err
+			}
+		}
+		return key, r, false, nil
+	}
+	if a.Approval != nil {
+		request, readErr := approvalRead(s, a.Approval.RequestID)
+		if readErr != nil || request.State != "pending" || request.ExpiresAt <= now || !approvalAlive(request) || request.Digest != a.Approval.Digest || request.Locator != l || request.Session != "" && (request.Agent != a.Agent || request.Session != a.Session || request.Run != a.Run || request.Instance != a.Instance || request.RequestID != a.RequestID) {
+			return key, r, false, nil
+		}
+	}
+	if a.ChildWait != nil && r.ChildWait == nil {
+		r.ChildWait = a.ChildWait
+	}
+	r.CodexRoot = r.CodexRoot || a.CodexRoot
+	if a.CodexRuntime != nil {
+		r.CodexRuntime = a.CodexRuntime
+	}
+	if r.SourceOrder == 0 {
+		if db.LastSourceOrder < 0 || db.LastSourceOrder >= 1<<53-1 {
+			return key, r, false, errors.New("source_order_capacity")
+		}
+		db.LastSourceOrder++
+		r.SourceOrder = db.LastSourceOrder
+		r.LogicalSession = a.LogicalSession
+	}
+	r.Locator = l
+	r.Summary = cleanMessageSummary(a.Summary)
+	r.Revision++
+	r.Updated = now
+	r.State = a.State
+	if r.Requests == nil {
+		r.Requests = map[string]PendingRequest{}
+	}
+	if a.RequestID != "" {
+		if a.ResolveRequest {
+			if _, known := r.Requests[a.RequestID]; !known {
+				return key, db.Runs[key], false, nil
+			}
+			delete(r.Requests, a.RequestID)
+		} else {
+			if _, exists := r.Requests[a.RequestID]; !exists && len(r.Requests) >= 64 {
+				return key, r, false, errors.New("request_capacity")
+			}
+			r.Requests[a.RequestID] = PendingRequest{State: a.State, Approval: a.Approval, Interaction: a.Interaction}
+		}
+	}
+	r.Approval = a.Approval
+	r.Interaction = a.Interaction
+	r.Seen = append(r.Seen, a.Occurrence)
+	if len(r.Seen) > 256 {
+		r.Seen = r.Seen[len(r.Seen)-256:]
+	}
+	if a.ToolID != "" {
+		if previous, ok := r.Tools[a.ToolID]; ok && (previous.Status == "returned" || previous.Status == "succeeded" || previous.Status == "failed" || previous.Status == "interrupted") && (a.ToolStatus == "pending" || a.ToolStatus == "running") {
+			return key, db.Runs[key], false, nil
+		}
+		if len(r.Tools) >= 32 {
+			if _, ok := r.Tools[a.ToolID]; !ok {
+				for id, tool := range r.Tools {
+					if tool.Status != "pending" && tool.Status != "running" {
+						delete(r.Tools, id)
+						break
+					}
+				}
+				if len(r.Tools) >= 32 {
+					return key, r, false, errors.New("tool_capacity")
+				}
+			}
+		}
+		r.Tools[a.ToolID] = RunTool{a.ToolID, a.ToolCategory, a.ToolStatus}
+	}
+	if a.State == "running" || a.State == "tool_running" || a.State == "tool_pending" {
+		for _, t := range r.Tools {
+			if t.Status == "running" {
+				r.State = "tool_running"
+				break
+			}
+			if t.Status == "pending" {
+				r.State = "tool_pending"
+			}
+		}
+	}
+	if !terminalRun(r.State) {
+		requestIDs := make([]string, 0, len(r.Requests))
+		for id := range r.Requests {
+			requestIDs = append(requestIDs, id)
+		}
+		sort.Strings(requestIDs)
+		for _, id := range requestIDs {
+			request := r.Requests[id]
+			if r.State != "waiting_approval" || request.State == "waiting_approval" {
+				r.State = request.State
+				r.Approval = request.Approval
+				r.Interaction = request.Interaction
+			}
+		}
+	} else {
+		r.Requests = nil
+		r.Approval = nil
+		r.Interaction = nil
+	}
+	pairs, err := s.pairs()
+	if err != nil {
+		return key, r, false, err
+	}
+	for ik, intent := range db.Intents {
+		if intent.ExpiresAt <= now {
+			delete(db.Intents, ik)
+		}
+	}
+	var stoppedBodies map[string]*bodyRef
+	if a.ClaudeStop != "" {
+		stoppedBodies = s.claudeBodies(a, l)
+	}
+	replyTarget := replyScope(l.InstallationID, r.LogicalSession)
+	if advanceReplyHead(&db, a, replyTarget, now) && a.legacySession != "" {
+		head := db.ReplyHeads[replyTarget]
+		head.LegacyScope = replyScope(l.InstallationID, a.legacySession)
+		db.ReplyHeads[replyTarget] = head
+	}
+	navigation := noticeNavigationOwner(a, l)
+	parentBirth := ""
+	if a.Reminder == "turn_completed" && a.Agent != "codex" {
+		parentBirth, _ = processIdentity(replyParent(a.Agent))
+	}
+	installation := l.InstallationID
+	if r.CodexRuntime != nil {
+		installation = r.CodexRuntime.Installation
+	}
+	appendSource := ""
+	if a.appendCreated != nil && *a.appendCreated > 0 && a.CodexRuntime != nil && a.CodexRoot && a.Reminder == "turn_completed" {
+		// Notification delivery remains independent of optional append storage.
+		appendSource, _ = registerAppendSource(s, *a.CodexRuntime, a.Session, a.Run, *a.appendCreated, now)
+	}
+	for pid, pair := range pairs {
+		if pair.Status != "active" || pair.InstallationID != installation {
+			continue
+		}
+		stream := r.Streams[pid]
+		if stream == "" {
+			stream = randomID()
+			r.Streams[pid] = stream
+		}
+		kind := a.Reminder
+		if kind == "" {
+			kind = "state"
+		}
+		ik := digest(pid + "\x00" + a.Occurrence)
+		if kind == "state" {
+			ik = digest(pid + "\x00state\x00" + key)
+		}
+		if kind != "state" {
+			delete(db.Intents, digest(pid+"\x00state\x00"+key))
+		}
+		if _, ok := db.Intents[ik]; !ok {
+			stateCount := 0
+			for _, intent := range db.Intents {
+				if intent.Kind == "state" {
+					stateCount++
+				}
+			}
+			if len(db.Intents) >= 512 || kind == "state" && stateCount >= 256 {
+				return key, r, false, errors.New("activity_pending_capacity")
+			}
+		}
+		payload := payloadForRun(r, stream)
+		payload.Source = &noticeSource{Session: audienceSession(pair, r.LogicalSession), RunOrder: r.SourceOrder}
+		if kind != "state" {
+			// A reminder belongs to the event that produced it, never the
+			// run's currently selected pending request.
+			payload.Summary = cleanMessageSummary(a.Summary)
+			payload.Approval = a.Approval
+			payload.Interaction = a.Interaction
+		}
+		payload = fitRunDisplayBudget(payload)
+		var body *bodyRef
+		if kind == "turn_completed" {
+			if a.ClaudeStop != "" {
+				body = stoppedBodies[pid]
+			} else {
+				body = s.freezeBody(pair, a.Body, now)
+			}
+		}
+		if body != nil {
+			// Record the original run identity even when negotiation later selects v1.
+			body.Source = digest(strings.Join([]string{key, a.Occurrence, stream, fmt.Sprint(r.Revision)}, "\x00"))
+		}
+		legacyAudience := ""
+		if kind != "state" && a.legacySession != "" {
+			legacyAudience = audienceSession(pair, a.legacySession)
+		}
+		db.Intents[ik] = RunIntent{AppendSource: appendSource, LegacyAudience: legacyAudience, Navigation: navigation, Reply: replyIntentBinding(a, l, pair, parentBirth), Body: body, PairID: pid, Key: key, Occurrence: a.Occurrence, Kind: kind, Payload: payload, ExpiresAt: now + 3600}
+		if kind != "state" {
+			delete(db.Intents, digest(pid+"\x00state\x00"+key))
+		}
+	}
+	db.Runs[key] = r
+	if !exists && (a.State == "starting" || a.State == "running") {
+		db.Current[instance] = a.Run
+	}
+	if len(db.Current) > 256 {
+		db.Current = map[string]string{instance: a.Run}
+	}
+	err = saveRuns(s, db)
+	if err != nil && err.Error() == "run_store_capacity" {
+		for ik, intent := range db.Intents {
+			if intent.Key == key && intent.Occurrence == a.Occurrence && (intent.Reply != nil || intent.AppendSource != "") {
+				intent.Reply = nil
+				intent.AppendSource = ""
+				intent.AppendOrigin = ""
+				db.Intents[ik] = intent
+			}
+		}
+		err = saveRuns(s, db)
+	}
+	return key, r, true, err
+}
+func payloadForRun(r StoredRun, stream string) RunPayload {
+	tools := []RunTool{}
+	for _, t := range r.Tools {
+		tools = append(tools, t)
+	}
+	sort.Slice(tools, func(i, j int) bool { return tools[i].InvocationID < tools[j].InvocationID })
+	active := 0
+	for _, tool := range tools {
+		if tool.Status == "pending" || tool.Status == "running" {
+			active++
+		}
+	}
+	p := RunPayload{Summary: r.Summary, V: 2, Locator: r.Locator, Agent: r.Agent, SessionID: r.Session, RunID: r.Run, StreamID: stream, Revision: r.Revision, State: r.State, OccurredAt: r.Updated, Tools: tools, Approval: r.Approval, Interaction: r.Interaction, ActiveToolCount: active}
+	if r.CodexRuntime != nil && r.Locator == (Locator{}) {
+		p.InstallationID = r.CodexRuntime.Installation
+	}
+	return fitRunDisplayBudget(p)
+}
+
+// Reserve room before the intent is durably frozen. Final encryption also
+// checks ciphertext and the exact APNs serialization; required IDs are never cut.
+func fitRunDisplayBudget(p RunPayload) RunPayload {
+	p.Summary = cleanMessageSummary(p.Summary)
+	for {
+		raw, _ := json.Marshal(p)
+		if len(raw) <= 1500 {
+			break
+		}
+		if p.Summary != "" {
+			p.Summary = truncateMessageSummary(p.Summary, len([]rune(p.Summary))/2, 512)
+			continue
+		}
+		if len(p.Tools) == 0 {
+			break
+		}
+		p.Tools = p.Tools[:len(p.Tools)-1]
+		p.ToolsTruncated = true
+	}
+	return p
+}
+func publishActivity(ctx context.Context, s Store, api API, l Locator, a Activity) error {
+	return publishRegisteredActivity(ctx, s, api, func() error {
+		_, _, _, err := applyActivity(ctx, s, l, a)
+		return err
+	})
+}
+
+func publishRegisteredActivity(ctx context.Context, s Store, api API, register func() error) error {
+	if err := register(); err != nil {
+		if err.Error() != "run_capacity_retry_after_flush" && err.Error() != "activity_pending_capacity" && err.Error() != "run_store_capacity" {
+			return err
+		}
+		// Capacity is recoverable: hand off pending responsibility before one retry.
+		// Failure leaves the prior readable store and outbox untouched.
+		_ = flushRunSnapshots(ctx, s, api)
+		if retryErr := register(); retryErr != nil {
+			return retryErr
+		}
+	}
+	return flushRunSnapshots(ctx, s, api)
+}
+func removeRunIntent(ctx context.Context, s Store, key, occurrence string) error {
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	db, err := loadRuns(s)
+	if err != nil {
+		return err
+	}
+	if db.Intents[key].Occurrence == occurrence {
+		delete(db.Intents, key)
+		return saveRuns(s, db)
+	}
+	return nil
+}
+func encodeRunIntent(ctx context.Context, s Store, key string, intent RunIntent, c RunCapabilities, p Pair) (RunIntent, error) {
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return intent, err
+	}
+	defer unlock()
+	db, err := loadRuns(s)
+	if err != nil {
+		return intent, err
+	}
+	current, ok := db.Intents[key]
+	if !ok || current.Occurrence != intent.Occurrence {
+		return intent, errors.New("activity_superseded")
+	}
+	if current.Envelope != nil {
+		return current, nil
+	}
+	raw, err := decode64(p.EncryptionKey, 32)
+	if err != nil {
+		return intent, err
+	}
+	if intent.Kind != "state" && current.LegacyAudience != "" && intent.Payload.Source != nil {
+		source := *intent.Payload.Source
+		source.Retires = current.LegacyAudience
+		intent.Payload.Source = &source
+		intent.Payload = fitRunDisplayBudget(intent.Payload)
+	}
+	e, err := sealRun(raw, Envelope{V: 2, PairID: p.PairID, EventID: digest(intent.Occurrence + "\x00" + p.PairID), Kind: intent.Kind, StreamID: intent.Payload.StreamID, Revision: intent.Payload.Revision, CapabilityGeneration: c.CapabilityGeneration, ExpiresAt: intent.ExpiresAt}, intent.Payload, nil)
+	if err != nil {
+		return intent, err
+	}
+	if err := db.recordVisible(e, intent.Payload, time.Now().Unix()); err != nil {
+		if saveErr := saveRuns(s, db); saveErr != nil {
+			return current, saveErr
+		}
+		return current, err
+	}
+	if current.AppendSource != "" {
+		current.AppendOrigin = strings.TrimSuffix(p.APIURL, "/")
+	}
+	current.Kind = intent.Kind
+	current.Payload = intent.Payload
+	current.Envelope = &e
+	db.Intents[key] = current
+	return current, saveRuns(s, db)
+}
+func enqueueRunReminder(ctx context.Context, s Store, intent RunIntent) (delivery, error) {
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return delivery{}, err
+	}
+	defer unlock()
+	if err = s.migrateOutbox(); err != nil {
+		return delivery{}, err
+	}
+	e := *intent.Envelope
+	key := deliveryKey(e.PairID, e.EventID)
+	sh, err := s.loadShard(key)
+	if err != nil {
+		return delivery{}, err
+	}
+	if old, ok := sh.Records[key]; ok {
+		return old, nil
+	}
+	if intent.AppendSource != "" && e.Kind == "turn_completed" {
+		// Bind the sealed envelope before it becomes eligible for delivery.
+		// Retry is idempotent; a failed binding only disables this action.
+		_ = bindAppendDelivery(s, intent.AppendSource, intent.AppendOrigin, e)
+	}
+	old := cloneShard(sh)
+	raw, _ := json.Marshal(intent.Payload.Locator)
+	d := delivery{Navigation: intent.Navigation, Reply: bindReply(intent.Reply, e), Body: bindBody(intent.Body, e), PairID: e.PairID, EventID: e.EventID, Kind: e.Kind, LocatorHash: digest(string(raw)), Created: intent.Payload.OccurredAt, Expires: e.ExpiresAt, State: "pending", Envelope: &e, Approval: intent.Payload.Approval}
+	if intent.Payload.Source != nil {
+		d.VisibleSession = intent.Payload.Source.Session
+	}
+	sh.Records[key] = d
+	idx, err := s.outboxLoad(true)
+	if err != nil {
+		return d, err
+	}
+	return d, s.saveShard(idx, key, old, sh)
+}
+func flushRunSnapshots(ctx context.Context, s Store, api API) error {
+	return flushRunSnapshotsWithBudget(ctx, s, api, 0)
+}
+
+func flushRunSnapshotsWithBudget(ctx context.Context, s Store, api API, budget time.Duration) error {
+	// Fresh business first, due durable reminders next, coalesced observations
+	// last. Network commands allow capability negotiation and a full send;
+	// synchronous observation hooks retain their short caller deadline.
+	if budget == 0 {
+		budget = networkCommandTimeout
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 5*time.Second {
+			budget = 600 * time.Millisecond
+		}
+	}
+	fresh, cancel := context.WithTimeout(ctx, budget)
+	first := flushRunIntents(fresh, s, api, false)
+	cancel()
+	recovery, cancel := context.WithTimeout(ctx, budget)
+	_, retryErr := flushOutbox(recovery, s, api, "", false)
+	cancel()
+	stateErr := flushRunIntents(ctx, s, api, true)
+	if first != nil {
+		return first
+	}
+	if retryErr != nil {
+		return retryErr
+	}
+	return stateErr
+}
+func flushRunIntents(ctx context.Context, s Store, api API, states bool) error {
+	unlock, err := s.lock(ctx)
+	if err != nil {
+		return err
+	}
+	db, err := loadRuns(s)
+	var keys []string
+	if err == nil {
+		previous := db.LastPair
+		keys = scheduleRunIntents(&db, states)
+		if db.LastPair != previous {
+			err = saveRuns(s, db)
+		}
+	}
+	unlock()
+	if err != nil {
+		return err
+	}
+	pairs, err := s.pairs()
+	if err != nil {
+		return err
+	}
+
+	var last error
+	count := 0
+	for _, key := range keys {
+		if count >= 4 || ctx.Err() != nil {
+			break
+		}
+		intent := db.Intents[key]
+		if (intent.Kind == "state") != states {
+			continue
+		}
+		if intent.Kind == "state" && db.NextState[intent.PairID] > time.Now().Unix() {
+			continue
+		}
+		p, ok := pairs[intent.PairID]
+		if !ok || p.Status != "active" || intent.ExpiresAt <= time.Now().Unix() {
+			_ = removeRunIntent(ctx, s, key, intent.Occurrence)
+			continue
+		}
+		count++
+		if hint := intent.Payload.Approval; hint != nil {
+			if err := reconcileApprovalHint(s, hint); err != nil {
+				last = err
+				continue
+			}
+			if !approvalNotificationValid(s, hint, p.PairID) {
+				last = removeRunIntent(ctx, s, key, intent.Occurrence)
+				continue
+			}
+		}
+		if intent.Envelope == nil {
+			var c RunCapabilities
+			var e error
+			if intent.Payload.Interaction != nil || intent.Payload.Approval != nil {
+				// A new grant may postdate the observation cache. Never strip a
+				// freshly registered request using a stale authorization clock.
+				c, e = runCapabilities(ctx, s, api, p)
+			} else {
+				c, e = completionCapabilities(ctx, s, api, p)
+			}
+			if e != nil {
+				last = e
+				continue
+			}
+			if hint := intent.Payload.Approval; hint != nil {
+				request, readErr := approvalRead(s, hint.RequestID)
+				if readErr != nil || !approvalNotificationValid(s, hint, p.PairID) || !c.Enabled || !c.States || !c.Inbox || !c.Approvals[intent.Payload.Agent] || request.Pairs[p.PairID] != c.PolicyGeneration {
+					if readErr == nil && (!c.Enabled || !c.States || !c.Inbox || !c.Approvals[intent.Payload.Agent] || request.Pairs[p.PairID] != c.PolicyGeneration) {
+						if err := revokeApprovalPair(s, hint.RequestID, p.PairID); err != nil {
+							last = err
+							continue
+						}
+					}
+					last = removeRunIntent(ctx, s, key, intent.Occurrence)
+					continue
+				}
+			}
+			if !c.Enabled || !c.States || !c.Inbox {
+				if intent.Payload.InstallationID != "" {
+					// V1 encodes a terminal locator as the entire payload. Keep this
+					// intent for capability re-negotiation within its original expiry.
+					last = errors.New("unbound_completion_requires_v2_inbox")
+					continue
+				}
+				if intent.Kind == "turn_completed" || intent.Kind == "needs_input" {
+					d, e := enqueueBoundDelivery(ctx, s, p, intent.Kind, intent.Occurrence, intent.Payload.Locator, intent.Payload.Agent, intent.Payload.Summary, intent.Body, nil, intent.Reply)
+					if e != nil {
+						last = e
+						continue
+					}
+					if e = removeRunIntent(ctx, s, key, intent.Occurrence); e != nil {
+						last = e
+						continue
+					}
+					if d.State == "pending" {
+						_, last = deliverOne(ctx, s, api, d)
+					}
+				} else {
+					last = removeRunIntent(ctx, s, key, intent.Occurrence)
+				}
+				continue
+			}
+			interactionAllowed := false
+			if hint := intent.Payload.Interaction; hint != nil {
+				request, readErr := interactionRead(s, hint.RequestID)
+				if readErr == nil && request.Digest == hint.Digest && request.Kind == hint.Kind && request.Pairs[p.PairID] == c.PolicyGeneration {
+					grant, grantErr := interactionCapabilities(ctx, s, api, p)
+					interactionAllowed = grantErr == nil && grant.Enabled && grant.PolicyGeneration == c.PolicyGeneration && grant.Interactions[request.Agent][request.Kind]
+				}
+				if !interactionAllowed && !(readErr == nil && request.State == "unavailable" && request.Locator.InstallationID == p.InstallationID) {
+					intent.Payload.Interaction = nil
+				}
+			}
+			allowed := intent.Kind == "state" || intent.Kind == "test" || intent.Kind == "turn_completed" && c.Policy.TurnCompleted || intent.Kind == "needs_input" && (c.Policy.NeedsInput || interactionAllowed || intent.Payload.Approval != nil && c.Approvals[intent.Payload.Agent]) || (intent.Kind == "failed" || intent.Kind == "interrupted") && c.Policy.AbnormalEnd
+			if !allowed || c.NotificationsEnabled != nil && !*c.NotificationsEnabled {
+				intent.Kind = "state"
+			}
+			intent, e = encodeRunIntent(ctx, s, key, intent, c, p)
+			if e != nil {
+				last = e
+				continue
+			}
+		}
+		if intent.Kind == "state" && !states {
+			continue
+		}
+		if intent.Kind != "state" {
+			d, e := enqueueRunReminder(ctx, s, intent)
+			if e != nil {
+				last = e
+				continue
+			}
+			if e = removeRunIntent(ctx, s, key, intent.Occurrence); e != nil {
+				last = e
+				continue
+			}
+			if d.State == "pending" {
+				_, last = deliverOne(ctx, s, api, d)
+			}
+			continue
+		}
+		release, claimErr := claimStateSend(ctx, s, p.PairID)
+		if claimErr != nil {
+			last = claimErr
+			continue
+		}
+		if release == nil {
+			continue
+		}
+		response, e := api.pairQuery(ctx, s, p, "PUT", "/v2/pairs/"+p.PairID+"/snapshots/"+intent.Envelope.StreamID, intent.Envelope)
+		delay := 2 * time.Second
+		if e != nil {
+			delay = 5 * time.Second
+			var ae *APIError
+			if errors.As(e, &ae) && ae.RetryAfter > delay {
+				delay = ae.RetryAfter
+			}
+		}
+		release(delay)
+		if e != nil {
+			last = e
+			var ae *APIError
+			if errors.As(e, &ae) && ae.Status >= 400 && ae.Status < 500 && ae.Status != 429 {
+				_ = removeRunIntent(ctx, s, key, intent.Occurrence)
+			}
+			continue
+		}
+		if response["v"] != float64(2) {
+			last = errors.New("invalid_snapshot_receipt")
+			continue
+		}
+		last = removeRunIntent(ctx, s, key, intent.Occurrence)
+	}
+	if states && last == nil {
+		// Check the already-loaded index. An expired child wait can enqueue
+		// its closing snapshot only after existing intents got their send turn.
+		for _, run := range db.Runs {
+			if run.ChildWait != nil && run.ChildWait.Until <= time.Now().Unix() && len(run.Requests) > 0 {
+				return finishClaudeChildWaits(ctx, s, nil, Locator{})
+			}
+		}
+	}
+	return last
+}
