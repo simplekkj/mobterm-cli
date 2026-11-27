@@ -193,7 +193,7 @@ func doctorPairChecks(s Store, a API, c doctorCatalog, o doctorOptions) []doctor
 					if !remoteReady {
 						return doctorFact("skipped", "active_pair_required", "service")
 					}
-					return doctorCapabilities(ctx, s, a, p, id)
+					return doctorCapabilities(ctx, s, a, p, id, o.Agent)
 				}})
 			}
 		}
@@ -362,7 +362,7 @@ func doctorPairGET(ctx context.Context, s Store, a API, p Pair, path string) (ma
 	return m, err
 }
 
-func doctorCapabilities(ctx context.Context, s Store, a API, p Pair, check string) doctor.Result {
+func doctorCapabilities(ctx context.Context, s Store, a API, p Pair, check, selectedAgent string) doctor.Result {
 	suffix := "capabilities"
 	if check == "interaction.service" {
 		suffix = "interaction-capabilities"
@@ -380,7 +380,7 @@ func doctorCapabilities(ctx context.Context, s Store, a API, p Pair, check strin
 	}
 	scope := doctorPairScope(p.PairID)
 	if check == "interaction.service" {
-		c, err := parseInteractionCapabilities(m, p)
+		c, err := parseInteractionCapabilityEvidence(m, p)
 		if err != nil {
 			return doctorFact("unknown", "capability_receipt_invalid", "service")
 		}
@@ -388,6 +388,9 @@ func doctorCapabilities(ctx context.Context, s Store, a API, p Pair, check strin
 		r.Counts = map[string]int{"wire": 1}
 		r.Details = map[string]string{}
 		for _, agent := range []string{"codex", "claude", "opencode", "pi"} {
+			if selectedAgent != "" && agent != selectedAgent {
+				continue
+			}
 			var kinds []string
 			for _, kind := range []string{"approval", "question", "form", "elicitation", "planApproval", "followupMessage"} {
 				if c.Enabled && c.Interactions[agent][kind] {

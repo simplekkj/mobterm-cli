@@ -39,6 +39,21 @@ A non-PTY invocation had no foreground evidence. The same v1 wire fixture is
 used by the mobile consumer. No production pair, APNs receipt, device display,
 or running Agent trust decision was part of these checks.
 
+The review fixtures also exercise decision ownership across the request,
+legacy approval, native reply and Codex append stores, and a disabled API
+receipt at capability generation zero. Changing a grant for a different Agent
+does not change the selected Agent's result. Replacing the installation file
+with the same ID, restoring its original inode, or replacing the store
+directory invalidates an earlier repair plan. The lock-contention test changes
+the installation while the repair is waiting and verifies that no hook is
+written.
+
+Review regressions check that the worker's earlier notification stage can
+coexist with a later Outbox APNs receipt, that error selection is stable
+across equal event timestamps, and that an unknown error cannot expose remote
+text or be replaced with an older known code. Offline diagnosis skips the
+account directory lookup while preserving stored job evidence.
+
 ## 2026-11-26 — Existing Agent integration migration
 
 On Intel macOS, CLI builds from v0.1.10 and v0.1.16 produced owned notify-only

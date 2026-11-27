@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/simplekkj/mobterm-cli/internal/doctor"
 )
@@ -228,5 +229,117 @@ func TestDoctorFixtureAndDeclinedRepair(t *testing.T) {
 	var out bytes.Buffer
 	if code := selectDoctorRepair(t.Context(), Store{}, "", strings.NewReader("1\nno\n"), humanResult{&out, terminalCaps{Width: 80}}, r); code != 130 || !strings.Contains(out.String(), a.Scope) {
 		t.Fatal(code, out.String())
+	}
+}
+
+func TestDoctorInstallationGeneration(t *testing.T) {
+	for _, change := range []string{"same_id", "new_inode_aba", "original_inode_aba", "while_waiting_for_lock", "no_identity", "replace_store"} {
+		t.Run(change, func(t *testing.T) {
+			s, path, exe := codexLayoutEnvironment(t)
+			old, record, err := editCodex([]byte("model='keep'\n"), "install", path, exe, HookRecord{})
+			if err != nil || s.writeJSON("hooks-codex.json", record) != nil {
+				t.Fatal(err)
+			}
+			writeLayoutFile(t, path, old, 0600)
+			identity := storedInstallation{V: 1, ID: randomID()}
+			writeIdentity := func(id storedInstallation) {
+				t.Helper()
+				if err := s.writeJSON("installation.json", id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if change != "no_identity" && change != "replace_store" {
+				writeIdentity(identity)
+			}
+			c := doctorComponent{"codex", "hooks"}
+			probe := classicProbe("codex")
+			plan := func() doctorRepairRequest {
+				t.Helper()
+				target, safe := doctorTarget(s, exe)
+				r := c.inspect(t.Context(), s, exe, probe, false)
+				if !safe || len(r.Actions) != 1 {
+					t.Fatalf("valid repair unavailable %+v", r)
+				}
+				return doctorRepairRequest{V: 1, ID: doctorActionID, Scope: c.scope(), Target: target, Plan: r.Actions[0].Plan}
+			}
+			req := plan()
+			idPath := filepath.Join(s.Dir, "installation.json")
+			switch change {
+			case "same_id":
+				writeIdentity(identity)
+			case "new_inode_aba":
+				writeIdentity(storedInstallation{V: 1, ID: randomID()})
+				writeIdentity(identity)
+			case "original_inode_aba":
+				if err := os.Rename(idPath, idPath+".previous"); err != nil {
+					t.Fatal(err)
+				}
+				writeIdentity(storedInstallation{V: 1, ID: randomID()})
+				if err := os.Rename(idPath+".previous", idPath); err != nil {
+					t.Fatal(err)
+				}
+			case "while_waiting_for_lock":
+				done := make(chan doctorRepairReceipt, 1)
+				func() {
+					ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+					defer cancel()
+					unlock, err := lockFile(ctx, path+".mobterm-lock")
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer unlock()
+					go func() { done <- applyDoctorPlan(t.Context(), s, exe, c, probe, req) }()
+					// The old plan passed preflight and now owns the store
+					// lock, but cannot yet enter the config write section.
+					for doctorLock(s).Reason != "store_busy" {
+						select {
+						case <-ctx.Done():
+							t.Fatal("repair never acquired store lock")
+						case <-time.After(time.Millisecond):
+						}
+					}
+					writeIdentity(identity)
+				}()
+				if receipt := <-done; receipt.Status != "stale" {
+					t.Fatalf("missed change under lock: %+v", receipt)
+				}
+			case "replace_store":
+				if err := os.Rename(s.Dir, s.Dir+".previous"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(s.Dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(filepath.Join(s.Dir+".previous", "hooks-codex.json"), filepath.Join(s.Dir, "hooks-codex.json")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if change != "no_identity" {
+				current := plan()
+				if current.Target == req.Target {
+					t.Fatal("replaced identity retained target")
+				}
+				got := applyDoctorPlan(t.Context(), s, exe, c, probe, req)
+				if got.Status != "stale" {
+					t.Fatalf("obsolete plan %+v", got)
+				}
+				now, err := os.ReadFile(path)
+				if err != nil || !bytes.Equal(now, old) {
+					t.Fatal("stale plan changed hook")
+				}
+				req = current
+			}
+			got := applyDoctorPlan(t.Context(), s, exe, c, probe, req)
+			if got.Status != "manual_required" {
+				t.Fatal(got)
+			}
+			target, safe := doctorTarget(s, exe)
+			if !safe || target != req.Target {
+				t.Fatal("repair invalidated its target")
+			}
+			if current := c.inspect(t.Context(), s, exe, probe, false); current.Status != "pass" || len(current.Actions) != 0 {
+				t.Fatal(current)
+			}
+		})
 	}
 }

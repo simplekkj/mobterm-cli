@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/simplekkj/mobterm-cli/internal/doctor"
+	"golang.org/x/sys/unix"
 )
 
 const doctorActionID = "agent.reconcile"
@@ -41,22 +43,65 @@ func doctorNode(path string) (string, error) {
 	return fmt.Sprintf("%d.%d.%d.%d.%d.%d", st.Dev, st.Ino, st.Uid, info.Mode(), info.ModTime().UnixNano(), info.Size()), nil
 }
 
-// Installation is optional. An unsafe or corrupt identity can still be
-// diagnosed, but cannot authorize a repair. No raw account identity leaves here.
+// The store directory's device/inode survives our own locks and journals.
+// The installation file also needs ctime: renaming the original inode back
+// into place can preserve its contents, inode number and modification time.
+func doctorInstallationGeneration(s Store) (string, error) {
+	if err := doctorDirectory(s.Dir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "store_absent", nil
+		}
+		return "", err
+	}
+	var dir unix.Stat_t
+	if err := unix.Lstat(s.Dir, &dir); err != nil {
+		return "", err
+	}
+	if dir.Mode&unix.S_IFMT != unix.S_IFDIR || dir.Uid != uint32(os.Geteuid()) || dir.Mode&0077 != 0 {
+		return "", errDoctorUnsafe
+	}
+	storeID := fmt.Sprintf("%d.%d", dir.Dev, dir.Ino)
+	path := filepath.Join(s.Dir, "installation.json")
+	f, err := doctorPrivateFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return storeID + ".absent", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	var before, current unix.Stat_t
+	if err := unix.Fstat(int(f.Fd()), &before); err != nil {
+		return "", err
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, 4097))
+	if err != nil {
+		return "", err
+	}
+	var identity storedInstallation
+	if len(raw) > 4096 || json.Unmarshal(raw, &identity) != nil || identity.V != 1 || !opaqueID.MatchString(identity.ID) {
+		return "", errDoctorUnsafe
+	}
+	// Confirm the pathname still identifies the exact version whose bytes we
+	// decoded. Reading on the original handle alone cannot see an atomic swap.
+	if err := unix.Lstat(path, &current); err != nil {
+		return "", err
+	}
+	if current.Dev != before.Dev || current.Ino != before.Ino || current.Ctim != before.Ctim {
+		return "", errDoctorUnsafe
+	}
+	return fmt.Sprintf("%s.%d.%d.%d.%d.%s", storeID, before.Dev, before.Ino, before.Ctim.Sec, before.Ctim.Nsec, identity.ID), nil
+}
+
+// An unsafe or corrupt identity can still be diagnosed, but cannot authorize
+// a repair. Only an opaque digest leaves this process.
 func doctorTarget(s Store, executable string) (string, bool) {
 	host, eHost := os.Hostname()
 	node, eNode := doctorNode(executable)
-	id := ""
-	safe := false
-	if s.Dir != "" && executable != "" && eHost == nil && eNode == nil && node != "absent" && nativeRealParents(filepath.Join(s.Dir, "installation.json")) == nil {
-		var identity storedInstallation
-		err := doctorReadJSON(filepath.Join(s.Dir, "installation.json"), 4096, &identity)
-		safe = errors.Is(err, os.ErrNotExist) || err == nil && identity.V == 1 && opaqueID.MatchString(identity.ID)
-		if safe {
-			id = identity.ID
-		}
-	}
-	data, _ := json.Marshal([]any{"doctor.v1", host, os.Geteuid(), s.Dir, id, executable, node, version, commit})
+	generation, eStore := doctorInstallationGeneration(s)
+	safe := s.Dir != "" && executable != "" && eHost == nil && eNode == nil && node != "absent" && eStore == nil
+	data, _ := json.Marshal([]any{"doctor.v1", host, os.Geteuid(), s.Dir, generation, executable, node, version, commit})
 	return nativeDigest(data), safe
 }
 
@@ -325,6 +370,10 @@ func applyDoctorPlan(ctx context.Context, s Store, exe string, c doctorComponent
 		return r
 	}
 	fresh, _, _ := c.plan(ctx, s, exe, p)
+	target, safe := doctorTarget(s, exe)
+	if !safe || target != req.Target || ctx.Err() != nil {
+		return r
+	}
 	switch fresh.Status {
 	case "current":
 		r.Status = "manual_required" // Agent restart or trust review cannot be verified over exec.

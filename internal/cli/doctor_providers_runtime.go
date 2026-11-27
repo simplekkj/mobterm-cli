@@ -57,7 +57,13 @@ func doctorRecordNames(ctx context.Context, dir string, limit int, match func(st
 	return names, errDoctorLimit
 }
 
-func doctorJobShell(ctx context.Context) doctor.Result {
+func doctorJobShell(ctx context.Context, offline bool) doctor.Result {
+	if offline {
+		// NSS and Directory Services can consult a network directory for this UID.
+		r := doctorFact("skipped", "offline", "configuration")
+		r.Features = []doctor.Feature{doctorFeature("job.foreground_backend", doctorHost, "unknown"), doctorFeature("job.worker_backend", doctorHost, "unknown")}
+		return r
+	}
 	r := doctorFact("pass", "job_backend_supported", "account")
 	shell, err := quickAccountShell(ctx)
 	r.Features = []doctor.Feature{doctorFeature("job.foreground_backend", doctorHost, "ready"), doctorFeature("job.worker_backend", doctorHost, "ready")}
@@ -127,8 +133,10 @@ func doctorJobs(ctx context.Context, s Store, installation string, o doctorOptio
 		case rec.OccurredAt > 0 && validQuickCommandTermination(rec.State, rec.ExitCode, rec.Signal):
 			r.Counts["finished"]++
 			switch rec.Delivery {
-			case "pending", "outbox_saved":
-				r.Counts["notification_pending"]++
+			case "pending", "outbox_saved", "api_handoff":
+				// The worker persists its last observation once. Later flushes
+				// update the Outbox, even after the worker has exited.
+				r.Counts["worker_delivery_snapshots"]++
 			case "pair_unavailable", "outbox_unconfirmed", "permanent_failed", "policy_unavailable", "revoked":
 				r.Counts["notification_unconfirmed"]++
 			}
@@ -154,8 +162,8 @@ func doctorJobs(ctx context.Context, s Store, installation string, o doctorOptio
 		r.Status, r.Reason = "warn", "job_result_unavailable"
 	case r.Counts["notification_unconfirmed"] > 0:
 		r.Status, r.Reason = "warn", "job_notification_unconfirmed"
-	case r.Counts["notification_pending"] > 0:
-		r.Status, r.Reason = "warn", "job_notification_pending"
+	case !r.Partial && r.Counts["worker_delivery_snapshots"] > 0:
+		r.Reason = "job_delivery_history"
 	case !r.Partial && len(r.Counts) == 0:
 		r.Status, r.Reason = "skipped", "no_job_records"
 	}
@@ -228,56 +236,7 @@ func doctorInteractions(ctx context.Context, s Store, p Pair, o doctorOptions) d
 	if !o.Deep {
 		return r
 	}
-	names, err := doctorRecordNames(ctx, s.Dir, 256, func(n string) bool { _, ok := interactionFileID(n); return ok })
-	if err != nil {
-		r.Partial, r.Status, r.Reason = true, "unknown", "interaction_inventory_limited"
-		if !errors.Is(err, errDoctorLimit) {
-			return r
-		}
-	}
-	for _, name := range names {
-		if ctx.Err() != nil {
-			r.Partial, r.Status, r.Reason = true, "unknown", "inventory_interrupted"
-			return r
-		}
-		id, _ := interactionFileID(name)
-		// Decode only identity/status fields. Request text, answers and the
-		// contents of a decision frame are never retained or rendered.
-		var row struct {
-			V                  int
-			RequestID          string `json:"request_id"`
-			Pairs              map[string]int64
-			Agent, Kind, State string
-			Locator            Locator
-			PID                int
-			Birth              string
-			ParentPID          int    `json:"parent_pid"`
-			ParentBirth        string `json:"parent_birth"`
-			ExpiresAt          int64  `json:"expires_at"`
-		}
-		if doctorReadJSON(filepath.Join(s.Dir, name), 2<<20, &row) != nil || row.V != 1 || row.RequestID != id {
-			r.Status, r.Reason = "unknown", "interaction_record_invalid"
-			continue
-		}
-		if row.Pairs[p.PairID] == 0 || row.Locator.InstallationID != p.InstallationID || o.Agent != "" && row.Agent != o.Agent {
-			continue
-		}
-		switch row.State {
-		case "pending", "decision_recorded":
-			if row.ExpiresAt <= time.Now().Unix() {
-				r.Counts["expired_bindings"]++
-			} else if interactionAlive(InteractionRecord{PID: row.PID, Birth: row.Birth, ParentPID: row.ParentPID, ParentBirth: row.ParentBirth}) && row.Locator.validate() == nil {
-				r.Counts["live_bindings"]++
-			} else {
-				r.Counts["unconfirmed_bindings"]++
-			}
-		case "dispatching", "delivery_unknown":
-			r.Counts["result_unknown"]++
-		}
-	}
-	if r.Counts["result_unknown"] > 0 {
-		r.Status, r.Reason = "warn", "interaction_result_unknown"
-	}
+	doctorInspectBindings(ctx, s, p, o.Agent, &r)
 	return r
 }
 
@@ -369,6 +328,7 @@ func doctorOutbox(ctx context.Context, s Store, o doctorOptions, catalog doctorC
 	}
 	now := time.Now().Unix()
 	latest := int64(0)
+	latestKey := ""
 	scanned := 0
 	for prefix, expected := range idx.Shards {
 		if len(prefix) != 2 || strings.Trim(prefix, "0123456789abcdef") != "" || expected < 0 {
@@ -391,7 +351,7 @@ func doctorOutbox(ctx context.Context, s Store, o doctorOptions, catalog doctorC
 		if err != nil || len(sh.Records) != expected {
 			return doctorFact("fail", "outbox_shard_invalid", "filesystem")
 		}
-		for _, d := range sh.Records {
+		for key, d := range sh.Records {
 			if o.Pair != "" && d.PairID != o.Pair {
 				continue
 			}
@@ -421,9 +381,11 @@ func doctorOutbox(ctx context.Context, s Store, o doctorOptions, catalog doctorC
 					r.Counts["body_unavailable"]++
 				}
 			}
-			if code := doctorDeliveryError(d.Error); code != "" && d.Created > latest {
-				latest = d.Created
-				r.Details = map[string]string{"recent_error": code}
+			// The store records event creation time but not the time an error
+			// changed. Use the stable record key to break ties without exporting it.
+			if d.Error != "" && (d.Created > latest || d.Created == latest && key > latestKey) {
+				latest, latestKey = d.Created, key
+				r.Details = map[string]string{"recent_error": doctorDeliveryError(d.Error)}
 			}
 		}
 	}
@@ -459,7 +421,8 @@ func doctorBodyFile(s Store, p Pair, ref bodyRef, now int64) bool {
 
 func doctorDeliveryError(code string) string {
 	switch code {
-	case "pair_revoked", "pair_expired", "notifications_disabled", "notification_disabled", "expired", "invalid_envelope", "apns_failed", "api_unavailable", "retry_limit", "rate_limited", "token_invalid":
+	case "pair_revoked", "pair_expired", "notifications_disabled", "notification_disabled", "expired", "invalid_envelope", "apns_failed", "api_unavailable", "rate_limited", "token_invalid",
+		"pair_not_active", "service_handoff_unconfirmed", "retry_after_expiry", "attempts_exhausted", "approval_resolved", "approval_disabled", "request_failed":
 		return code
 	}
 	if suffix, ok := strings.CutPrefix(code, "http_"); ok && len(suffix) == 3 {
@@ -468,5 +431,5 @@ func doctorDeliveryError(code string) string {
 			return "http_" + strconv.Itoa(i)
 		}
 	}
-	return ""
+	return "unclassified"
 }

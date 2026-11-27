@@ -370,6 +370,7 @@ func TestDoctorProvidersDeepGrantsAndLostClaimReadOnly(t *testing.T) {
 	}
 	// A real bound record without an acknowledged result must not be replayed.
 	record := InteractionRecord{V: 1, RequestID: randomID(), Locator: Locator{InstallationID: inst}, State: "dispatching", Pairs: map[string]int64{p.PairID: 3}, Agent: "claude", Kind: "question"}
+	record.Frame = &InteractionFrame{V: 1, PairID: p.PairID, RequestID: record.RequestID}
 	if err := s.writeJSON("interaction-"+record.RequestID+".json", record); err != nil {
 		t.Fatal(err)
 	}

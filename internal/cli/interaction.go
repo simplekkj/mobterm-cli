@@ -155,21 +155,42 @@ func interactionCapabilities(ctx context.Context, s Store, api API, p Pair) (Int
 }
 
 func parseInteractionCapabilities(m map[string]any, p Pair) (InteractionCapabilities, error) {
+	c, err := parseInteractionCapabilityEvidence(m, p)
+	if err == nil && c.CapabilityGeneration < 1 {
+		return c, errors.New("invalid_interaction_grant")
+	}
+	return c, err
+}
+
+// A default-off device has generation zero until it first negotiates v2.
+// Such a receipt is valid evidence of the disabled state, never a grant.
+func parseInteractionCapabilityEvidence(m map[string]any, p Pair) (InteractionCapabilities, error) {
 	var c InteractionCapabilities
+	for _, name := range []string{"v", "pair_id", "installation_id", "enabled", "interaction_protocols", "policy_generation", "capability_generation", "expires_at", "interactions"} {
+		if m[name] == nil {
+			return c, errors.New("invalid_interaction_grant")
+		}
+	}
+	if _, ok := m["enabled"].(bool); !ok {
+		return c, errors.New("invalid_interaction_grant")
+	}
 	raw, e := json.Marshal(m)
 	if e != nil {
 		return c, e
 	}
-	if interactionJSON(raw, &c) != nil || c.V != 1 || c.PairID != p.PairID || c.InstallationID != p.InstallationID || len(c.Protocols) != 1 || c.Protocols[0] != 1 || c.PolicyGeneration < 1 || c.CapabilityGeneration < 1 || c.ExpiresAt <= time.Now().Unix() || c.ExpiresAt > time.Now().Unix()+61 || len(c.Interactions) != 4 {
+	if interactionJSON(raw, &c) != nil || c.V != 1 || c.PairID != p.PairID || c.InstallationID != p.InstallationID || len(c.Protocols) != 1 || c.Protocols[0] != 1 || c.PolicyGeneration < 1 || c.PolicyGeneration >= 1<<53 || c.CapabilityGeneration < 0 || c.CapabilityGeneration >= 1<<53 || c.Enabled && c.CapabilityGeneration == 0 || c.ExpiresAt <= time.Now().Unix() || c.ExpiresAt > time.Now().Unix()+61 || len(c.Interactions) != 4 {
 		return c, errors.New("invalid_interaction_grant")
 	}
+	// encoding/json maps null to false in a bool map. Only an explicit
+	// boolean is evidence about the corresponding kind.
+	matrix, _ := m["interactions"].(map[string]any)
 	for _, agent := range []string{"codex", "claude", "opencode", "pi"} {
-		kinds := c.Interactions[agent]
+		kinds, _ := matrix[agent].(map[string]any)
 		if len(kinds) != 6 {
 			return c, errors.New("invalid_interaction_grant")
 		}
 		for _, kind := range []string{"approval", "question", "form", "elicitation", "planApproval", "followupMessage"} {
-			if _, ok := kinds[kind]; !ok {
+			if _, ok := kinds[kind].(bool); !ok {
 				return c, errors.New("invalid_interaction_grant")
 			}
 		}

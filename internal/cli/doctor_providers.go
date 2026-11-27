@@ -86,7 +86,9 @@ func doctorProviders(s Store, a API, o doctorOptions) []doctor.Check {
 		{ID: "workspace.target", Scope: doctorHost, Run: func(ctx context.Context) doctor.Result {
 			return doctorWorkspaceTarget(ctx, o.Deep && !o.Offline)
 		}},
-		{ID: "job.shell", Scope: doctorHost, Run: doctorJobShell},
+		{ID: "job.shell", Scope: doctorHost, Run: func(ctx context.Context) doctor.Result {
+			return doctorJobShell(ctx, o.Offline)
+		}},
 		{ID: "job.records", Scope: doctorHost, Depends: []string{identity}, Run: func(ctx context.Context) doctor.Result {
 			return doctorJobs(ctx, s, catalog.installation, o)
 		}},

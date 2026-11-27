@@ -217,6 +217,8 @@ func doctorNextStep(c doctor.Finding) string {
 		return "Inspect outbox status and the original event's expiry and receipt. Retry only an eligible pending delivery."
 	case "worker_identity_unconfirmed", "job_result_unavailable":
 		return "Inspect the original Quick Command job and its stored result. The worker's outcome is unconfirmed."
+	case "job_delivery_history":
+		return "The worker recorded an earlier notification stage. Use doctor --scope delivery to check the current Outbox receipts."
 	case "interaction_result_unknown":
 		return "Check the original Agent interaction on the server before taking another action."
 	case "select_pair_for_remaining":

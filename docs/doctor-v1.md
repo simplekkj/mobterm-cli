@@ -52,8 +52,13 @@ The default budget is 30 s (deep 120 s), with at most six active checks. Each
 has its own deadline. Modules select transitive prerequisites, evaluate shared
 observations once, propagate root causes within the affected dependency graph,
 and preserve independent facts when one check fails or times out.
-`--offline` makes no API requests and does not execute Agent version commands.
-Deep diagnosis can inspect additional local records and runtime evidence.
+`--offline` makes no API requests and skips Agent version commands and system
+account-directory lookups. Job records can still be inspected.
+Deep interaction checks inspect scoped reply, approval and append records. A lost
+acknowledgment remains unconfirmed. Worker notification stages are historical;
+the delivery module reports the current Outbox snapshot. Its recent error is
+from the newest-created event with a recorded error, using a deterministic tie
+break. Unknown error text is replaced with a fixed category.
 A remote non-PTY process cannot establish which TUI is foreground or whether a
 phone displayed a notification. No check submits a job, interacts with an
 Agent session, sends a test notification or initializes a missing installation.
