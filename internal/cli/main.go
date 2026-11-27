@@ -226,6 +226,9 @@ func run(args []string, in io.Reader, out, diagnostic io.Writer) int {
 	if display.helpPath != nil && renderHelp(out, detectTerminal(out, display), display.helpPath) {
 		return 0
 	}
+	if args[0] == "doctor" {
+		return runDoctor(args[1:], display, in, out, diagnostic)
+	}
 	var stdout terminalCaps
 	if candidate {
 		stdout = detectTerminal(out, display)

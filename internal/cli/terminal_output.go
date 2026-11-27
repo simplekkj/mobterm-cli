@@ -52,7 +52,7 @@ func resultOptions(args []string) ([]string, displayOptions, bool) {
 		}
 		maintenance = true
 		start = 2
-	case "status", "test", "upgrade":
+	case "status", "test", "upgrade", "doctor":
 	default:
 		return args, options, false
 	}
@@ -73,7 +73,7 @@ func resultOptions(args []string) ([]string, displayOptions, bool) {
 		clean = append(clean, arg)
 		name, _, hasValue := strings.Cut(strings.TrimLeft(arg, "-"), "=")
 		switch name {
-		case "pair", "version", "agent":
+		case "pair", "version", "agent", "scope":
 			if !hasValue && i+1 < len(args) {
 				i++
 				clean = append(clean, args[i])

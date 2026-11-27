@@ -381,6 +381,31 @@ checksum, extraction, or pre-rename write failure keeps the old executable.
 No remote scripts execute, and pair/config/hook files are unchanged. The binary's
 directory must be writable; use a user-owned installation to avoid elevated access.
 
+### Diagnose this installation
+
+Run `mobterm-cli doctor` for a read-only examination of this server's CLI,
+configuration, pairing, API, Agent integrations, workspace, deliveries,
+interactions and Quick Commands. An App connection, pairing and notifications
+are optional. Run it in the same environment as the problem when possible.
+The Terminal connection menu in a Doctor-capable Mobterm App offers the same
+checks through a separate trusted SSH exec connection.
+
+```sh
+mobterm-cli doctor --offline
+mobterm-cli doctor --scope network --pair PAIR_ID
+mobterm-cli doctor --scope agent --agent codex --deep
+mobterm-cli doctor --json
+mobterm-cli doctor --report
+mobterm-cli doctor --fix
+```
+
+Default and deep runs leave configuration and queues untouched. Offline also
+skips service requests and Agent version commands. The shareable summary
+contains status counts. Raw diagnostic JSON is for local use. For a repair,
+select and confirm one offered component update, then review the disk check
+and any Agent restart or trust instructions. Check again after interruption.
+See [Doctor protocol v1](docs/doctor-v1.md) for fields, budgets and exit codes.
+
 ### Updating existing Agent integrations
 
 Once running a version that supports migration, opt in with:

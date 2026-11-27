@@ -232,6 +232,10 @@ func planClassic(r HookRecord, executable string, probe agentProbe, data, jsonDa
 }
 
 func reconcileClassic(ctx context.Context, s Store, agent, executable string, probe agentProbe, check bool) reconcileComponent {
+	return reconcileClassicAuthorized(ctx, s, agent, executable, probe, check, nil)
+}
+
+func reconcileClassicAuthorized(ctx context.Context, s Store, agent, executable string, probe agentProbe, check bool, authorize func(hookTransaction) bool) reconcileComponent {
 	path, err := configPath(agent)
 	if err != nil {
 		return classicAttention("ownership_conflict")
@@ -263,6 +267,9 @@ func reconcileClassic(ctx context.Context, s Store, agent, executable string, pr
 	tx, pending, planned := planClassicReconcile(s, agent, path, executable, probe)
 	if planned.Status != "available" {
 		return planned
+	}
+	if authorize != nil && !authorize(tx) {
+		return classicAttention("plan_stale")
 	}
 	if !pending {
 		if ctx.Err() != nil || writeHookTransaction(s, tx) != nil {

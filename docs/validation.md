@@ -17,6 +17,28 @@ and [fixed compatibility samples](#mobterm-cli-compatibility--round-1-v10--2026-
 The earlier records below retain their original scope; they are not rerun by
 documentation maintenance.
 
+## 2026-11-27 — Doctor v1
+
+On Intel macOS with Go 1.27.1, the compiled CLI diagnosed an empty isolated
+HOME without creating a configuration store. A TTY run of `doctor --fix`
+selected one existing Mobterm-owned Codex hook and confirmed it. The subsequent
+disk check returned current, zero remaining actions and a manual trust/reload
+step. The isolated hook used controlled old/new Agent version probes. Separately,
+`doctor --scope agent --deep --json` found the installed Codex, Claude Code and
+Pi version probes. OpenCode was absent. The probes establish executable
+discovery and version evidence only.
+
+The Go fixtures cover a corrupt or unsafe store, offline reads, per-pair
+network and authorization failures, a 65-pair historical catalog, expired
+outbox records, an interrupted transaction, a reused worker PID, and unknown
+delivery outcomes. Recovery tests cover a changed file, replaced generation,
+disabled integration, stale selection and a declined write. A separate test
+provider exercises shared dependencies, timeouts and partial reports.
+Isolated live tmux and Herdr 0.9.3 sessions exercised workspace context.
+A non-PTY invocation had no foreground evidence. The same v1 wire fixture is
+used by the mobile consumer. No production pair, APNs receipt, device display,
+or running Agent trust decision was part of these checks.
+
 ## 2026-11-26 — Existing Agent integration migration
 
 On Intel macOS, CLI builds from v0.1.10 and v0.1.16 produced owned notify-only

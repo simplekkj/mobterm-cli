@@ -39,6 +39,11 @@ func runCapabilities(ctx context.Context, s Store, a API, p Pair) (RunCapabiliti
 		}
 		return c, err
 	}
+	return parseRunCapabilities(m, p)
+}
+
+func parseRunCapabilities(m map[string]any, p Pair) (RunCapabilities, error) {
+	var c RunCapabilities
 	b, _ := json.Marshal(m)
 	if m["pair_id"] != p.PairID || m["installation_id"] != p.InstallationID {
 		return c, errors.New("invalid_capability_receipt")

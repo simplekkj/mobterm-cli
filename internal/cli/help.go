@@ -31,6 +31,7 @@ func replyHelp(name, summary string) helpTopic {
 
 var helpGroups = []helpGroup{
 	{"Common commands", []helpTopic{
+		{name: "doctor", summary: "Diagnose this installation and review scoped repairs.", usage: "[--scope MODULE] [--agent NAME] [--pair ID] [--offline] [--deep] [--json | --report]\n[--scope MODULE] [--agent NAME] --fix\n--fix --stdin-frame\n--protocol", human: true, example: "doctor --scope network"},
 		{name: "status", summary: "Show pairing and Agent integration status.", usage: "[--pair ID] [--json]\n--installation-json [--read-only]\n--agents-json", human: true, example: "status --agents-json"},
 		{name: "hooks", summary: "Manage Agent integrations.", children: []helpTopic{
 			{name: "install", summary: "Write the hook configuration for one Agent.", usage: "--agent NAME [--json]", human: true, example: "hooks install --agent codex"},
@@ -127,6 +128,12 @@ var helpGroups = []helpGroup{
 type helpRow struct{ label, description string }
 
 var helpOptions = []helpRow{
+	{"--scope MODULE", "Select all, core, storage, network, pair, agent, workspace, delivery, interaction or job."},
+	{"--deep", "Include additional bounded, read-only runtime evidence."},
+	{"--offline", "Inspect locally without network requests or running Agent version probes."},
+	{"--report", "Write a shareable report containing only redacted status counts."},
+	{"--fix", "Choose one repair and confirm it in a terminal, or supply a selected App frame."},
+	{"--protocol", "Read the Doctor protocol version without accessing configuration."},
 	{"--agent NAME", "Select codex, claude, opencode or pi."},
 	{"--version TAG", "Select a stable release tag in vX.Y.Z form."},
 	{"--pair ID", "Select the pair by its ID."},

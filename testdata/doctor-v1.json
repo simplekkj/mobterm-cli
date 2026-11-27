@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "scope": "all",
+  "target": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "checked_at": 1795737600,
+  "complete": true,
+  "overall": "warn",
+  "checks": [
+    {
+      "id": "agent.discovery", "scope": "codex", "status": "pass",
+      "reason": "agent_found", "evidence": "version_probe", "features": [],
+      "duration_ms": 12
+    },
+    {
+      "id": "agent.integration", "scope": "codex.hooks", "status": "warn",
+      "reason": "template_changed", "evidence": "disk",
+      "features": ["agent.configuration", "agent.runtime"], "duration_ms": 2
+    }
+  ],
+  "features": [
+    {"id": "agent.configuration", "scope": "codex.hooks", "status": "degraded"},
+    {"id": "agent.runtime", "scope": "codex.hooks", "status": "unknown"}
+  ],
+  "actions": [
+    {
+      "id": "agent.reconcile", "scope": "codex.hooks",
+      "plan": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+    }
+  ]
+}

@@ -28,6 +28,10 @@ func nativeMigrationFailure(err error) reconcileComponent {
 }
 
 func reconcileNative(ctx context.Context, s Store, agent, executable string, probe agentProbe, check bool) reconcileComponent {
+	return reconcileNativeAuthorized(ctx, s, agent, executable, probe, check, nil)
+}
+
+func reconcileNativeAuthorized(ctx context.Context, s Store, agent, executable string, probe agentProbe, check bool, authorize func(nativeReconcilePlan) bool) reconcileComponent {
 	policy, ok := agentCompatibilities[agent]
 	if agent == "claude" {
 		policy.minimum = minimums.Reply[agent]
@@ -71,10 +75,13 @@ func reconcileNative(ctx context.Context, s Store, agent, executable string, pro
 	if result.Status != "available" {
 		return result
 	}
+	if authorize != nil && !authorize(plan) {
+		return nativeComponent("attention", "plan_stale")
+	}
 	if err = plan.apply(ctx, s); err != nil {
 		return nativeMigrationFailure(err)
 	}
-	if plan.recovering {
+	if plan.recovering && authorize == nil {
 		// An earlier compatible transaction can finish with an old revision
 		// or without the current host token. Compare the committed state again.
 		plan, result = planNativeReconcile(ctx, s, agent, path, executable)

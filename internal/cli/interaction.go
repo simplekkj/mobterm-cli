@@ -151,6 +151,11 @@ func interactionCapabilities(ctx context.Context, s Store, api API, p Pair) (Int
 	if e != nil {
 		return c, e
 	}
+	return parseInteractionCapabilities(m, p)
+}
+
+func parseInteractionCapabilities(m map[string]any, p Pair) (InteractionCapabilities, error) {
+	var c InteractionCapabilities
 	raw, e := json.Marshal(m)
 	if e != nil {
 		return c, e
