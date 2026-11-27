@@ -145,7 +145,7 @@ func TestReconcileClassicClaudeRecord(t *testing.T) {
 			_ = json.Unmarshal(root["hooks"], &hooks)
 			owned := record.ClaudeOwned["PreToolUse"]
 			old := bytes.ReplaceAll([]byte(owned), []byte("interaction wait --source claude"), []byte("observe --source claude"))
-			old = bytes.ReplaceAll(old, []byte("330"), []byte("10"))
+			old = bytes.Replace(old, []byte(`"timeout":330`), []byte(`"timeout":10`), 1)
 			hooks["PreToolUse"][0] = old
 			record.ClaudeOwned["PreToolUse"] = string(old)
 			switch change {
@@ -160,7 +160,7 @@ func TestReconcileClassicClaudeRecord(t *testing.T) {
 				hooks["PreToolUse"][0] = old
 				record.ClaudeOwned["PreToolUse"] = string(old)
 			case "edited":
-				hooks["PreToolUse"][0] = bytes.ReplaceAll(old, []byte("10"), []byte("42"))
+				hooks["PreToolUse"][0] = bytes.Replace(old, []byte(`"timeout":10`), []byte(`"timeout":42`), 1)
 			}
 			root["hooks"], _ = json.Marshal(hooks)
 			data, _ := json.Marshal(root)
