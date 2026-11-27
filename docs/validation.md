@@ -90,3 +90,28 @@ python3 scripts/check-public-boundary.py --base "$BASE_SHA" --head "$HEAD_SHA"
 Use full commit IDs for both revisions. The public CI repeats the check before
 building installer packages. Review the affected file locally when a rule
 reports a finding.
+
+The scan includes member names and contents in ZIP (stored or deflated), tar
+and gzip-compressed tar archives. It reads members as data, including nested
+archives up to two levels. Links, unsupported encodings, invalid archives and
+limit overruns fail the check. Recognized unsupported 7z, RAR, bzip2, xz
+and Zstandard inputs also fail. Git blobs are limited to 64 MiB, each archive
+input to 16 MiB, and the scan to 1,024 members and 64 MiB of expansion
+(including decoded tar streams, member names/metadata and nested data).
+
+Each finding prints a SHA-256 location ID, line and rule. To resolve IDs, rerun
+the same check locally with a new output file in a private directory. Add the
+same `--base` and `--head` arguments when investigating a commit range.
+
+```sh
+locations_dir=$(mktemp -d)
+python3 scripts/check-public-boundary.py --locations-file "$locations_dir/findings.json"
+```
+
+The owner-only JSON file maps each ID to its Git object and path components.
+The first component identifies the tracked path, commit message or tag. Further
+components give the members of each nested archive. For a blob from a commit
+range, use `git log --all --format=%H --find-object="$BLOB_SHA"` to find commits
+that changed its presence. A staged blob can exist only in the index. Inspect
+the map locally and remove it after use. Filenames can themselves contain
+sensitive data.

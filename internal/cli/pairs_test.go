@@ -196,8 +196,7 @@ func TestDeviceRevocationReconcilesOnlyAffectedPairs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Reopen the durable store as a later short-lived CLI invocation would. The
-	// API's retention across actual cleanup is verified by its local D1 suite.
+	// Reopen the durable store and reconcile again as a later invocation would.
 	for attempt := 0; attempt < 2; attempt++ {
 		s = Store{Dir: s.Dir}
 		if _, err := reconcilePairs(context.Background(), s, API{server.Client()}, ""); err != nil {

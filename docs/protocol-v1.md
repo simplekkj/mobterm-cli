@@ -324,11 +324,13 @@ Correctly authenticated POST/GET/token PUT/pair creation for a revoked device
 returns HTTP 410 `device_revoked`. This code is a device-management result only;
 clients must not interpret arbitrary 410 responses as proof of device revocation.
 
-An authenticated DELETE permanently revokes the device, clears its APNs token
-and advances its token generation once. All its Pairs lose sending authority,
-including for unfinished `accepted`, `sending` and `retryable_failed` events.
-Their recoverable ciphertext is cleared. Repeating the same DELETE leaves the
-generation unchanged. Delayed writes and retries must respect the revocation.
+Revocation takes effect atomically. For an active device, an authenticated
+DELETE permanently revokes the device, clears its APNs token and advances its
+token generation once. All associated Pairs become `revoked` and their
+notification policies are disabled. Their unfinished `accepted`, `sending`
+and `retryable_failed` events become `revoked` and their recoverable ciphertext
+is cleared. Repeating the same DELETE leaves the generation unchanged.
+Delayed writes and retries must respect the revocation.
 Already-issued APNs requests or queued notifications can still produce a banner.
 
 DELETE may arrive before a dispatched first POST. For an absent ID, DELETE applies

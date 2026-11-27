@@ -354,8 +354,8 @@ interaction hints must not create two actionable authorities for one request.
 The optional top-level `summary` belongs to this authenticated activity/reminder,
 not `locator`, and follows the [v1 text/privacy bounds](protocol-v1.md#optional-encrypted-message-summary).
 The [v2 summary vector](../testdata/protocol-v2-summary.json) adds coverage without
-changing original golden vectors, envelope versions or AAD. Swift maps the wire
-field to `messageSummary`, separate from its existing structural summary.
+changing original golden vectors, envelope versions or AAD. The `summary` field
+carries a display excerpt separately from the activity's structural summary.
 
 Codex uses this notify's `last-assistant-message` only after root-source admission.
 Claude uses the current prompt cycle's cleaned Stop `last_assistant_message`,
