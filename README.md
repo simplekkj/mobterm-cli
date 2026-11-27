@@ -27,11 +27,8 @@ repositories. See [LICENSE](LICENSE) and [THIRD_PARTY.md](THIRD_PARTY.md).
   [notification compatibility and fixed samples](docs/compatibility.md), and
   [security](docs/security.md). These are separate contracts, not a system-wide
   version upgrade; v1 AAD and compatibility remain supported.
-- **Engineering constraints:** [AGENTS.md](AGENTS.md).
-- **History and provenance:** [dated validation records](docs/validation.md),
-  [Codex P1 measurement evidence](https://github.com/mobterm/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/codex-p1-latency/README.md),
-  [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY.md). Historical PASS
-  results do not establish current runtime, release or phone delivery status.
+- **Contributing and verification:** [contributor guide](CONTRIBUTING.md) and [independent checks](docs/validation.md).
+- **License and attribution:** [MIT license](LICENSE) and [third-party notices](THIRD_PARTY.md).
 
 ## Install
 
@@ -520,7 +517,8 @@ Each job checks the OS/CPU and Go host/target architecture, rejects Rosetta,
 installs/checks tmux, and runs uncached, verbose Go tests and race checks with
 `MOBTERM_REQUIRE_TMUX=1`: a missing tmux fails instead of skipping its live test.
 On Intel macOS, both Go test commands allow 45 minutes per package.
-Each job builds and executes the native binary. One Ubuntu job cross-builds all
+CI checks the public source tree and incoming commits before building installer packages.
+Each native job builds and executes the CLI. One Ubuntu job cross-builds all
 four test packages and uploads them with their checksums. Each native job downloads
 the same artifact for offline installer regression and its native smoke test. This matrix
 does not establish compatibility with other Linux distributions or OS versions.
@@ -620,9 +618,9 @@ Completion reminders and explicit outbox flushes inherit the network command
 budget for capability negotiation and sending. Ordinary Codex tool observations
 persist locally and may launch the bounded dispatcher; it is not a daemon or an
 idle retry scheduler. Its lifecycle is described in
-[compatibility](docs/compatibility.md#codex-p1-approval-and-observation-changes-2026-11-06).
+[compatibility](docs/compatibility.md#codex-approval-and-observation-dispatch).
 The App's generic SSH notification wait is 75 seconds and its setup outer wait is
-90 seconds (`AgentNotificationsSSH.swift` in the App repository). These caller
+90 seconds. These caller
 limits are distinct from the CLI's 125 seconds and may end waiting earlier.
 
 Pairing reports typed network timeouts (including TLS handshake timeouts) as the

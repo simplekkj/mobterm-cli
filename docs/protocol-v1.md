@@ -287,8 +287,7 @@ each await before writing or publishing readiness. All registration callers must
 share this ownership, including pairing and token refresh. Cancellation alone
 does not prevent an already sent request from executing on the server. Owned
 POST retries do not overwrite the existing token. App and API must both support
-this required conditional-write field. The conditional-token field itself needs
-no new migration; the device lifecycle extension below does.
+this required conditional-write field.
 
 A successful POST or GET `sendable:true` is not proof that the current local APNs
 token was uploaded. The App confirms that token only after its PUT succeeds for
@@ -325,22 +324,19 @@ Correctly authenticated POST/GET/token PUT/pair creation for a revoked device
 returns HTTP 410 `device_revoked`. This code is a device-management result only;
 clients must not interpret arbitrary 410 responses as proof of device revocation.
 
-One D1 transaction establishes the irreversible `devices.revoked_at` terminal
-state, clears the APNs token and validity, advances the token generation once,
-revokes all associated pairs and disables their policy, and revokes unfinished
-`accepted`/`sending`/`retryable_failed` events while clearing their envelopes and
-leases. Matching repeated DELETEs do not advance the generation again. All final
-conditional writes, lease acquisition, send authorization and completion paths
-respect the device terminal state. A successful batch with zero matching ownership
-is not a successful revocation. Already-issued APNs HTTP requests or notifications
-in Apple's queue cannot be recalled; a late system banner remains possible.
+An authenticated DELETE permanently revokes the device, clears its APNs token
+and advances its token generation once. All its Pairs lose sending authority,
+including for unfinished `accepted`, `sending` and `retryable_failed` events.
+Their recoverable ciphertext is cleared. Repeating the same DELETE leaves the
+generation unchanged. Delayed writes and retries must respect the revocation.
+Already-issued APNs requests or queued notifications can still produce a banner.
 
 DELETE may arrive before a dispatched first POST. For an absent ID, DELETE applies
 the same first-identity ID/bearer validation, global/hour/day/IP admission rules
-and unique ID/management-hash binding as registration, but inserts a revoked
+and unique ID/bearer binding as registration, but establishes a revoked
 identity. This terminates that first registration attempt; it is not authentication
 of a previously existing entity. A later matching POST returns `device_revoked`.
-If POST wins, DELETE revokes the owned row. A bearer already bound to another ID
+If POST wins, DELETE revokes the owned device. A bearer already bound to another ID
 cannot be rebound. Existing authenticated devices and matching tombstone retries
 retain ordinary management rate limits but are not blocked by live capacity or
 new-identity daily admission exhaustion.
@@ -372,34 +368,28 @@ or duplicate notifications will stop. Original origins are never silently migrat
 
 ### Retention, capacity and mixed versions
 
-Explicitly revoked device rows are permanent authentication tombstones: ID,
-management hash, original environment and necessary timestamps remain, but no
-APNs token. Their pairs retain the original sender hash, installation/device
-binding and revoked state so old senders can reconcile beyond the ordinary Pair
-cleanup window. Events retain the existing TTL. No separate compact endpoint or
-public device enumeration API exists.
+Device revocation is permanent. The original credentials and environment still
+identify the revoked device, even after the ordinary Pair cleanup window. The
+APNs token is cleared. Events retain their existing TTL. There is no public
+device enumeration or compaction endpoint.
 
-Ordinary revoked/expired Pair rows compact after the ordinary cleanup window
-into minimal durable authentication terminals. Original sender hashes,
-installation/owner bindings and policy generation remain; event ciphertext and
-per-retry history do not. Related device management identity is retained for
-terminal retries. Active pairs are not deleted because of token invalidity or
-old device timestamps. Before this upgrade, physically deleted sender hashes
-cannot be reconstructed: a device-authenticated cancellation still completes
-cloud responsibility, while explicit trusted SSH retirement below completes the
-local responsibility without claiming authenticated sender evidence.
+After ordinary Pair revocation or expiry, the original sender can still
+authenticate its terminal status, installation/owner binding and policy
+generation. Event ciphertext and retry history expire. Management retries still
+use the original owner. Token invalidity or an old device timestamp alone does
+not retire an active Pair. Where an older service has already discarded sender
+identity, device-authenticated cancellation can end cloud responsibility;
+explicit trusted SSH retirement ends local responsibility independently.
 
-The recovery extension is additive migration `0008_pair_recovery.sql`. A new
-unknown cancellation identity shares the per-device daily pair-create admission
-(default 40, `PAIR_CREATE_DAILY_LIMIT`), with a permanent 1024 unknown-terminal
-identities/device bound (`409 pair_cancellation_capacity`). Retries of an existing
+A new unknown cancellation identity shares the per-device daily pair-create
+allowance (default 40). Each device has a permanent limit of 1024 unknown
+terminal identities (`409 pair_cancellation_capacity`). Retries of an existing
 Pair/terminal do not consume another new-identity admission; normal request limits
 still apply. Bad management/sender credentials return 401; another device's Pair
-returns `403 pair_mismatch`. A never-created Pair terminal has no sender hash and
-does not authenticate arbitrary senders (the original sender GET remains 401).
+returns `403 pair_mismatch`. A never-created Pair cannot authenticate an arbitrary
+sender (the original sender GET remains 401).
 The original management identity of a revoked device may confirm its terminal,
-but cannot reactivate any Pair. Create/claim conditional writes check cancellation
-inside their final transaction, so delayed requests cannot revive it.
+but cannot reactivate any Pair. A delayed create or claim cannot revive it.
 
 Pair reads and policy writes add `policy_generation` (initially 0). A new App
 passes its last trusted generation as the expected value in PATCH. Successful
@@ -408,18 +398,16 @@ response is the exact committed Pair snapshot. A stale value returns
 `409 policy_generation_conflict`; invalid values return
 `400 invalid_policy_generation` (integer >= 0 and < MAX_SAFE_INTEGER required).
 Only explicit conflict warrants bounded GET/retry with the latest persisted local
-intent; an equal-value GET is never commit evidence. Policy updates and affected
-event retirement share the conditional transaction. Old generation-less PATCH
+intent; an equal-value GET is never commit evidence. The policy update and
+retirement of affected events are atomic. Old generation-less PATCH
 remains accepted and increments generation, but old clients do not gain ordering
 guarantees. New App/old API retains unconfirmed local disabled intent when version
-capability is absent. Deploy migration, compatible API, CLI/user update, then App;
-rollback must retain terminals and generation gates and cannot use an old API
-that ignores them. This order is a plan, not release/deployment authorization.
+capability is absent. Compatible services must continue to honor terminal states and generation checks across upgrades and rollbacks.
 
 #### Pair notification switch
 
 Pair creation, claim, GET and policy receipts expose the top-level boolean
-`notifications_enabled`. The incremental schema defaults existing Pairs to true.
+`notifications_enabled`. Existing Pairs default to true.
 Sending the field in a v1 policy PATCH requires an expected `policy_generation`.
 Omitting it preserves the current gate, including for writes from older Apps.
 The new App commits both base event types as true and retains independent grants
@@ -435,20 +423,15 @@ An off replacement cannot be claimed without proof of the gate. A matching GET
 alone cannot acknowledge a pending local write.
 
 Closing rejects new reminders with `policy_disabled` and retires unfinished
-deliveries for this Pair in the same transaction. Requests already outbound,
+deliveries for this Pair atomically. Requests already outbound,
 notifications accepted by APNs and alerts already displayed cannot be recalled.
-Existing history and unread counts remain available. Deploy the additive schema
-and gate-enforcing Worker before enabling the new App. Existing CLI versions
-can continue sending their original envelopes. Rolling back to a Worker that
-ignores the gate requires stopping delivery first.
+Existing history and unread counts remain available. The App requires an API
+that enforces the new switch. Existing CLI versions can send their original
+envelopes. Delivery must stop before reverting to a service that ignores the gate.
 
-The 10,000 device capacity limits **unrevoked live devices**, not the total table.
-Permanent tombstones consume real storage and are counted separately; they cannot
-be TTL-deleted to reclaim capacity and permit old requests to resurrect identities.
-Existing new-identity admission limits remain. Operational statistics and cleanup
-candidates are available through the API's documented read-only queries/functions,
-not a public listing route. Production orphan counts and storage use need separate
-authorized measurement.
+The service supports 10,000 unrevoked live devices. Revoked identities remain
+permanently retired and do not consume live capacity. New identities remain
+subject to ordinary admission limits.
 
 | Version combination | Behavior |
 | --- | --- |
@@ -457,14 +440,10 @@ authorized measurement.
 | New App/API + old CLI | Whole-device revocation works; the CLI converges on its next existing terminal-state interaction without a mandatory CLI upgrade. |
 | Different signing environment or historical origin | New registration uses the current official origin; old identity revocation uses its exact original origin; no cross-environment rebinding. |
 
-Deployment order is the additive `revoked_at` migration, then an API enforcing
-revocation everywhere, then the new App; CLI protocol/regression updates can ship
-alongside. Once revocation has occurred, **do not roll back to a Worker that ignores
-`revoked_at`**: old token/pair writes would bypass the terminal state. Rollback must
-retain revocation enforcement; do not remove tombstones or reverse the migration.
-This order is documentation, not authorization to deploy, migrate remote D1,
-clean production data, publish a tag or send a real APNs notification. The v1
-envelope, AAD, cryptography and golden vectors remain unchanged.
+Device revocation requires a compatible API before a client can rely on it.
+All subsequent service versions must continue rejecting token and Pair writes
+for revoked identities. The v1 envelope, AAD, cryptography and golden vectors
+are unchanged.
 
 ## Retry identity
 
@@ -498,17 +477,15 @@ delivery is not exactly-once.
 ## Request protection and daily admission budgets
 
 All callers, including scripts, use the same authorization and resource limits.
-Public routing/body validation and native Cloudflare limiters precede D1 access.
-Native limits (IP 300/minute, fixed service key 5000/minute, credential per route
-family 120/minute) are node-local and eventually consistent, not precise global
-quotas. Only Cloudflare's trusted connecting IP is used; shared NAT users share
-that coarse limit. A credential is not proof of an official App installation.
+Preflight limits apply per connecting IP (300/minute), service-wide
+(5000/minute), and per credential and route family (120/minute). These
+limits apply locally and converge over time. They are approximate across the
+service. Users behind the same NAT share the connecting-IP allowance.
+A credential alone cannot identify an official App installation.
 
-Persistent request buckets are charged only after ownership/sending authentication
-(or the new-registration exception). Sending and management credential buckets
-are separate. Existing per-minute/hour and capacity restrictions remain in place.
-New-device registration first checks existing ownership, then fixed global budgets,
-then IP admission and capacity; arbitrary new registration is therefore not free.
+Authenticated request budgets are separate for sending and management.
+New-identity admission can apply before registration completes. New devices
+are subject to service-wide, hourly, daily, IP and capacity limits.
 
 Conservative configurable defaults, per UTC day:
 
@@ -523,24 +500,23 @@ Conservative configurable defaults, per UTC day:
 
 Notification budgets count **valid processing admission attempts**, not unique
 messages, delivery receipts or billable units. After authorization, active/policy,
-envelope and payload validation, existing identical terminal events, live leases
-and retries that are not due return their current state without a daily charge.
-Different content under the same ID remains HTTP 409. Other eligible requests
-charge global → device → pair daily buckets once each, before insertion, lease,
-attempt increment or APNs. Each is an atomic D1 conditional counter; these layers
-are not one all-or-nothing transaction. Earlier charges remain consumed when a
-later bucket rejects, a competing lease wins, or service work fails. Each admitted
-request can attempt APNs at most once; the five-attempt event ceiling remains.
+envelope and payload validation, identical terminal events, deliveries already
+in progress and retries that are not due return their current state without a
+daily charge. Different content under the same ID remains HTTP 409. Each other
+eligible request can consume one admission per applicable daily budget. A later
+rejection, competing delivery or service failure can still consume part of the
+allowance. Each admitted request can attempt APNs at most once. The event
+ceiling is five attempts.
 Owned registration, pair creation and completed-claim retries skip their new
 admission budgets, while ordinary request protection still applies.
 
 Errors use the existing `{ "error": "CODE" }` envelope. Daily budget rejection
 includes positive integer `Retry-After` seconds to the next UTC day (1–86400).
-`rate_limited` retains the persistent bucket's remaining window. Native
-`preflight_rate_limited` returns 429 with a conservative 60 seconds, not an exact
-global recovery time. Missing/failing native bindings return 503
-`rate_limit_unavailable`; invalid budget configuration returns 503
-`budget_configuration_invalid`; both return 60 seconds. Existing APNs 429/503
+`rate_limited` carries the remaining request window.
+`preflight_rate_limited` returns 429 with a conservative 60 seconds.
+If rate protection is unavailable the response is 503 `rate_limit_unavailable`.
+Invalid budget configuration returns 503 `budget_configuration_invalid`.
+Both specify 60 seconds. Existing APNs 429/503
 state/error responses retain their meaning. Daily sending exhaustion does not
 consume the management credential budget or prohibit policy disable/revoke,
 device reads or token updates; those retain separate ordinary abuse protection.
@@ -556,7 +532,7 @@ budget. New clients retain generic fallback for older API errors. No encryption,
 AAD, target, APNs payload or credential authority changes require simultaneous
 upgrades. API/APNs acceptance still does not establish phone delivery/navigation.
 
-## Reliability and strong target additions (round 1 v1.0, 2026-10-21)
+## Reliability and strong target additions
 
 These additions preserve the v1 public envelope and exact AES-GCM AAD above.
 The plaintext remains a **top-level locator**, with optional `agent` restricted to
@@ -668,7 +644,7 @@ The v1 notify/outbox path installs no daemon, cron or listener and does not wake
 an idle host. Current native observation/approval paths may launch a short-lived
 `activity dispatch` child: 12 seconds total, at most 5 seconds of network draining,
 one active and at most one pending successor per config root, no child spawning
-another child. See [the dispatcher contract](compatibility.md#codex-p1-approval-and-observation-changes-2026-11-06).
+another child. See [the dispatcher contract](compatibility.md#codex-approval-and-observation-dispatch).
 The separately enabled [interaction helpers](native-interactions.md) are also
 finite; this is not a blanket prohibition on every detached process.
 
@@ -700,7 +676,7 @@ release large ciphertext; retry metadata and deduplication remain.
 Receipt refresh uses the authorized existing single-event GET. A missing record
 means `service_record_unavailable`; only after the known original expiry + 24h
 may the CLI say `service_retention_may_have_elapsed`. Neither means delivered,
-and neither causes a new event or re-POST. API/Cron recovery remains independent
+and neither causes a new event or re-POST. Service recovery continues independently
 of the CLI after handoff. APNs acceptance, local receipt and user viewing are
 separate stages; no phone delivery or exactly-once guarantee follows.
 
@@ -769,19 +745,19 @@ requires both CLI and App: an old App retains only its original navigation check
 
 ### API, APNs and rollout compatibility
 
-The API conditionally persists the original envelope before announcing per-event
-handoff. Old NULL-envelope rows do not claim handoff or auto-recover; a same-hash,
-nonterminal retry may fill the original envelope without resetting state/attempts
-or expiry. Existing once-per-minute Cron resumes accepted/due/released-lease work;
-HTTP and Cron share leases, quota admission and final authorization. Terminal
-metadata remains until original expiry + 24h; recoverable ciphertext is cleared.
-New API response fields do not require a new envelope or access permission.
+The API announces per-event handoff only after it durably holds the original
+envelope. A legacy event missing that envelope cannot claim handoff or recover
+automatically. A same-content retry of a nonterminal event can restore it with
+the original state, attempt count and expiry. After handoff the service resumes
+eligible deliveries independently, subject to the same quotas and authorization.
+Terminal metadata remains until original expiry plus 24 hours. Recoverable
+ciphertext is cleared. Clients need no new envelope or access permission.
 
 APNs keeps original generic/test loc-keys and encrypted envelope, adds a safe
 `title:"MobTerm"`, `mutable-content:1`, and a per-pair/event 64-hex collapse ID: SHA-256 of UTF-8
 `mobterm-apns-v1\nPAIR_ID\nEVENT_ID` with no trailing newline.
-Different events never collapse by target. The shared HTTP/retry/Cron builder
-optionally adds `aps["thread-id"] = "mobterm-pair-v1:" + pair_id`. All three event
+Different events never collapse by target. Initial sends, retries and recovered
+deliveries may add `aps["thread-id"] = "mobterm-pair-v1:" + pair_id`. All three event
 kinds on the same Pair share that display group; another Pair or re-pairing uses a
 new group. The opaque Pair ID already exists in the envelope and is not a secret;
 no connection name, account, address or target is included. Grouping is never an
@@ -810,17 +786,12 @@ device-decrypted; Agent and separately permitted local connection name are the
 only preview context. A processing-time locked key, missing group, timeout or
 error falls back to original safe content while retaining the system thread ID.
 
-The optional grouping increment requires no new migration, CLI runtime change,
-re-pairing or coordinated App/API/CLI upgrade. New App settings work with an old
-API; system grouping requires a separately authorized new API deployment. A
-rollback of grouping must still preserve existing handoff/recovery obligations.
-
-The earlier durable handoff release order remains separately authorized: additive
-migration/API first, then App, then CLI. API rollback must stop new handoff and drain/explicitly terminate
-outstanding responsibility, or retain the recovery implementation. Do not roll
-back responsibility into a service that cannot recover it. No production release,
-remote migration, Apple group creation or APNs operation is authorized by this
-local implementation or by source commit/push.
+Optional grouping requires no CLI update, re-pairing or coordinated upgrade.
+New App settings work with an old API; system grouping requires an API that
+supplies the group. A client can transfer responsibility only to a service that
+supports durable handoff. To withdraw that support, stop accepting new handoffs
+and drain or explicitly terminate outstanding deliveries, or continue recovery
+until those obligations end.
 
 Target commands on failure return nonzero with
 `{v:1,ok:false,error:CODE}`. Codes are `target_upgrade_required` (old tmux proof),

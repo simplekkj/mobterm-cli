@@ -2,14 +2,13 @@
 
 ## Reading scope
 
-The table records the November 23 fixed notification references. Earlier samples
-and their original execution results remain in the validation ledger. “Current
-reference” identifies a reproducible sample. Each action has its own runtime checks.
+The table records fixed notification references as of November 23, 2026.
+Each action also checks its runtime capabilities.
 For current v2 observation and legacy approval behavior, see
 [negotiated state and approval](#negotiated-state-and-approval-2026-10-31); for
 new request/answer actions, use the per-action minimum versions and runtime schemas in
 [native interactions](native-interactions.md). Codex completion remains native
-`notify`; the hooks-only G0 requirement remains blocked as recorded below.
+`notify`. A Stop hook can request that the same turn continue.
 
 ## Notification version policy and fixed samples
 
@@ -38,9 +37,7 @@ and [Pi extension API](https://github.com/earendil-works/pi/blob/faac585884ae2c0
 Claude's public types describe the Mod contract. Its engine is distributed as a binary.
 OpenCode publishes separate V1 and V2 lines. Pi's event-only extension uses
 `agent_settled`, `session_shutdown` and the void-returning `sendUserMessage`.
-The read-only render result does not affect this extension. The previous
-0.163.0 / 2.1.301 / 2.1.0 / 1.3.0 results retain their original versions in
-[validation](validation.md). See the [November host runs](validation.md#2026-11-23-agent-tui-compatibility-round-1-v10) for the installed packages and observed results.
+The read-only render result does not affect this extension.
 
 The pinned test samples live in `testdata/compatibility-samples.json`. Go tests
 check minimum/current against the production descriptor in [internal/cli/compatibility.go](../internal/cli/compatibility.go) and
@@ -236,14 +233,10 @@ Earlier fixed release references (2026-10-16):
 They are pinned references, not a production ceiling. No claim is made that every
 intermediate release was executed. Source/package evidence, synthetic encrypted
 regressions, real configuration loading, native runtime events and actual phone
-delivery are distinct evidence levels; see the appended task record in
-[validation.md](validation.md) for commands and actual results.
-
-The local macOS Intel machine terminated both official Codex 0.100.0 npm and
-GitHub tar executables with signal 9 before version/config loading. This is a real
-failed execution, not a passing configuration test. No system security setting
-was changed. Linux endpoint CI is required to establish its real configuration
-path; the local failure and final CI result are recorded separately in validation.
+delivery measure different behaviors. The [verification guide](validation.md)
+lists the tests for each layer. Codex 0.100.0 can be rejected by macOS before
+version or configuration loading. Use the Linux minimum sample for its real
+configuration path.
 
 For a new validation, use the [platform-specific real test command](../README.md#build-and-verify).
 The macOS configuration result covers the actual accepted package, with its
@@ -459,7 +452,7 @@ Agent configuration or restart active sessions automatically.
 
 ## Reliability additions — 2026-10-21
 
-See the normative [v1 reliability additions](protocol-v1.md#reliability-and-strong-target-additions-round-1-v10-2026-10-21).
+See the normative [v1 reliability additions](protocol-v1.md#reliability-and-strong-target-additions).
 No Agent version minima, adapter revision 1, upstream event protocol or notifier
 exit semantics changed. Disk health now checks each actual entry/condition and
 is distinct from loaded/restarted state and test-notification delivery. Safe
@@ -469,7 +462,7 @@ ownership require review, never wholesale config replacement.
 | Combination | Behavior |
 | --- | --- |
 | New CLI + old API | 202 without per-event handoff retains local pending ownership; next event/user flush can retry original envelope. |
-| Old CLI + new API | Original v1 envelope may be durably handed off and recovered by Cron. |
+| Old CLI + new API | The service can accept durable handoff of the original v1 envelope and recover delivery independently. |
 | New App + old CLI / old tmux notification | Generic/history/manual connection remains; no automatic strong tmux Jump or precise foreground suppression. |
 | Old App + new CLI | Reads top-level v1 fields; original navigation guarantees only, not new respawn protection/movement. |
 | New App + old API | Foreground/tap import works; missing mutable-content cannot promise NSE preview/spool execution. |
@@ -544,12 +537,11 @@ Pi non-aborted settlement proves the user's task succeeded.
 Adapter revision 1 input remains accepted by the original v1 path. Revision 2
 requires explicit run/instance/occurrence metadata and keeps active tool identity.
 Host-loaded version, installed assets, restart, native trust, App/API capability
-and per-Agent approval opt-in are distinct facts. No test below installs hooks in
-real user config or authorizes a model request. See current validation for actual
-local fixture and host execution evidence, rather than assuming version probing
-proves an event or approval was consumed.
+and per-Agent approval opt-in are distinct facts. The [verification guide](validation.md)
+covers local fixtures and isolated host loading. A version probe alone cannot
+establish consumption of an event or approval.
 
-Official sources read this round: [Codex Hooks](https://learn.chatgpt.com/docs/hooks),
+Upstream references include [Codex Hooks](https://learn.chatgpt.com/docs/hooks),
 [Claude Hooks](https://code.claude.com/docs/en/hooks),
 [OpenCode fixed client types](https://github.com/anomalyco/opencode/blob/63f7ceecbed2d7d9a627518d935dd963b9d4ac9f/packages/client/src/promise/generated/types.ts),
 [Pi fixed extension types](https://github.com/earendil-works/pi/blob/35dfa757378bd7a8570670e99c2687bdd1039a06/packages/coding-agent/src/core/extensions/types.ts).
@@ -573,7 +565,7 @@ and primary source links are recorded in [native interactions](native-interactio
 Notifications keep their existing minimum versions. An installed integration is
 not proof that a running TUI has loaded it or that a real model consumed an answer.
 
-### Codex P1 approval and observation changes (2026-11-06)
+### Codex approval and observation dispatch
 
 Codex `PermissionRequest` is a pre-decision observation. It now contributes only
 ordinary `tool_pending` state until an explicitly enabled MobTerm approval Hook
@@ -620,25 +612,16 @@ Contended run-store writers join the kernel lock queue instead of periodically
 polling while newer writers reacquire it. The caller's deadline is unchanged;
 an expired waiter can only release/close a subsequently acquired lock, never
 perform a late state write. No second activity queue is introduced.
-This is not an identity/target cache. Target validation is not cached or
-weakened. [Measurement evidence](https://github.com/mobterm/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/codex-p1-latency/README.md) separates controlled
-fixtures from real terminal/device evidence.
-
-G0 remains blocked: Stop hooks can request continuation of the same turn before
-legacy notify runs. This round adds no Stop completion mapping and performs no
-P0 configuration migration. `notify` and its old reader/third-party chain remain
-in place. Completing these two independent P1 changes does not complete the
-hooks-only requirement or authorize a completion-source switch.
+Target validation still runs on every dispatch. Codex Stop hooks can request
+continuation of the same turn before native `notify` runs. Completion therefore
+continues to use `notify` and the existing third-party notifier chain.
 
 ## Root attribution and response excerpts — 2026-11-17
 
-The notification version gate above is unchanged; passing it is not proof of
-support for every metadata format. This round checks Codex 0.100.0 session metadata
-and the fixed 0.169.0 source contract (commit
-`d32063f96c2dff1dc96af839b3952abb6acfeda4`). Codex native `notify` remains the sole
-completion source; Stop is not promoted and the deferred hooks-only migration is
-not resumed. A hidden title thread is a supported explanation of the reported
-incident, not a proven identity of the unretained original callback.
+The notification version gate does not establish support for every metadata
+format. The fixed references are Codex 0.100.0 session metadata and the
+0.169.0 source contract (commit `d32063f96c2dff1dc96af839b3952abb6acfeda4`).
+Native `notify` remains the sole Codex completion source.
 
 Both legacy notify and rich observation gate MobTerm completion before creating a
 run, snapshot, reminder or outbox. Explicit child `agent_id` prevents root prompt,
@@ -697,9 +680,8 @@ When both the recorded prompt and a subsequent event provide native `prompt_id`,
 conflicting IDs reject delayed old Stop/idle. Missing optional IDs retain the
 existing prompt-cycle and (rich path) Stop gate;
 unknown historical event formats cannot be claimed as universally validated.
-No evidence in this task establishes that Claude/OpenCode/Pi reproduced the original
-Codex incident. Missing safe, request-bound short natural-language titles on waits
-continues to show only the authenticated waiting status, without serializing tool
+Waits without safe, request-bound short natural-language titles show only the
+authenticated waiting status, without serializing tool
 inputs, approval parameters or full native forms.
 
 The cross-version encrypted-summary and controlled asset activation matrix is in

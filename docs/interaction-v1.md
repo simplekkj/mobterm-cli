@@ -201,9 +201,9 @@ advance shared generation. Read-only unsupported hints never bypass the ordinary
 needs_input notification policy. Revocation/disable invalidates not-yet-delivered
 actions; already delivered actions cannot be recalled.
 
-Upgrade design: compatible API migration/code, then App/CLI, then explicit user
-opt-in/reload through the native agent. Rollback first disables new permissions,
-preserving receipts and tombstones. This document does not authorize deployment.
+Enabling an action requires compatible service, App and CLI capabilities,
+explicit user opt-in and reloading the native Agent. On rollback disable the
+new permissions and preserve existing receipts and tombstones.
 
 A status reply may omit request_json even while pending. It cannot be used to
 render or sign a fresh answer; the user must explicitly inspect. The local-only

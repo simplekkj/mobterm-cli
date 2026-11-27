@@ -18,7 +18,7 @@ each successful change. Before constructing a new envelope, the Pair sender read
 and `approvals:{codex,claude,opencode,pi:false}`. Missing/malformed receipts or
 network failure are unavailable, not permission to downgrade. An explicit old-API
 404 or a complete disabled receipt permits v1 selection before admission. API
-admission/delivery checks the current D1 capability generation again.
+admission and delivery check the current capability generation again.
 
 `PATCH /v2/pairs/:pair/policy` is management-only and requires all policy and
 approval fields plus the expected `policy_generation`. Abnormal end reminders
@@ -201,7 +201,7 @@ rejection. ACK/removal tombstones survive eight days plus cleanup lag. Local ACK
 intent and local read/delete state must persist in one transaction before UI and
 badge update. Reads, deletes and eviction do not decide an approval.
 
-Migration 0010 adds nullable `removal_reason` to inbox rows. Pair revocation
+Inbox items expose a nullable `removal_reason`. Pair revocation
 clears cloud ciphertext and operation authority, but reports `removal_reason:
 "revoked"` to semantics-2 clients. Already authenticated local history remains
 readable for its original retention period; its unread identity moves from the
@@ -238,7 +238,7 @@ requests, disabled policy, capacity exhaustion, timeout and cancellation return
 no decision so native terminal flow resumes. Disabled hooks persist observations
 and may start a short-lived `activity dispatch` child, then return without
 waiting for HTTP. Its 12-second total budget includes at most 5 seconds of network
-draining; see [dispatcher lifecycle](compatibility.md#codex-p1-approval-and-observation-changes-2026-11-06). Observation hooks
+draining; see [dispatcher lifecycle](compatibility.md#codex-approval-and-observation-dispatch). Observation hooks
 use a two-second command budget (Codex Interrupt host budget is three seconds).
 
 OpenCode keeps one finite child per verified pending request, at most eight, with
@@ -335,12 +335,10 @@ replay.
 
 Fixtures: `testdata/protocol-v2.json` authenticates all v2 indexing metadata;
 `testdata/approval-v2.json` includes canonical operation bytes, digest and proof.
-The API and App copy these exact fixtures. Existing v1 vectors remain untouched.
-Future authorized rollout: compatible API/migration, App, CLI. New App with old
-API retains local history/details/badge correction without cloud recovery;
-old CLI stays v1; old adapter revisions remain accepted with limited capabilities.
-No deployment, remote migration, real APNs, server hook installation or real
-device testing is implied by local checks.
+The same vectors apply to every implementation. Existing v1 vectors remain
+unchanged. A new App with an old API retains local history, details and badge
+correction without cloud recovery. Old CLIs stay on v1. Old adapter revisions
+remain accepted with limited capabilities.
 
 ### Optional remote interaction reference
 

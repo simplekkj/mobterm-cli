@@ -69,5 +69,4 @@ UTF-8 data remain intact on the wire.
 The [cross-language fixture](../testdata/quick-command-result-v1.json)
 contains public synthetic key material, expected AAD, receipt and decoded
 payload. It exercises alternating streams, binary bytes, truncation and a
-nonzero exit. See the [validation record](validation.md) for the scope of
-executed checks.
+nonzero exit. See the [verification guide](validation.md) to run the fixture tests.
