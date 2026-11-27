@@ -17,7 +17,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO = "https://github.com/simplekkj/mobterm-cli"
+REPO = "https://github.com/mobterm/mobterm-cli"
 VERSION = "v1.2.3"  # Local fixture, never a published-version claim.
 PAYLOAD = b'#!/bin/sh\necho "installer must not execute me" >&2\nexit 99\n'
 DIST = None
@@ -26,7 +26,7 @@ MOCK_CURL = r'''
 import os, pathlib, shutil, sys
 args = sys.argv[1:]
 url = args[-1]
-repo = "https://github.com/simplekkj/mobterm-cli"
+repo = "https://github.com/mobterm/mobterm-cli"
 with open(os.environ["REQUESTS"], "a") as log:
     log.write(url + "\n")
 assert args[0] == "-q" and "-fsSL" in args
@@ -225,7 +225,7 @@ class InstallerTests(unittest.TestCase):
     def test_latest_redirect_validation(self):
         self.old_binary()
         for url in (REPO + "/releases/latest", REPO + "/releases/tag/v1.2.3-rc1",
-                    "http://github.com/simplekkj/mobterm-cli/releases/tag/" + VERSION,
+                    "http://github.com/mobterm/mobterm-cli/releases/tag/" + VERSION,
                     "https://github.com/other/mobterm-cli/releases/tag/" + VERSION,
                     REPO + "/releases/tag/" + VERSION + "?x=1",
                     REPO + "/releases/tag/" + VERSION + "/../../other"):

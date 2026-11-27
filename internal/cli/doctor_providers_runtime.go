@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/simplekkj/mobterm-cli/internal/doctor"
+	"github.com/mobterm/mobterm-cli/internal/doctor"
 )
 
 var errDoctorLimit = errors.New("diagnostic snapshot limit")

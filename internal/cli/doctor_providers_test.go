@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/simplekkj/mobterm-cli/internal/doctor"
+	"github.com/mobterm/mobterm-cli/internal/doctor"
 )
 
 func runProviderReport(t *testing.T, s Store, a API, o doctorOptions) doctor.Report {

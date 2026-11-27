@@ -672,12 +672,12 @@ Executed checks:
 
 The first pushed source, `bb0875ef1ab846401f8a7db3f4ce86f1586f328b`, exposed an
 affected Linux black-box fixture in
-[CI run 40344596591](https://github.com/simplekkj/mobterm-cli/actions/runs/40344596591).
+[CI run 40344596591](https://github.com/mobterm/mobterm-cli/actions/runs/40344596591).
 `test_setup_https_repeat_failure_and_credentials_retained_on_hook_removal`
 failed at the single-pair status call with exit 1 / `pair_status_failed`. Its
 HTTPS Handler returned active plus installation identity but omitted `pair_id`;
 the actual API `pairState` has always returned both identities. The preceding
-base's [CI run 39908988546](https://github.com/simplekkj/mobterm-cli/actions/runs/39908988546)
+base's [CI run 39908988546](https://github.com/mobterm/mobterm-cli/actions/runs/39908988546)
 passed because the old CLI synthesized the requested pair ID instead of checking
 the API value. This was an affected test fixture, not evidence that the real API
 omits the field. The fixture now returns `pair_id` and explicitly checks pair,
@@ -1106,7 +1106,7 @@ repeat unrelated local installer/upgrade tests outside the required Go suite.
 The first implementation commit is
 `a1d676fdef3aee7cf15044f25e6b4448606a7e34`. Its Linux minimum/current
 endpoint jobs passed in run
-[38879959117](https://github.com/simplekkj/mobterm-cli/actions/runs/38879959117).
+[38879959117](https://github.com/mobterm/mobterm-cli/actions/runs/38879959117).
 Because the local Codex 0.100.0 macOS launch failure remained unresolved, one
 focused native macOS Intel minimum job was added alongside those two Linux
 endpoint jobs. It runs the same ten real configuration checks with
@@ -1119,7 +1119,7 @@ reading the actual final-commit CI result.
 ### Native minimum probe-budget correction
 
 The macOS Intel minimum follow-up in
-[run 38880398633](https://github.com/simplekkj/mobterm-cli/actions/runs/38880398633)
+[run 38880398633](https://github.com/mobterm/mobterm-cli/actions/runs/38880398633)
 exposed an actual failure: one Claude 2.0.36 hook-install probe returned
 `probe_failed`. The native configuration-load case and the other nine-case
 paths passed. The failure occurred close to the three-second probe deadline;
@@ -1340,7 +1340,7 @@ notification display/tap, live APNs delivery, user SSH/Mosh/Herdr network end-to
 navigation. Existing local target and crypto tests are distinct evidence. Pi
 `needs_input:false` and OpenCode's visible-root-family-only scope are intentional.
 The latest official CLI Release checked during delivery is
-[v0.1.4](https://github.com/simplekkj/mobterm-cli/releases/tag/v0.1.4); it does not
+[v0.1.4](https://github.com/mobterm/mobterm-cli/releases/tag/v0.1.4); it does not
 contain this task. Commit/push does not publish a Release, and the App updater
 can therefore still install a CLI without these new management capabilities.
 
@@ -1851,7 +1851,7 @@ hint ownership, Claude/OpenCode native schema and Hook migration, MCP/legacy
 approval scope, and the four Codex queue groups. No data races were reported.
 Final `go vet ./...`, `gofmt -l .` (empty) and `git diff --check`: PASS.
 Reviewable sanitized output and the exact focused selector are recorded in
-[delivery evidence](https://github.com/simplekkj/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/interaction-v1.txt). No full race PASS is claimed;
+[delivery evidence](https://github.com/mobterm/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/interaction-v1.txt). No full race PASS is claimed;
 the original full-suite timing failures and the isolated successful rerun remain
 part of the evidence above.
 
@@ -1927,7 +1927,7 @@ Final complete race check, no Xcode work: `go test -race -timeout 20m ./...`
 for this round, unlike the preserved first-round full-race failures. No code,
 assertion or per-operation budget changed between the serial ordinary and race
 runs. Final production and tests are frozen; only these validation facts and
-[portable sanitized output](https://github.com/simplekkj/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/interaction-r2.txt) were appended afterward.
+[portable sanitized output](https://github.com/mobterm/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/interaction-r2.txt) were appended afterward.
 
 R1–R5 task changes now have no unresolved related actual failure. API remained
 read-only/clean; App's unrelated Binding/Pairing baseline failures are documented
@@ -1954,7 +1954,7 @@ that consumer and API notification-v2's independent revisioned state path were
 read. App/API received no task changes, tests or deployments.
 
 Environment: macOS 15.8.1 (24H32), Intel Core i7-8569U, x86_64, Go 1.27.1
-(darwin/amd64). [Raw subprocess measurements and limitations](https://github.com/simplekkj/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/codex-p1-latency/README.md)
+(darwin/amd64). [Raw subprocess measurements and limitations](https://github.com/mobterm/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/codex-p1-latency/README.md)
 record baseline/after build fingerprints, sample counts, percentiles, synchronous
 HTTP, durable receipt and sampled worker/target metrics. Counts from fixtures
 are not real Codex/native approval or API/APNs delivery evidence. No real Herdr
@@ -2020,7 +2020,7 @@ that Codex fixture to `tool_pending`; Claude/OpenCode assertions remain intact.
 The measured Go-source manifest still exactly matches the working tree; only
 this expected-result fixture and documentation changed after measurement.
 A fresh full ordinary/vet/race sequence follows, with the failed initial record
-preserved in [checks-initial](https://github.com/simplekkj/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/codex-p1-checks-initial.json).
+preserved in [checks-initial](https://github.com/mobterm/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/codex-p1-checks-initial.json).
 
 Final full-matrix measurement: 3,080 actual CLI calls, including 2,920 ordinary
 Pre/Post observations; every ordinary observation was immediately durable, emitted
@@ -2037,7 +2037,7 @@ Final ordinary suite: `go test -json -timeout 20m ./...` PASS, 465.984s, 742 tes
 items passed, no failures or skips. `go vet ./...` PASS, 0.520s. JSON output and a
 20-minute suite ceiling only improve traceability; no per-operation test or Hook
 budget was relaxed. Portable command results are in
-[checks](https://github.com/simplekkj/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/codex-p1-checks.json). Full race results follow.
+[checks](https://github.com/mobterm/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/codex-p1-checks.json). Full race results follow.
 
 Final race suite: `go test -race -json -timeout 20m ./...` PASS, 571.214s, 742
 items passed, no failures, skips or data race report. `test -z "$(gofmt -l .)"`
@@ -2074,7 +2074,7 @@ is P1-A, P1-B and R1. The existing notify completion source remains in use.
 G0 remains a contract limitation, but no longer blocks this adjusted scope.
 
 The earlier local PASS does not supersede the subsequent
-[macos-26-intel race-step failure](https://github.com/simplekkj/mobterm-cli/actions/runs/42195870502/job/127818867353).
+[macos-26-intel race-step failure](https://github.com/mobterm/mobterm-cli/actions/runs/42195870502/job/127818867353).
 That SHA's CI finished with 10 successful jobs and one failed job.
 `TestInteractionHeldDispatchNeverReplays` returned after its native waiter,
 while the independent `publishActivity` goroutine could still write outbox

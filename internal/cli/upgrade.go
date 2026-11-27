@@ -24,7 +24,7 @@ import (
 
 var releaseVersion = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 
-const releaseRepo = "simplekkj/mobterm-cli"
+const releaseRepo = "mobterm/mobterm-cli"
 
 func trustedReleaseURL(raw string) bool {
 	u, e := url.Parse(raw)

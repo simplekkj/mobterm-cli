@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/simplekkj/mobterm-cli/internal/doctor"
+	"github.com/mobterm/mobterm-cli/internal/doctor"
 )
 
 func TestDoctorOfflineNoInitializationAndProtocol(t *testing.T) {

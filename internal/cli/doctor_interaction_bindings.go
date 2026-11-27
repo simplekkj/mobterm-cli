@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/simplekkj/mobterm-cli/internal/doctor"
+	"github.com/mobterm/mobterm-cli/internal/doctor"
 )
 
 // Deliberately project only attribution, deadlines, durable states and process

@@ -13,7 +13,7 @@ func TestHelpTopics(t *testing.T) {
 		{nil, []string{"Common commands", "App protocol", "Agent callbacks (automatic)", "mobterm-cli <command> --help"}},
 		{[]string{"hooks"}, []string{"Subcommands", "install", "uninstall", "mobterm-cli hooks install --help"}},
 		{[]string{"hooks", "install"}, []string{"--agent NAME", "pi", "mobterm-cli hooks install --agent codex", "--plain"}},
-		{[]string{"upgrade"}, []string{"--version TAG", "vX.Y.Z", "--json", "--progress=MODE", "https://github.com/simplekkj/mobterm-cli/releases"}},
+		{[]string{"upgrade"}, []string{"--version TAG", "vX.Y.Z", "--json", "--progress=MODE", "https://github.com/mobterm/mobterm-cli/releases"}},
 		{[]string{"status"}, []string{"status --installation-json [--read-only]", "status --agents-json"}},
 		{[]string{"pairs", "retire"}, []string{"--stdin-frame --json", "length-prefixed", "machine-readable"}},
 		{[]string{"target", "resolve"}, []string{"--stdin-frame [--read-only]", "existing state"}},
@@ -50,7 +50,7 @@ func TestHelpNarrowLayout(t *testing.T) {
 	if !renderHelp(&text, h.caps, []string{"upgrade"}) {
 		t.Fatal("missing upgrade help")
 	}
-	url := "https://github.com/simplekkj/mobterm-cli/releases"
+	url := "https://github.com/mobterm/mobterm-cli/releases"
 	for _, line := range strings.Split(text.String(), "\n") {
 		if cellWidth(line) > h.caps.Width && line != "  "+url {
 			t.Errorf("help exceeds %d columns: %q", h.caps.Width, line)

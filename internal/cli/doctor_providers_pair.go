@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/simplekkj/mobterm-cli/internal/doctor"
+	"github.com/mobterm/mobterm-cli/internal/doctor"
 )
 
 type doctorCatalog struct {

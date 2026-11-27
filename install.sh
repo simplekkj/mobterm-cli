@@ -42,7 +42,7 @@ esac
 case ${HOME:-} in /*) ;; *) fail 'HOME must be an absolute directory path.' ;; esac
 case ${TMPDIR:-/tmp} in /*) ;; *) fail 'TMPDIR must be an absolute directory path.' ;; esac
 
-repo=https://github.com/simplekkj/mobterm-cli
+repo=https://github.com/mobterm/mobterm-cli
 if [ -z "$version" ]; then
     # GitHub's latest endpoint excludes draft and prerelease Releases. Read only
     # the effective URL, not HTML/JSON or shell code from a response body.

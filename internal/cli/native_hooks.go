@@ -13,7 +13,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/simplekkj/mobterm-cli/adapters"
+	"github.com/mobterm/mobterm-cli/adapters"
 )
 
 const nativeAdapterRevision = 6

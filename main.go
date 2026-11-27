@@ -1,6 +1,6 @@
 package main
 
-import "github.com/simplekkj/mobterm-cli/internal/cli"
+import "github.com/mobterm/mobterm-cli/internal/cli"
 
 var version = "dev"
 var commit = "unknown"

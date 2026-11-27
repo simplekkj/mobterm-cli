@@ -29,7 +29,7 @@ repositories. See [LICENSE](LICENSE) and [THIRD_PARTY.md](THIRD_PARTY.md).
   version upgrade; v1 AAD and compatibility remain supported.
 - **Engineering constraints:** [AGENTS.md](AGENTS.md).
 - **History and provenance:** [dated validation records](docs/validation.md),
-  [Codex P1 measurement evidence](https://github.com/simplekkj/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/codex-p1-latency/README.md),
+  [Codex P1 measurement evidence](https://github.com/mobterm/mobterm-cli/blob/67ba0a446c1e524b9d686838878b9aa43905f72a/docs/evidence/codex-p1-latency/README.md),
   [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY.md). Historical PASS
   results do not establish current runtime, release or phone delivery status.
 
@@ -38,14 +38,16 @@ repositories. See [LICENSE](LICENSE) and [THIRD_PARTY.md](THIRD_PARTY.md).
 Install the latest published stable Release (no Go, jq or sudo required):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/simplekkj/mobterm-cli/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/mobterm/mobterm-cli/main/install.sh | sh
 ```
 
 Or pin an **existing** stable Release, replacing `vX.Y.Z` with its exact tag:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/simplekkj/mobterm-cli/main/install.sh | sh -s -- --version vX.Y.Z
+curl -fsSL https://raw.githubusercontent.com/mobterm/mobterm-cli/main/install.sh | sh -s -- --version vX.Y.Z
 ```
+
+Use the explicit-tag command above if an older App installer or `mobterm-cli upgrade` rejects the release URL after the repository transfer. Run it on the host where the CLI is installed.
 
 The script detects Linux/macOS and amd64/arm64, downloads the matching archive
 and `checksums.txt` from the same tag, verifies SHA-256 and safe archive entries,
@@ -96,7 +98,7 @@ saved Mobterm App connection as described below. For later explicit upgrades,
 use `mobterm-cli upgrade --version vX.Y.Z` (see [Upgrade](#upgrade)).
 
 For manual installation, stable tags produce these assets at
-[GitHub Releases](https://github.com/simplekkj/mobterm-cli/releases):
+[GitHub Releases](https://github.com/mobterm/mobterm-cli/releases):
 
 | System | Architecture | Asset |
 | --- | --- | --- |

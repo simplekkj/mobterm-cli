@@ -1,4 +1,4 @@
-module github.com/simplekkj/mobterm-cli
+module github.com/mobterm/mobterm-cli
 
 go 1.26.0
 

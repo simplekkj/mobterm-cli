@@ -16,7 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/simplekkj/mobterm-cli/adapters"
+	"github.com/mobterm/mobterm-cli/adapters"
 )
 
 type stableVersion [3]uint64
