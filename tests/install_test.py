@@ -101,6 +101,8 @@ if redirect:
     status = 302
     body = b""
 destination.write_bytes(body)
+if kind == env.get("OVERRIDE_KIND") and "CURL_EXIT" in env:
+    sys.exit(int(env["CURL_EXIT"]))
 print(status)
 print(redirect)
 '''
@@ -328,8 +330,7 @@ class InstallerTests(unittest.TestCase):
                     b'{"id":"1416491919","full_name":"example-org/renamed-cli"}',
                     b'{"id":', b'{"nested":{"id":10}, "id": }',
                     b'[]', b'{"oops":"\\u0xx0"}', b'{"bad":"\xff"}',
-                    b'{"id":1416491919,"full_name":"example-org/renamed-cli"}\x00extra',
-                    b" " * 262145):
+                    b'{"id":1416491919,"full_name":"example-org/renamed-cli"}\x00extra'):
             with self.subTest(raw=raw[:60]):
                 self.override("locator", raw)
                 self.assert_marker("before_replace", "metadata")
@@ -340,6 +341,17 @@ class InstallerTests(unittest.TestCase):
         self.env["REUSED"] = "1"
         self.old_binary()
         self.assert_marker("before_replace", "source_mismatch")
+
+    def test_download_size_failure_codes(self):
+        self.old_binary()
+        for kind, limit, code in (("locator", 262144, "metadata"), ("checksums.txt", 16384, "integrity")):
+            for count, exit_code, expected in (
+                    (limit + 1, 0, code), (2 * limit + 1, 23, code),
+                    (0, 63, code), (limit, 23, "network")):
+                with self.subTest(kind=kind, count=count, exit_code=exit_code):
+                    self.override(kind, b" " * count)
+                    self.env["CURL_EXIT"] = str(exit_code)
+                    self.assert_marker("before_replace", expected)
 
     def test_release_assets_and_digests(self):
         self.old_binary()

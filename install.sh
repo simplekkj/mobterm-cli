@@ -138,27 +138,24 @@ fetch() {
         code=network
         remaining=$((deadline - $(date +%s)))
         [ "$remaining" -gt 0 ] || fail 'GitHub request timed out.'
-        # Also cap the output file on curl versions whose --max-filesize only
-        # handles known Content-Length. Use the measured size before parsing.
-        if (ulimit -f "$(( (limit + 511) / 512 ))" &&
+        # Older curl versions need a file cap for responses of unknown length.
+        # Leave room for an excess byte so a partial write at the hard limit
+        # is distinguishable from an interrupted, in-budget download.
+        curl_status=0
+        (ulimit -f "$((limit / 512 + 1))" &&
             exec curl -q -s --globoff --proto '=https' --connect-timeout 15 \
                 --max-time "$remaining" --max-filesize "$limit" \
                 -H "Accept: $accept" -D "$work/headers" -o "$output" \
-                -w '%{http_code}\n%{redirect_url}\n' -- "$url") > "$work/response" 2>/dev/null; then
-            :
-        else
-            curl_status=$?
-            case $curl_status in
-                63) case $kind in asset) code=integrity ;; *) code=metadata ;; esac
-                    fail 'GitHub response exceeds the size limit.' ;;
-                *) fail 'Cannot complete GitHub request.' ;;
-            esac
+                -w '%{http_code}\n%{redirect_url}\n' -- "$url") > "$work/response" 2>/dev/null || curl_status=$?
+        size=0
+        if [ -f "$output" ]; then
+            size=$(wc -c < "$output") || fail 'Cannot read downloaded file.'
         fi
-        size=$(wc -c < "$output") || fail 'Cannot read downloaded file.'
-        if [ "$size" -gt "$limit" ]; then
+        if [ "$curl_status" = 63 ] || [ "$size" -gt "$limit" ]; then
             case $kind in asset) code=integrity ;; *) code=metadata ;; esac
             fail 'GitHub response exceeds the size limit.'
         fi
+        [ "$curl_status" = 0 ] || fail 'Cannot complete GitHub request.'
         {
             IFS= read -r status && IFS= read -r redirect || fail 'Invalid GitHub response.'
             if IFS= read -r extra; then code=source_mismatch; fail 'Invalid redirect.'; fi
