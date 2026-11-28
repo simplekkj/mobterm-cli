@@ -99,12 +99,6 @@ no CLI diagnostic file and no change to stdout JSON. HTTP error responses retain
 status and Retry-After even when their body is unreadable, using a fixed fallback
 code instead of response content.
 
-Upgrades trust the public project's GitHub release account and HTTPS release
-assets, not arbitrary mirrors or script URLs. SHA-256 verifies integrity against
-that same release. This is not an independent publisher signature. A compromised
-publisher account remains a supply-chain risk. macOS signing/notarization is not
-claimed.
-
 New tmux occupant proofs hash OS boot identity, pane PID and exact kernel process
 birth; no command line, environment or terminal content is collected. Resolve is
 restricted to the original tmux session, or Herdr namespace/socket incarnation.
@@ -208,3 +202,38 @@ A signed SSH `reply latest` request names one Pair, event and envelope digest. O
 
 
 Managed adapter revision 6 installs a private per-Agent random credential in its owned asset and local ownership record. Session activation registers through a direct child of the live host. The CLI verifies the installation, credential, owned asset fingerprints, configuration namespace and kernel process birth. Local host state and credentials stay on the paired machine. The trust boundary includes that machine’s user account and installed Agent plugins. A caller that only knows the session ID, storage path and turn cannot register. File metadata identifies the storage without reading the transcript or database. A fresh navigation challenge verifies the current session on both sides of strong terminal sampling. Reply rebind additionally requires the current completed turn, fresh policy, an unclaimed source and a one-time wake marker.
+
+## Release source verification
+
+The installer and `upgrade` resolve the repository name over the GitHub REST
+API and check repository ID `1416491919`. A transfer or rename can resolve
+through an HTTPS redirect on `api.github.com`. If the old name belongs to a
+different repository, verification fails. The clients check the current name
+again after reading the Release. Each selected asset must have its own ID and
+an API URL belonging to that repository. Binary redirects are limited to five
+hops among `api.github.com`, `github.com`, `release-assets.githubusercontent.com`
+and `objects.githubusercontent.com` over HTTPS.
+
+The archive must match the selected Release’s unique checksum record. When
+GitHub supplies SHA-256 digests, the clients also verify the downloaded archive
+and checksum file against them. These checks trust the GitHub repository and
+its authorized publishers. A mutable Release can retain its ID while its tag
+or assets change. There is no independent package signature.
+
+A caller can pass the installer `--version vX.Y.Z --expected-release-id ID`
+to bind installation to a previously selected tag and Release. An optional
+`--request-id UUID` correlates a handled failure with the caller’s operation.
+On such failures, stderr includes one machine-readable line:
+
+```text
+MOBTERM_CLI_INSTALL_ERROR_V1 <request-id> <phase> <code>
+```
+
+The phases are `before_replace` and `unknown`. The installer switches to
+`unknown` immediately before attempting the atomic replacement. Codes are
+`source_mismatch`, `release_unavailable`, `network`, `rate_limited`, `integrity`,
+`unsupported`, `dependency`, `storage` and `metadata`. A caller should only
+use a matching, unique mark from a complete, normally failed invocation of
+its trusted installer. Missing or contradictory output, a signal or a lost
+connection requires a fresh read-only check. On success, read back the reported
+absolute executable path and verify its version and platform.

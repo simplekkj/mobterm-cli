@@ -42,7 +42,7 @@ func TestUpgradeDownloadProgress(t *testing.T) {
 				})}
 				done := make(chan error, 1)
 				go func() {
-					_, err := download(ctx, client, "https://github.com/archive", 8, p)
+					_, err := download(ctx, client.Transport, "https://github.com/archive", githubAsset, 8, p)
 					done <- err
 				}()
 				if _, err := w.Write([]byte("abcd")); err != nil {

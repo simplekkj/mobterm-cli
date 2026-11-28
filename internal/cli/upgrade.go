@@ -9,7 +9,6 @@ import (
 	"debug/elf"
 	"debug/macho"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,32 +23,65 @@ import (
 
 var releaseVersion = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 
-const releaseRepo = "mobterm/mobterm-cli"
+const (
+	releaseRepo    = "mobterm/mobterm-cli"
+	githubMetadata = "application/vnd.github+json"
+	githubAsset    = "application/octet-stream"
+)
 
-func trustedReleaseURL(raw string) bool {
-	u, e := url.Parse(raw)
-	if e != nil || u.Scheme != "https" || u.User != nil {
+var (
+	errReleaseSource   = errors.New("unexpected release source")
+	errReleaseNotFound = errors.New("release resource not found")
+)
+
+func trustedReleaseURL(u *url.URL, media string) bool {
+	if u.Scheme != "https" || u.User != nil || u.Fragment != "" {
 		return false
 	}
-	return u.Host == "github.com" || u.Host == "api.github.com" || u.Host == "release-assets.githubusercontent.com" || u.Host == "objects.githubusercontent.com"
-}
-func download(ctx context.Context, c *http.Client, raw string, limit int64, progress *upgradeProgress) ([]byte, error) {
-	if !trustedReleaseURL(raw) {
-		return nil, errors.New("untrusted download source")
+	host := u.Hostname()
+	if u.Host != host && u.Host != host+":443" {
+		return false
 	}
-	r, e := http.NewRequestWithContext(ctx, "GET", raw, nil)
-	if e != nil {
-		return nil, e
+	if host == "api.github.com" {
+		return true
+	}
+	return media == githubAsset && (host == "github.com" || host == "release-assets.githubusercontent.com" || host == "objects.githubusercontent.com")
+}
+
+func download(ctx context.Context, transport http.RoundTripper, raw, media string, limit int64, progress *upgradeProgress) ([]byte, error) {
+	r, e := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+	if e != nil || !trustedReleaseURL(r.URL, media) {
+		return nil, errReleaseSource
+	}
+	r.Header.Set("Accept", media)
+	c := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: transport,
+		CheckRedirect: func(next *http.Request, via []*http.Request) error {
+			if len(via) > 5 || !trustedReleaseURL(next.URL, media) {
+				return errReleaseSource
+			}
+			return nil
+		},
 	}
 	resp, e := c.Do(r)
 	if e != nil {
-		if progress != nil && ctx.Err() != nil {
+		if ctx.Err() != nil {
 			return nil, ctx.Err()
+		}
+		if errors.Is(e, errReleaseSource) {
+			return nil, errReleaseSource
 		}
 		return nil, errors.New("release download failed")
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		return nil, errReleaseNotFound
+	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden &&
+		(resp.Header.Get("X-RateLimit-Remaining") == "0" || resp.Header.Get("Retry-After") != ""):
+		return nil, errors.New("GitHub rate limit reached; retry later")
+	case resp.StatusCode != http.StatusOK:
 		return nil, fmt.Errorf("release download HTTP %d", resp.StatusCode)
 	}
 	body := io.LimitReader(resp.Body, limit+1)
@@ -69,6 +101,7 @@ func download(ctx context.Context, c *http.Client, raw string, limit int64, prog
 	}
 	return b, nil
 }
+
 func extractBinary(archive []byte) ([]byte, error) {
 	g, e := gzip.NewReader(bytes.NewReader(archive))
 	if e != nil {
@@ -108,6 +141,9 @@ func extractBinary(archive []byte) ([]byte, error) {
 	return binary, nil
 }
 func verifyChecksum(data, checks []byte, name string) error {
+	if bytes.IndexByte(checks, 0) >= 0 {
+		return errors.New("invalid release checksums")
+	}
 	sum := sha256.Sum256(data)
 	want := hex.EncodeToString(sum[:])
 	count := 0
@@ -174,56 +210,19 @@ func upgradeWithProgress(ctx context.Context, version, destination string, progr
 	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
 		return errors.New("unsupported architecture")
 	}
-	c := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(r *http.Request, via []*http.Request) error {
-		if len(via) > 5 || !trustedReleaseURL(r.URL.String()) {
-			return errors.New("untrusted release redirect")
-		}
-		return nil
-	}}
 	progress.begin("Fetching release metadata", "Release")
-	meta, e := download(ctx, c, "https://api.github.com/repos/"+releaseRepo+"/releases/tags/"+version, 1024*1024, progress)
+	name := "mobterm-cli_" + version + "_" + runtime.GOOS + "_" + runtime.GOARCH + ".tar.gz"
+	assets, e := officialReleaseAssets(ctx, version, progress)
 	if e != nil {
 		return e
 	}
-	var r struct {
-		TagName    string `json:"tag_name"`
-		Draft      bool   `json:"draft"`
-		Prerelease bool   `json:"prerelease"`
-		Assets     []struct {
-			Name string `json:"name"`
-			URL  string `json:"browser_download_url"`
-		} `json:"assets"`
-	}
-	if json.Unmarshal(meta, &r) != nil || r.TagName != version || r.Draft || r.Prerelease {
-		return errors.New("invalid stable release")
-	}
-	prefix := "https://github.com/" + releaseRepo + "/releases/download/" + version + "/"
-	assets := map[string]string{}
-	for _, a := range r.Assets {
-		if a.URL != prefix+a.Name {
-			return errors.New("unexpected release source")
-		}
-		if _, exists := assets[a.Name]; exists {
-			return errors.New("duplicate release asset")
-		}
-		assets[a.Name] = a.URL
-	}
-	for _, platform := range []string{"linux_amd64", "linux_arm64", "darwin_amd64", "darwin_arm64"} {
-		if assets["mobterm-cli_"+version+"_"+platform+".tar.gz"] == "" {
-			return errors.New("release is incomplete")
-		}
-	}
-	name := "mobterm-cli_" + version + "_" + runtime.GOOS + "_" + runtime.GOARCH + ".tar.gz"
-	if assets["checksums.txt"] == "" {
-		return errors.New("release checksum unavailable")
-	}
 	progress.begin("Downloading checksums", "Checksums")
-	checks, e := download(ctx, c, assets["checksums.txt"], 16384, progress)
+	checks, e := assets["checksums.txt"].download(ctx, 16384, progress)
 	if e != nil {
 		return e
 	}
 	progress.begin("Downloading package", "Package")
-	archive, e := download(ctx, c, assets[name], 64*1024*1024, progress)
+	archive, e := assets[name].download(ctx, 64*1024*1024, progress)
 	if e != nil {
 		return e
 	}

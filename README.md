@@ -44,11 +44,18 @@ Or pin an **existing** stable Release, replacing `vX.Y.Z` with its exact tag:
 curl -fsSL https://raw.githubusercontent.com/mobterm/mobterm-cli/main/install.sh | sh -s -- --version vX.Y.Z
 ```
 
-Use the explicit-tag command above if an older App installer or `mobterm-cli upgrade` rejects the release URL after the repository transfer. Run it on the host where the CLI is installed.
+If an old CLI rejects the new release URL after a repository transfer, use the
+explicit-tag command once on the host, then read back the installed version
+with the absolute-path command below. Update an older Mobterm App separately
+to a build containing the new installer. Changing the server binary leaves
+the installer bundled with that App in place.
 
-The script detects Linux/macOS and amd64/arm64, downloads the matching archive
-and `checksums.txt` from the same tag, verifies SHA-256 and safe archive entries,
-then installs only the binary to `$HOME/.local/bin/mobterm-cli` with mode 0755.
+The installer looks up the official GitHub repository ID `1416491919` through
+its current or redirected name. It selects the public stable Release, downloads
+the matching platform archive and `checksums.txt` by their asset IDs, and checks
+the SHA-256 record plus any SHA-256 digests supplied by GitHub. It verifies archive
+entries and the Linux/macOS executable header for amd64/arm64, then installs the
+binary to `$HOME/.local/bin/mobterm-cli` with mode 0755.
 It uses POSIX sh, curl, tar, and sha256sum or shasum (plus standard Unix tools).
 An existing regular CLI file is replaced atomically; repeat installation is safe.
 Any failure before the atomic replacement preserves the old binary and its mode.
@@ -61,14 +68,17 @@ SIGKILL, power loss and concurrent replacement of installation paths cannot be
 fully recovered automatically; inspect reported leftovers without deleting
 unrecognized files. Symlink or non-directory installation directories and
 symlink/non-regular binary targets are refused.
-HTTPS and the same-source checksum establish transfer
-integrity, not an independent digital signature. macOS binaries are unsigned
+GitHub HTTPS and the same-release checksum establish transfer integrity. macOS binaries are unsigned
 and not notarized; Gatekeeper approval is not claimed.
 
 **A published Release is required.** These instructions do not imply that the
 first Release has been published; without one, installation fails explicitly.
 The default latest selection excludes drafts and prereleases and must resolve
-to a stable `vX.Y.Z` tag in this repository.
+to a stable `vX.Y.Z` tag in this repository. Tools that already confirmed a
+Release can pass `--version vX.Y.Z --expected-release-id ID` so a deleted and
+recreated tag release cannot substitute for the selection. See the
+[installer failure contract](docs/security.md#release-source-verification)
+for request IDs and replacement outcomes.
 
 Run installation as the OS user that runs the Agent. Check the installed version:
 
@@ -373,9 +383,10 @@ bytes and elapsed time. CI and redirected stderr use static stages. Select
 `--progress=plain` for stage lines or `--progress=never` to suppress them.
 `upgrade --json` and redirected stdout suppress progress on both streams.
 
-Use an existing, explicit stable version. Upgrade accepts only this repository's
-GitHub release assets, checks the four-platform manifest, selected asset name and
-SHA-256, then atomically replaces the current regular executable. Download,
+Use an existing, explicit stable version. Upgrade validates the official
+repository ID and stable Release, checks the four-platform manifest, downloads
+the selected assets by ID and verifies SHA-256 plus the executable platform.
+It then atomically replaces the current regular executable. Download,
 checksum, extraction, or pre-rename write failure keeps the old executable.
 No remote scripts execute, and pair/config/hook files are unchanged. The binary's
 directory must be writable; use a user-owned installation to avoid elevated access.

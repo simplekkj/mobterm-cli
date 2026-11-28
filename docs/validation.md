@@ -30,8 +30,11 @@ python3 scripts/package.py --version v0.0.0 --commit "$revision"
 python3 tests/install_test.py --dist dist --commit "$revision"
 ```
 
-The offline installer suite uses local archives and simulated download
-responses. With `--dist` it checks the four Linux/macOS amd64/arm64 packages
+The offline installer suite uses local archives and simulated GitHub API and
+asset responses. The synthetic [repository identity](../testdata/release-repository.json)
+and [stable release](../testdata/release-stable.json) cover a renamed project.
+The suite substitutes mismatched identities, malformed metadata, rejected redirects,
+incorrect digests and interrupted replacement while checking the previous installation. With `--dist` it checks the four Linux/macOS amd64/arm64 packages
 and executes the installed native binary. CI also runs the Go, tmux and
 installer checks natively on the eight [documented runners](../README.md#build-and-verify).
 
