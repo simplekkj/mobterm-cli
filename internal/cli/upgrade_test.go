@@ -213,6 +213,57 @@ func TestUpgradeTransferredRepository(t *testing.T) {
 	}
 }
 
+func TestUpgradeSecondaryRateLimit(t *testing.T) {
+	const exceeded = `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes."}`
+	const api = "https://api.github.com/repos/example/project/releases/assets/123"
+	const cdn = "https://objects.githubusercontent.com/fixture"
+	for _, test := range []struct {
+		name, body        string
+		redirect, limited bool
+	}{
+		{name: "exceeded", body: exceeded, limited: true},
+		{name: "triggered", body: `{"message":"You have triggered a secondary rate limit"}`, limited: true},
+		{name: "case and trailing words", body: `{"message":"YOU HAVE EXCEEDED A SECONDARY RATE LIMIT for now"}`, limited: true},
+		{name: "permission", body: `{"message":"Resource not accessible by integration"}`},
+		{name: "nested", body: `{"error":` + exceeded + `}`},
+		{name: "duplicate", body: `{"message":"denied","mess\u0061ge":"You have exceeded a secondary rate limit."}`},
+		{name: "wrong type", body: `{"message":[{"reason":"You have triggered a secondary rate limit."}]}`},
+		{name: "incidental", body: `{"message":"Access denied. You have exceeded a secondary rate limit."}`},
+		{name: "different word", body: `{"message":"You have exceeded a secondary rate limitation."}`},
+		{name: "malformed", body: exceeded + "!"},
+		{name: "over limit", body: exceeded + strings.Repeat(" ", 9*1024)},
+		{name: "CDN", body: exceeded, redirect: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := strings.NewReader(test.body)
+			transport := releaseTransport(func(r *http.Request) (*http.Response, error) {
+				if test.redirect && r.URL.String() == api {
+					resp := releaseResponse(http.StatusFound, nil)
+					resp.Header.Set("Location", cdn)
+					return resp, nil
+				}
+				resp := releaseResponse(http.StatusForbidden, nil)
+				resp.ContentLength = -1
+				resp.Body = io.NopCloser(body)
+				resp.Header.Set("X-RateLimit-Remaining", "19")
+				return resp, nil
+			})
+			_, err := download(context.Background(), transport, api, githubAsset, 64*1024, nil)
+			want := "release download HTTP 403"
+			if test.limited {
+				want = "GitHub rate limit reached; retry later"
+			}
+			if err == nil || err.Error() != want {
+				t.Fatalf("expected %q, got %v", want, err)
+			}
+			read := len(test.body) - body.Len()
+			if read > 8*1024+1 || test.redirect && read != 0 {
+				t.Fatalf("read %d bytes of 403 response", read)
+			}
+		})
+	}
+}
+
 func TestUpgradeRedirectBoundary(t *testing.T) {
 	for _, test := range []struct{ name, media, target string }{
 		{"metadata-CDN", githubMetadata, "https://objects.githubusercontent.com/path"},

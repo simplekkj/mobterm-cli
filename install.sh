@@ -178,6 +178,10 @@ fetch() {
                 if LC_ALL=C awk 'tolower($0) ~ /^(x-ratelimit-remaining:[ \t]*0[ \t\r]*$|retry-after:)/ { found=1 } END { exit !found }' "$work/headers"; then
                     code=rate_limited; fail 'GitHub rate limit reached.'
                 fi
+                if [ "${authority%:443}" = api.github.com ] && [ "$size" -gt 0 ] && [ "$size" -le 8192 ] &&
+                    read_metadata rate_limit "$output"; then
+                    code=rate_limited; fail 'GitHub rate limit reached.'
+                fi
                 fail 'GitHub refused the request.' ;;
             *) fail 'GitHub request failed.' ;;
         esac
@@ -192,7 +196,7 @@ nul_free() {
     LC_ALL=C tr -d '\000' < "$1" > "$work/nonul" && cmp -s "$work/nonul" "$1"
 }
 read_metadata() {
-    nul_free "$work/metadata" || return 2
+    nul_free "$2" || return 2
     LC_ALL=C awk -v mode="$1" -v repo="$repo_name" -v requested="$version" \
         -v expected="$expected_id" -v platform="${system}_${arch}" '
     BEGIN {
@@ -278,6 +282,7 @@ read_metadata() {
                     white(); take(":")
                     child=""
                     if (scope=="root" && (key=="id" || (mode=="repository" && key=="full_name") || (mode=="release" && key ~ /^(tag_name|draft|prerelease|url|assets)$/))) child="root." key
+                    if (scope=="root" && mode=="rate_limit" && key=="message") child="root.message"
                     if (scope=="asset" && key ~ /^(id|name|url|digest)$/) child="asset." key
                     value(depth+1,child)
                     white(); if (peek()!=",") break
@@ -314,6 +319,10 @@ read_metadata() {
     }
     END {
         pos=1; value(0,"root"); white(); if (pos<=length(doc)) bad()
+        if (mode=="rate_limit") {
+            message=tolower(required("root.message","string"))
+            exit !(message ~ /^you have (exceeded|triggered) a secondary rate limit([ .]|$)/)
+        }
         rid=id("root.id")
         if (mode=="repository") {
             if ("i" rid!="i1416491919") exit 3
@@ -346,12 +355,12 @@ read_metadata() {
         if (!(package in urls) || !("checksums.txt" in urls)) bad()
         print tag; print urls["checksums.txt"]; print hashes["checksums.txt"]
         print urls[package]; print hashes[package]
-    }' "$work/metadata"
+    }' "$2"
 }
 
 resolve_repo() {
     fetch repository "https://api.github.com/repos/$1" "$work/metadata" 262144
-    if read_metadata repository > "$work/repository"; then
+    if read_metadata repository "$work/metadata" > "$work/repository"; then
         IFS= read -r current_name < "$work/repository"
     else
         parse_status=$?; code=metadata
@@ -367,7 +376,7 @@ while :; do
     release_path=latest
     if [ -n "$version" ]; then release_path=tags/$version; fi
     if fetch release "https://api.github.com/repos/$repo_name/releases/$release_path" "$work/metadata" 262144; then
-        if read_metadata release > "$work/selection"; then result=0; else result=$?; fi
+        if read_metadata release "$work/metadata" > "$work/selection"; then result=0; else result=$?; fi
     else
         result=$?
     fi

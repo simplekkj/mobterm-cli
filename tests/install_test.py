@@ -290,6 +290,7 @@ class InstallerTests(unittest.TestCase):
         result = self.assert_preserved("--version", VERSION, "--expected-release-id", "74", "--request-id", REQUEST_ID)
         markers = [line for line in result.stderr.decode().splitlines() if line.startswith("MOBTERM_CLI_INSTALL_ERROR")]
         self.assertEqual(markers, [f"MOBTERM_CLI_INSTALL_ERROR_V1 {REQUEST_ID} {phase} {code}"])
+        return result
 
     def override(self, kind, content):
         path = self.root / "metadata.json"
@@ -395,6 +396,32 @@ class InstallerTests(unittest.TestCase):
             with self.subTest(kind=kind, status=status, headers=headers):
                 self.env.update(OVERRIDE_KIND=kind, OVERRIDE_STATUS=str(status), OVERRIDE_HEADERS=headers)
                 self.assert_marker("before_replace", code)
+
+    def test_secondary_rate_limit_response(self):
+        self.old_binary()
+        self.env.update(OVERRIDE_STATUS="403", OVERRIDE_HEADERS="X-RateLimit-Remaining: 12\r\n")
+        message = "You have exceeded a secondary rate limit"
+        detail = "private-server-detail"
+        body = json.dumps({"message": f"{message}. {detail}"}).encode()
+        padded = body.ljust(8192)
+        for response, expected in (
+                (body, "rate_limited"), (padded, "rate_limited"),
+                ({"message": "YOU HAVE TRIGGERED A SECONDARY RATE LIMIT"}, "rate_limited"),
+                ({"message": "Access denied.", "documentation": message}, "network"),
+                ({"error": {"message": message}}, "network"), ({"message": [message]}, "network"),
+                ({"message": "See documentation: " + message}, "network"),
+                ({"message": message + "er"}, "network"),
+                (b'{"message":"denied","\\u006dessage":"' + message.encode() + b'"}', "network"),
+                (body[:-1], "network"), (padded + b" ", "network")):
+            with self.subTest(response=str(response)[:90], expected=expected):
+                self.override("release", response)
+                result = self.assert_marker("before_replace", expected)
+                self.assertNotIn(detail.encode(), result.stdout + result.stderr)
+        self.override("checksums.txt", body)
+        self.assert_marker("before_replace", "rate_limited")
+        self.env["CDN"] = "1"
+        result = self.assert_marker("before_replace", "network")
+        self.assertNotIn(detail.encode(), result.stdout + result.stderr)
 
     def test_wrong_platform_and_mv_phase(self):
         self.old_binary()

@@ -48,12 +48,35 @@ func trustedReleaseURL(u *url.URL, media string) bool {
 	return media == githubAsset && (host == "github.com" || host == "release-assets.githubusercontent.com" || host == "objects.githubusercontent.com")
 }
 
+// GitHub can report a secondary limit with primary quota remaining and no
+// Retry-After. Only its API's top-level message can supply that diagnosis.
+func secondaryReleaseRateLimit(resp *http.Response, endpoint *url.URL) bool {
+	const maxBody = 8 * 1024
+	if !trustedReleaseURL(endpoint, githubMetadata) || resp.ContentLength > maxBody {
+		return false
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
+	var object map[string]any
+	if err != nil || len(data) > maxBody || interactionJSON(data, &object) != nil {
+		return false
+	}
+	message, _ := object["message"].(string)
+	for _, prefix := range []string{"you have exceeded a secondary rate limit", "you have triggered a secondary rate limit"} {
+		if len(message) >= len(prefix) && strings.EqualFold(message[:len(prefix)], prefix) {
+			tail := message[len(prefix):]
+			return tail == "" || tail[0] == '.' || tail[0] == ' '
+		}
+	}
+	return false
+}
+
 func download(ctx context.Context, transport http.RoundTripper, raw, media string, limit int64, progress *upgradeProgress) ([]byte, error) {
 	r, e := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if e != nil || !trustedReleaseURL(r.URL, media) {
 		return nil, errReleaseSource
 	}
 	r.Header.Set("Accept", media)
+	endpoint := r.URL
 	c := &http.Client{
 		Timeout:   30 * time.Second,
 		Transport: transport,
@@ -61,6 +84,7 @@ func download(ctx context.Context, transport http.RoundTripper, raw, media strin
 			if len(via) > 5 || !trustedReleaseURL(next.URL, media) {
 				return errReleaseSource
 			}
+			endpoint = next.URL
 			return nil
 		},
 	}
@@ -79,7 +103,7 @@ func download(ctx context.Context, transport http.RoundTripper, raw, media strin
 	case resp.StatusCode == http.StatusNotFound:
 		return nil, errReleaseNotFound
 	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden &&
-		(resp.Header.Get("X-RateLimit-Remaining") == "0" || resp.Header.Get("Retry-After") != ""):
+		(resp.Header.Get("X-RateLimit-Remaining") == "0" || resp.Header.Get("Retry-After") != "" || secondaryReleaseRateLimit(resp, endpoint)):
 		return nil, errors.New("GitHub rate limit reached; retry later")
 	case resp.StatusCode != http.StatusOK:
 		return nil, fmt.Errorf("release download HTTP %d", resp.StatusCode)
