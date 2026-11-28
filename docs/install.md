@@ -78,7 +78,7 @@ From the repository root with the toolchain in [go.mod](../go.mod):
 
 ```sh
 go build -trimpath -o mobterm-cli .
-mkdir -p "$HOME/.local/bin"
+install -d -m 700 "$HOME/.local/bin"
 install -m 755 mobterm-cli "$HOME/.local/bin/mobterm-cli"
 "$HOME/.local/bin/mobterm-cli" version
 ```
