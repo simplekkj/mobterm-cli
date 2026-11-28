@@ -17,34 +17,92 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO = "https://github.com/mobterm/mobterm-cli"
+API = "https://api.github.com/repos/example-org/renamed-cli"
+LOCATOR = "https://api.github.com/repos/mobterm/mobterm-cli"
 VERSION = "v1.2.3"  # Local fixture, never a published-version claim.
-PAYLOAD = b'#!/bin/sh\necho "installer must not execute me" >&2\nexit 99\n'
+REQUEST_ID = "aca1c461-b782-4737-8a0f-b3c2ed009f83"
 DIST = None
 COMMIT = None
+
+
+def executable_header(system, arch):
+    if system == "linux":
+        machine = 62 if arch == "amd64" else 183
+        return b"\x7fELF\x02\x01\x01" + bytes(9) + bytes((2, 0, machine, 0))
+    cpu = 7 if arch == "amd64" else 12
+    return bytes.fromhex("cf fa ed fe") + bytes((cpu, 0, 0, 1)) + bytes(4) + bytes((2, 0, 0, 0)) + bytes(4)
+
+
+PAYLOAD = executable_header("linux", "amd64")
 MOCK_CURL = r'''
-import os, pathlib, shutil, sys
+import hashlib, json, os, pathlib, sys
+from urllib.parse import urlsplit
+
+env = os.environ
 args = sys.argv[1:]
 url = args[-1]
-repo = "https://github.com/mobterm/mobterm-cli"
-with open(os.environ["REQUESTS"], "a") as log:
+assets = pathlib.Path(env["ASSETS"])
+fixtures = pathlib.Path(env["RELEASE_FIXTURES"])
+repo = json.loads((fixtures / "release-repository.json").read_text())
+release = json.loads((fixtures / "release-stable.json").read_text())
+original = "https://api.github.com/repos/mobterm/mobterm-cli"
+canonical = "https://api.github.com/repos/" + repo["full_name"]
+cdn = "https://release-assets.githubusercontent.com:443/github-production-release-asset/"
+with open(env["REQUESTS"], "a") as log:
     log.write(url + "\n")
-assert args[0] == "-q" and "-fsSL" in args
+assert args[0] == "-q" and "--globoff" in args and "-L" not in args
 assert args[args.index("--proto") + 1] == "=https"
-assert args[args.index("--proto-redir") + 1] == "=https"
-if os.environ.get("HTTP_FAIL") in ("all", url.rsplit("/", 1)[-1]):
-    sys.exit(22)  # curl's HTTP 404 failure
-if url == repo + "/releases/latest":
-    assert args[args.index("-o") + 1] == "/dev/null"
-    assert args[args.index("-w") + 1] == "%{url_effective}"
-    print(os.environ["LATEST_URL"], end="")
+headers = pathlib.Path(args[args.index("-D") + 1])
+destination = pathlib.Path(args[args.index("-o") + 1])
+headers.write_text("")
+version = env["FIXTURE_VERSION"]
+release["tag_name"] = version
+for item in release["assets"]:
+    item["name"] = item["name"].replace("v1.2.3", version)
+    path = assets / item["name"]
+    if path.exists() and env.get("INCLUDE_DIGEST"):
+        item["digest"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+redirect = ""
+status = 200
+body = b""
+if url in (original, canonical):
+    kind = "locator" if url == original else "repository"
+    if url == original and env.get("MOVED"):
+        redirect = canonical
+    if url == canonical and env.get("REUSED"):
+        repo["id"] += 1
+    body = json.dumps(repo).encode()
+elif url.startswith(canonical + "/releases/assets/") or url.startswith(cdn):
+    assert "Accept: application/octet-stream" in args
+    asset_id = int(urlsplit(url).path.split("/")[-1])
+    item = next(a for a in release["assets"] if a["id"] == asset_id)
+    kind = item["name"]
+    if env.get("CDN") and url.startswith(canonical):
+        redirect = cdn + str(asset_id) + "?temporary=signature"
+    else:
+        body = (assets / kind).read_bytes()
+elif url in (canonical + "/releases/latest", canonical + "/releases/tags/" + version):
+    kind = "release"
+    assert "Accept: application/vnd.github+json" in args
+    body = json.dumps(release).encode()
 else:
-    prefix = repo + "/releases/download/" + os.environ["FIXTURE_VERSION"] + "/"
-    assert url.startswith(prefix), url
-    name = url[len(prefix):]
-    assert "/" not in name
-    shutil.copyfile(pathlib.Path(os.environ["ASSETS"]) / name,
-                    args[args.index("-o") + 1])
+    raise ValueError(url)
+if kind == env.get("OVERRIDE_KIND"):
+    if "OVERRIDE_BODY" in env:
+        body = pathlib.Path(env["OVERRIDE_BODY"]).read_bytes()
+    if "OVERRIDE_REDIRECT" in env:
+        redirect = env["OVERRIDE_REDIRECT"]
+    if "OVERRIDE_STATUS" in env:
+        status = int(env["OVERRIDE_STATUS"])
+        headers.write_text(env.get("OVERRIDE_HEADERS", ""))
+if env.get("HTTP_FAIL") in ("all", kind):
+    sys.exit(7)
+if redirect:
+    status = 302
+    body = b""
+destination.write_bytes(body)
+print(status)
+print(redirect)
 '''
 
 
@@ -60,7 +118,7 @@ class InstallerTests(unittest.TestCase):
         for directory in (self.home, self.bin, self.assets, self.work):
             directory.mkdir()
         for tool in ("awk", "tar", "mktemp", "mkdir", "rmdir", "cat", "chmod", "mv", "rm", "gzip",
-                     "sha256sum", "shasum"):
+                     "sha256sum", "shasum", "wc", "tr", "cmp", "date", "od"):
             source = shutil.which(tool)
             if source:
                 (self.bin / tool).symlink_to(source)
@@ -70,7 +128,7 @@ class InstallerTests(unittest.TestCase):
                         PYTHONDONTWRITEBYTECODE="1",
                         PATH=str(self.bin), SYSTEM="Linux", ARCH="x86_64",
                         ASSETS=str(self.assets), FIXTURE_VERSION=VERSION,
-                        LATEST_URL=REPO + "/releases/tag/" + VERSION,
+                        RELEASE_FIXTURES=str(ROOT / "testdata"),
                         REQUESTS=str(self.root / "requests"),
                         CODEX_HOME=str(self.home / ".codex"),
                         CLAUDE_CONFIG_DIR=str(self.home / ".claude"),
@@ -94,7 +152,7 @@ class InstallerTests(unittest.TestCase):
     def make_archive(self, entries=None, system="linux", arch="amd64"):
         name = f"mobterm-cli_{VERSION}_{system}_{arch}.tar.gz"
         with tarfile.open(self.assets / name, "w:gz", format=tarfile.USTAR_FORMAT) as archive:
-            for filename, kind, data in entries or [("mobterm-cli", tarfile.REGTYPE, PAYLOAD),
+            for filename, kind, data in entries or [("mobterm-cli", tarfile.REGTYPE, executable_header(system, arch)),
                                                     ("LICENSE", tarfile.REGTYPE, b"license")]:
                 entry = tarfile.TarInfo(filename)
                 entry.type, entry.mode = kind, 0o755
@@ -175,11 +233,11 @@ class InstallerTests(unittest.TestCase):
                     self.assertIn(str(self.destination), output)
                     self.assertIn('"' + str(self.destination) + '" version', output)
                     self.assertIn("PATH does not include", output)
-                    self.assertEqual(self.destination.read_bytes(), PAYLOAD)
+                    self.assertEqual(self.destination.read_bytes(), executable_header(target_system, target_arch))
                     self.assertEqual(self.destination.stat().st_mode & 0o777, 0o755)
                     urls = Path(self.env["REQUESTS"]).read_text().splitlines()
-                    self.assertEqual(urls[-2:], [REPO + f"/releases/download/{VERSION}/checksums.txt",
-                                                REPO + f"/releases/download/{VERSION}/mobterm-cli_{VERSION}_{target_system}_{target_arch}.tar.gz"])
+                    asset_id = 101 + (2 if target_system == "darwin" else 0) + (target_arch == "arm64")
+                    self.assertEqual(urls[-2:], [API + "/releases/assets/105", API + f"/releases/assets/{asset_id}"])
                 self.env["PATH"] += ":" + str(self.destination.parent)
                 self.assertNotIn("PATH does not include", self.run_install("--version", VERSION).stdout.decode())
 
@@ -202,7 +260,11 @@ class InstallerTests(unittest.TestCase):
                      ("--version", "v01.2.3"), ("--version", "1.2.3"),
                      ("--version", "v1.2.3-rc1"), ("--version", "v1.2.3\nv2.3.4"),
                      ("--version", "v1.2.3; touch /tmp/unexpected"),
-                     ("--version", VERSION, "--version", VERSION)):
+                     ("--version", VERSION, "--version", VERSION), ("--expected-release-id", "74"),
+                     ("--version", VERSION, "--expected-release-id", "01"),
+                     ("--version", VERSION, "--expected-release-id", "1e2"),
+                     ("--request-id", "invalid"), ("--request-id", "-"*36),
+                     ("--request-id", REQUEST_ID, "--request-id", REQUEST_ID)):
             with self.subTest(args=args):
                 self.assert_preserved(*args)
         self.assertFalse(Path(self.env["REQUESTS"]).exists())
@@ -222,16 +284,113 @@ class InstallerTests(unittest.TestCase):
                 self.env["HTTP_FAIL"] = failure
                 self.assert_preserved()
 
-    def test_latest_redirect_validation(self):
+    def assert_marker(self, phase, code):
+        result = self.assert_preserved("--version", VERSION, "--expected-release-id", "74", "--request-id", REQUEST_ID)
+        markers = [line for line in result.stderr.decode().splitlines() if line.startswith("MOBTERM_CLI_INSTALL_ERROR")]
+        self.assertEqual(markers, [f"MOBTERM_CLI_INSTALL_ERROR_V1 {REQUEST_ID} {phase} {code}"])
+
+    def override(self, kind, content):
+        path = self.root / "metadata.json"
+        path.write_bytes(content if isinstance(content, bytes) else json.dumps(content).encode())
+        self.env.update(OVERRIDE_KIND=kind, OVERRIDE_BODY=str(path))
+
+    def test_confirmed_release_after_transfer(self):
+        self.env.update(MOVED="1", CDN="1", INCLUDE_DIGEST="1")
+        result = self.run_install("--version", VERSION, "--request-id", REQUEST_ID, "--expected-release-id", "74", stdin=True)
+        self.assertIn(f"Installed mobterm-cli {VERSION}", result.stdout.decode())
+        requests = Path(self.env["REQUESTS"]).read_text().splitlines()
+        self.assertEqual(requests[:2], [LOCATOR, API])
+        self.assertNotIn(API + "/releases/latest", requests)
+        self.assertIn(API + "/releases/tags/" + VERSION, requests)
+        self.assertIn("https://release-assets.githubusercontent.com:443/github-production-release-asset/101?temporary=signature", requests)
+        self.assertNotIn(b"signature", result.stdout + result.stderr)
+
+    def test_release_identity_and_schema(self):
         self.old_binary()
-        for url in (REPO + "/releases/latest", REPO + "/releases/tag/v1.2.3-rc1",
-                    "http://github.com/mobterm/mobterm-cli/releases/tag/" + VERSION,
-                    "https://github.com/other/mobterm-cli/releases/tag/" + VERSION,
-                    REPO + "/releases/tag/" + VERSION + "?x=1",
-                    REPO + "/releases/tag/" + VERSION + "/../../other"):
-            with self.subTest(url=url):
-                self.env["LATEST_URL"] = url
-                self.assert_preserved()
+        release = json.loads((ROOT / "testdata/release-stable.json").read_text())
+        for field, val, code in (
+                ("url", API + "/releases/75", "source_mismatch"),
+                ("id", 75, "source_mismatch"), ("tag_name", "v1.2.4", "source_mismatch"),
+                ("draft", True, "release_unavailable"), ("prerelease", True, "release_unavailable"),
+                ("draft", 0, "metadata"), ("assets", {}, "metadata")):
+            with self.subTest(field=field, val=val):
+                doc = dict(release, **{field: val})
+                if field == "id":
+                    doc["url"] = API + "/releases/75"
+                self.override("release", doc)
+                self.assert_marker("before_replace", code)
+        for field in ("draft", "prerelease", "id"):
+            with self.subTest(absent=field):
+                self.override("release", {key: val for key, val in release.items() if key != field})
+                self.assert_marker("before_replace", "metadata")
+        for raw in (b'{"id":1416491919,"\\u0069d":1416491919}', b'{"owner":{"id":1416491919}}',
+                    b'{"id":true,"full_name":"example-org/renamed-cli"}',
+                    b'{"id":"1416491919","full_name":"example-org/renamed-cli"}',
+                    b'{"id":', b'{"nested":{"id":10}, "id": }',
+                    b'[]', b'{"oops":"\\u0xx0"}', b'{"bad":"\xff"}',
+                    b'{"id":1416491919,"full_name":"example-org/renamed-cli"}\x00extra',
+                    b" " * 262145):
+            with self.subTest(raw=raw[:60]):
+                self.override("locator", raw)
+                self.assert_marker("before_replace", "metadata")
+        self.override("locator", b'{"notes":[{"id":"ignore me"}],"id":17,"owner":{"id":1416491919},"full_name":"example-org/renamed-cli"}')
+        self.assert_marker("before_replace", "source_mismatch")
+        self.override("locator", b'{"\\u0069d":1416491919,"notes":["\\uD83D\\uDE00",true,null,1.0e2,{"assets":7}], "full_name":"example-org\\/renamed-cli"}')
+        self.run_install("--version", VERSION)
+        self.env["REUSED"] = "1"
+        self.old_binary()
+        self.assert_marker("before_replace", "source_mismatch")
+
+    def test_release_assets_and_digests(self):
+        self.old_binary()
+        for key, val, code in (
+                ("url", "https://api.github.com/repos/other/cli/releases/assets/101", "source_mismatch"),
+                ("url", API + "/releases/assets/102", "source_mismatch"),
+                ("id", "101", "metadata"), ("id", 0, "metadata"),
+                ("name", "checksums.txt", "metadata"), ("name", "other.tar.gz", "metadata"),
+                ("digest", "sha256:bad", "metadata"), ("digest", "sha256:" + "0"*64, "integrity")):
+            with self.subTest(key=key, val=val):
+                doc = json.loads((ROOT / "testdata/release-stable.json").read_text())
+                doc["assets"][0][key] = val
+                self.override("release", doc)
+                self.assert_marker("before_replace", code)
+        doc = json.loads((ROOT / "testdata/release-stable.json").read_text())
+        doc["assets"][-1]["digest"] = "sha256:" + "1"*64
+        self.override("release", doc)
+        self.assert_marker("before_replace", "integrity")
+
+    def test_each_redirect_and_http_error(self):
+        self.old_binary()
+        for kind, url in (
+                ("release", "https://objects.githubusercontent.com/meta"),
+                ("locator", "https://github.com/new/repo"),
+                ("checksums.txt", "http://github.com/pkg"),
+                ("checksums.txt", "https://api.github.com@elsewhere.invalid/pkg"),
+                ("checksums.txt", "https://user@github.com/pkg"),
+                ("checksums.txt", "https://example.invalid/pkg?temporary=secret"),
+                ("checksums.txt", "https://api.github.com:444/pkg"),
+                ("checksums.txt", API + "/releases/assets/105")):
+            with self.subTest(kind=kind, redirect=url):
+                self.env.update(OVERRIDE_KIND=kind, OVERRIDE_REDIRECT=url)
+                self.assert_marker("before_replace", "source_mismatch")
+                if url != API + "/releases/assets/105":
+                    self.assertNotIn(url, Path(self.env["REQUESTS"]).read_text().splitlines())
+        del self.env["OVERRIDE_REDIRECT"]
+        for kind, status, headers, code in (
+                ("locator", 404, "", "source_mismatch"), ("release", 404, "", "release_unavailable"),
+                ("release", 429, "", "rate_limited"), ("release", 403, "X-RateLimit-Remaining: 0\r\n", "rate_limited"),
+                ("release", 403, "", "network"), ("checksums.txt", 503, "", "network")):
+            with self.subTest(kind=kind, status=status, headers=headers):
+                self.env.update(OVERRIDE_KIND=kind, OVERRIDE_STATUS=str(status), OVERRIDE_HEADERS=headers)
+                self.assert_marker("before_replace", code)
+
+    def test_wrong_platform_and_mv_phase(self):
+        self.old_binary()
+        self.make_archive([("mobterm-cli", tarfile.REGTYPE, executable_header("darwin", "amd64"))])
+        self.assert_marker("before_replace", "integrity")
+        self.make_archive()
+        self.intercept_tool("mv", 'sys.exit(37)')
+        self.assert_marker("unknown", "storage")
 
     def test_bad_checksums(self):
         self.old_binary()
@@ -570,7 +729,7 @@ class InstallerTests(unittest.TestCase):
     def test_real_packages(self):
         if DIST is None:
             self.skipTest("pass --dist and --commit to test real package outputs")
-        self.env.update(FIXTURE_VERSION="v0.0.0", LATEST_URL=REPO + "/releases/tag/v0.0.0")
+        self.env.update(FIXTURE_VERSION="v0.0.0", INCLUDE_DIGEST="1")
         archives = sorted(DIST.glob("mobterm-cli_v0.0.0_*.tar.gz"))
         self.assertEqual(len(archives), 4)
         shutil.copyfile(DIST / "checksums.txt", self.assets / "checksums.txt")

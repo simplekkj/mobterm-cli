@@ -3,23 +3,49 @@
 set -eu
 umask 077
 
-fail() { printf 'mobterm-cli install: %s\n' "$*" >&2; exit 1; }
-stable_version() {
-    printf '%s\n' "$1" | awk '
-        NR == 1 { valid = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ }
-        END { exit !(NR == 1 && valid) }'
+phase=before_replace
+code=metadata
+request_id=
+fail() {
+    printf 'mobterm-cli install: %s\n' "$1" >&2
+    if [ -n "$request_id" ]; then
+        printf 'MOBTERM_CLI_INSTALL_ERROR_V1 %s %s %s\n' "$request_id" "$phase" "$code" >&2
+    fi
+    exit 1
 }
+usage() { fail 'Usage: sh install.sh [--version vX.Y.Z [--expected-release-id ID]] [--request-id UUID]'; }
 
 version=
-case $# in
-    0) ;;
-    2) [ "$1" = --version ] || fail 'Usage: sh install.sh [--version vX.Y.Z]'
-       version=$2
-       stable_version "$version" || fail 'Version must be a stable vX.Y.Z tag.' ;;
-    *) fail 'Usage: sh install.sh [--version vX.Y.Z]' ;;
-esac
+expected_id=
+while [ "$#" -gt 0 ]; do
+    [ "$#" -ge 2 ] && [ -n "$2" ] || usage
+    case $1 in
+        --version)
+            [ -z "$version" ] || usage
+            case $2 in *[!v0-9.]*) usage ;; esac
+            LC_ALL=C awk -v tag="$2" 'BEGIN { exit !(tag ~ /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/) }' || usage
+            version=$2 ;;
+        --expected-release-id)
+            [ -z "$expected_id" ] || usage
+            case $2 in 0*|*[!0-9]*) usage ;; esac
+            expected_id=$2 ;;
+        --request-id)
+            [ -z "$request_id" ] || usage
+            case $2 in *[!a-fA-F0-9-]*) usage ;; esac
+            case $2 in ????????-????-????-????-????????????)
+                hex_parts=$(printf '%s' "$2" | tr -d '-')
+                [ "${#hex_parts}" = 32 ] || usage ;;
+                *) usage ;;
+            esac
+            request_id=$2 ;;
+        *) usage ;;
+    esac
+    shift 2
+done
+[ -z "$expected_id" ] || [ -n "$version" ] || usage
 
-for tool in curl uname awk tar mktemp mkdir rmdir cat chmod mv rm; do
+code=dependency
+for tool in curl uname awk tar mktemp mkdir rmdir cat chmod mv rm wc tr cmp date od; do
     command -v "$tool" >/dev/null 2>&1 || fail "Required tool unavailable: $tool"
 done
 if command -v sha256sum >/dev/null 2>&1; then
@@ -29,6 +55,7 @@ elif command -v shasum >/dev/null 2>&1; then
 else
     fail 'SHA-256 verification requires sha256sum or shasum.'
 fi
+code=unsupported
 case $(uname -s) in
     Linux) system=linux ;;
     Darwin) system=darwin ;;
@@ -39,23 +66,9 @@ case $(uname -m) in
     aarch64|arm64) arch=arm64 ;;
     *) fail 'Unsupported architecture; only amd64 and arm64 are supported.' ;;
 esac
+code=storage
 case ${HOME:-} in /*) ;; *) fail 'HOME must be an absolute directory path.' ;; esac
 case ${TMPDIR:-/tmp} in /*) ;; *) fail 'TMPDIR must be an absolute directory path.' ;; esac
-
-repo=https://github.com/mobterm/mobterm-cli
-if [ -z "$version" ]; then
-    # GitHub's latest endpoint excludes draft and prerelease Releases. Read only
-    # the effective URL, not HTML/JSON or shell code from a response body.
-    latest=$(curl -q -fsSL --proto '=https' --proto-redir '=https' \
-        --connect-timeout 15 --max-time 60 --max-redirs 5 \
-        -o /dev/null -w '%{url_effective}' "$repo/releases/latest") ||
-        fail 'No published stable Release available, or GitHub is unreachable.'
-    case $latest in
-        "$repo/releases/tag/"*) version=${latest#"$repo/releases/tag/"} ;;
-        *) fail 'Latest Release did not resolve to the expected repository.' ;;
-    esac
-    stable_version "$version" || fail 'Latest Release is not a stable vX.Y.Z tag.'
-fi
 
 work=
 staged=
@@ -101,13 +114,304 @@ defer_signals=1
 work=$(mktemp -d "${TMPDIR:-/tmp}/mobterm-cli-install.XXXXXXXX") || fail 'Cannot create temporary directory.'
 defer_signals=0
 [ "$interrupted" = 0 ] || exit 1
-asset=mobterm-cli_${version}_${system}_${arch}.tar.gz
-base=$repo/releases/download/$version
-for file in checksums.txt "$asset"; do
-    curl -q -fsSL --proto '=https' --proto-redir '=https' \
-        --connect-timeout 15 --max-time 300 --max-redirs 5 \
-        -o "$work/$file" "$base/$file" || fail "Release download failed: $file"
+# Curl resolves relative Location values for redirect_url. Each hop gets its
+# own request only after the scheme and entire authority have been checked.
+fetch() {
+    kind=$1 url=$2 output=$3 limit=$4
+    case $kind in
+        asset) accept=application/octet-stream; budget=300 ;;
+        *) accept=application/vnd.github+json; budget=60 ;;
+    esac
+    deadline=$(( $(date +%s) + budget ))
+    hops=0
+    while :; do
+        code=source_mismatch
+        case $url in *[[:space:][:cntrl:]]*|*\\*|*'#'*) fail 'Invalid release URL.' ;; esac
+        case $url in https://*/*) ;; *) fail 'Expected a GitHub HTTPS URL.' ;; esac
+        authority=${url#https://}
+        authority=${authority%%/*}
+        case $kind:${authority%:443} in
+            repository:api.github.com|release:api.github.com|asset:api.github.com|asset:github.com|\
+            asset:release-assets.githubusercontent.com|asset:objects.githubusercontent.com) ;;
+            *) fail 'Unexpected release source.' ;;
+        esac
+        code=network
+        remaining=$((deadline - $(date +%s)))
+        [ "$remaining" -gt 0 ] || fail 'GitHub request timed out.'
+        # Also cap the output file on curl versions whose --max-filesize only
+        # handles known Content-Length. Use the measured size before parsing.
+        if (ulimit -f "$(( (limit + 511) / 512 ))" &&
+            exec curl -q -s --globoff --proto '=https' --connect-timeout 15 \
+                --max-time "$remaining" --max-filesize "$limit" \
+                -H "Accept: $accept" -D "$work/headers" -o "$output" \
+                -w '%{http_code}\n%{redirect_url}\n' -- "$url") > "$work/response" 2>/dev/null; then
+            :
+        else
+            curl_status=$?
+            case $curl_status in
+                63) case $kind in asset) code=integrity ;; *) code=metadata ;; esac
+                    fail 'GitHub response exceeds the size limit.' ;;
+                *) fail 'Cannot complete GitHub request.' ;;
+            esac
+        fi
+        size=$(wc -c < "$output") || fail 'Cannot read downloaded file.'
+        if [ "$size" -gt "$limit" ]; then
+            case $kind in asset) code=integrity ;; *) code=metadata ;; esac
+            fail 'GitHub response exceeds the size limit.'
+        fi
+        {
+            IFS= read -r status && IFS= read -r redirect || fail 'Invalid GitHub response.'
+            if IFS= read -r extra; then code=source_mismatch; fail 'Invalid redirect.'; fi
+        } < "$work/response"
+        case $status in
+            200) return ;;
+            301|302|303|307|308)
+                code=source_mismatch
+                [ "$hops" -lt 5 ] && [ -n "$redirect" ] || fail 'Invalid redirect chain.'
+                hops=$((hops + 1))
+                url=$redirect ;;
+            404)
+                case $kind in
+                    repository) code=source_mismatch; fail 'Cannot locate the official repository.' ;;
+                    release) return 4 ;;
+                    *) fail 'Cannot download the selected release asset.' ;;
+                esac ;;
+            429) code=rate_limited; fail 'GitHub rate limit reached.' ;;
+            403)
+                if LC_ALL=C awk 'tolower($0) ~ /^(x-ratelimit-remaining:[ \t]*0[ \t\r]*$|retry-after:)/ { found=1 } END { exit !found }' "$work/headers"; then
+                    code=rate_limited; fail 'GitHub rate limit reached.'
+                fi
+                fail 'GitHub refused the request.' ;;
+            *) fail 'GitHub request failed.' ;;
+        esac
+    done
+}
+
+# Read only the repository, release and asset fields used below. The parser
+# consumes the complete JSON value, including nested fields it does not use.
+# IDs are kept as strings throughout; awk numbers cannot represent every ID.
+nul_free() {
+    # Some POSIX awk versions silently discard the rest of a line at a NUL.
+    LC_ALL=C tr -d '\000' < "$1" > "$work/nonul" && cmp -s "$work/nonul" "$1"
+}
+read_metadata() {
+    nul_free "$work/metadata" || return 2
+    LC_ALL=C awk -v mode="$1" -v repo="$repo_name" -v requested="$version" \
+        -v expected="$expected_id" -v platform="${system}_${arch}" '
+    BEGIN {
+        hex = "0123456789abcdef"
+        for (i=1; i<256; i++) byte[sprintf("%c", i)] = i
+    }
+    { doc = doc $0 "\n" }
+    function bad() { exit 2 }
+    function peek() { return substr(doc, pos, 1) }
+    function white() { while (peek() ~ /^[ \t\r\n]$/) pos++ }
+    function take(c) { if (peek()!=c) bad(); pos++ }
+    function hex4(    s,i,n,d) {
+        s=tolower(substr(doc,pos,4)); if (length(s)!=4) bad()
+        for (i=1;i<=4;i++) {
+            d=index(hex,substr(s,i,1)); if (!d) bad()
+            n=n*16+d-1
+        }
+        pos+=4; return n
+    }
+    function utf8(n) {
+        # Canonical spelling for controls and backslash keeps object keys
+        # distinct even on an awk that cannot store NUL in a string.
+        if (n<32 || n==92) return sprintf("\\u%04x",n)
+        if (n<128) return sprintf("%c",n)
+        if (n<2048) return sprintf("%c%c",192+int(n/64),128+n%64)
+        if (n<65536) return sprintf("%c%c%c",224+int(n/4096),128+int(n/64)%64,128+n%64)
+        return sprintf("%c%c%c%c",240+int(n/262144),128+int(n/4096)%64,128+int(n/64)%64,128+n%64)
+    }
+    function json_string(    start,out,c,n,lo,len,b,i) {
+        take("\""); start=pos
+        while (pos<=length(doc)) {
+            c=peek(); pos++
+            if (c=="\"") return out substr(doc,start,pos-start-1)
+            if (c=="\\") {
+                out=out substr(doc,start,pos-start-1)
+                c=peek(); pos++
+                if (c=="u") {
+                    n=hex4()
+                    if (n>=55296 && n<=56319) {
+                        if (substr(doc,pos,2)!="\\u") bad()
+                        pos+=2; lo=hex4(); if (lo<56320 || lo>57343) bad()
+                        n=65536+(n-55296)*1024+lo-56320
+                    } else if (n>=56320 && n<=57343) bad()
+                } else if (c=="b") n=8
+                else if (c=="f") n=12
+                else if (c=="n") n=10
+                else if (c=="r") n=13
+                else if (c=="t") n=9
+                else if (c=="\\" || c=="\"" || c=="/") n=byte[c]
+                else bad()
+                out=out utf8(n); start=pos
+            } else {
+                n=byte[c]
+                if (n<32) bad()
+                if (n>=128) {
+                    if (n<194 || n>244) bad()
+                    len=(n<224 ? 1 : (n<240 ? 2 : 3))
+                    for (i=1;i<=len;i++) {
+                        b=byte[peek()]; pos++
+                        if (b<128 || b>191 || (i==1 && ((n==224 && b<160) || (n==237 && b>=160) || (n==240 && b<144) || (n==244 && b>=144)))) bad()
+                    }
+                }
+            }
+        }
+        bad()
+    }
+    function number(    start,s) {
+        start=pos
+        while (peek() ~ /^[0-9eE+.-]$/) pos++
+        s=substr(doc,start,pos-start)
+        if (s !~ /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/) bad()
+        return s
+    }
+    function value(depth,scope,    c,key,child,obj,start,typ,s) {
+        if (depth>64) bad()
+        white(); c=peek()
+        if (c=="{") {
+            typ="object"; obj=++objects; pos++; white()
+            if (peek()!="}") {
+                while (1) {
+                    key=json_string()
+                    if (seen[obj SUBSEP key]++) bad()
+                    white(); take(":")
+                    child=""
+                    if (scope=="root" && (key=="id" || (mode=="repository" && key=="full_name") || (mode=="release" && key ~ /^(tag_name|draft|prerelease|url|assets)$/))) child="root." key
+                    if (scope=="asset" && key ~ /^(id|name|url|digest)$/) child="asset." key
+                    value(depth+1,child)
+                    white(); if (peek()!=",") break
+                    pos++; white()
+                }
+            }
+            take("}")
+        } else if (c=="[") {
+            typ="array"; pos++; white()
+            if (peek()!="]") {
+                while (1) {
+                    child=""
+                    if (scope=="root.assets") { assets++; child="asset" }
+                    value(depth+1,child)
+                    white(); if (peek()!=",") break
+                    pos++; white()
+                }
+            }
+            take("]")
+        } else if (c=="\"") { typ="string"; s=json_string() }
+        else if (substr(doc,pos,4)=="true" || substr(doc,pos,4)=="null") {
+            s=substr(doc,pos,4); typ=s; pos+=4
+        } else if (substr(doc,pos,5)=="false") { s="false"; typ=s; pos+=5 }
+        else { typ="number"; s=number() }
+        if (scope=="root" || scope=="asset") { if (typ!="object") bad() }
+        else if (scope ~ /^root\./) { kind[scope]=typ; field[scope]=s }
+        else if (scope ~ /^asset\./) { kind[assets,scope]=typ; field[assets,scope]=s }
+    }
+    function required(key,t) { if (kind[key]!=t) bad(); return field[key] }
+    function id(key,    s) {
+        s=required(key,"number")
+        if (s !~ /^[1-9][0-9]*$/ || length(s)>19 || (length(s)==19 && "i"s>"i9223372036854775807")) bad()
+        return s
+    }
+    END {
+        pos=1; value(0,"root"); white(); if (pos<=length(doc)) bad()
+        rid=id("root.id")
+        if (mode=="repository") {
+            if ("i" rid!="i1416491919") exit 3
+            full=required("root.full_name","string")
+            if (full !~ /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/ || full ~ /\/\.\.?$/) bad()
+            print full; exit
+        }
+        api="https://api.github.com/repos/" repo "/releases/"
+        if (required("root.url","string")!=api rid) exit 3
+        tag=required("root.tag_name","string")
+        if (kind["root.draft"] !~ /^(true|false)$/ || kind["root.prerelease"] !~ /^(true|false)$/) bad()
+        if (kind["root.draft"]=="true" || kind["root.prerelease"]=="true" || tag !~ /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/) exit 4
+        if ((requested!="" && tag!=requested) || (expected!="" && "i"rid!="i"expected)) exit 3
+        required("root.assets","array")
+        package="mobterm-cli_" tag "_" platform ".tar.gz"
+        for (i=1;i<=assets;i++) {
+            aid=id(i SUBSEP "asset.id")
+            name=required(i SUBSEP "asset.name","string")
+            url=required(i SUBSEP "asset.url","string")
+            if (length(name)==0 || usedname["n"name]++ || usedid["i"aid]++) bad()
+            if (url!=api "assets/" aid) exit 3
+            digest="-"; key=i SUBSEP "asset.digest"
+            if (key in kind && kind[key]!="null") {
+                d=required(key,"string")
+                if (length(d)!=71 || d !~ /^sha256:[0-9a-f]+$/) bad()
+                digest=substr(d,8)
+            }
+            if (name==package || name=="checksums.txt") { urls[name]=url; hashes[name]=digest }
+        }
+        if (!(package in urls) || !("checksums.txt" in urls)) bad()
+        print tag; print urls["checksums.txt"]; print hashes["checksums.txt"]
+        print urls[package]; print hashes[package]
+    }' "$work/metadata"
+}
+
+resolve_repo() {
+    fetch repository "https://api.github.com/repos/$1" "$work/metadata" 262144
+    if read_metadata repository > "$work/repository"; then
+        IFS= read -r current_name < "$work/repository"
+    else
+        parse_status=$?; code=metadata
+        if [ "$parse_status" = 3 ]; then code=source_mismatch; fail 'Repository ID does not match the official source.'; fi
+        fail 'Invalid GitHub repository metadata.'
+    fi
+}
+repo_name=
+attempt=1
+while :; do
+    resolve_repo mobterm/mobterm-cli
+    repo_name=$current_name
+    release_path=latest
+    if [ -n "$version" ]; then release_path=tags/$version; fi
+    if fetch release "https://api.github.com/repos/$repo_name/releases/$release_path" "$work/metadata" 262144; then
+        if read_metadata release > "$work/selection"; then result=0; else result=$?; fi
+    else
+        result=$?
+    fi
+    # The old name can be reused between lookup and release selection.
+    # Recheck the exact name used for this metadata response, including 404s.
+    resolve_repo "$repo_name"
+    if [ "$current_name" != "$repo_name" ] && [ "$attempt" = 1 ]; then attempt=2; continue; fi
+    code=source_mismatch
+    [ "$current_name" = "$repo_name" ] || fail 'Repository location changed during release selection.'
+    case $result in
+        0) break ;;
+        3) fail 'Release source or confirmed version does not match.' ;;
+        4) code=release_unavailable; fail 'The selected stable release is unavailable.' ;;
+        *) code=metadata; fail 'Invalid GitHub release metadata.' ;;
+    esac
 done
+{
+    IFS= read -r version && IFS= read -r checks_url && IFS= read -r checks_digest &&
+        IFS= read -r archive_url && IFS= read -r archive_digest
+} < "$work/selection" || fail 'Cannot read verified release selection.'
+asset=mobterm-cli_${version}_${system}_${arch}.tar.gz
+
+sha256() {
+    if [ "$sha_tool" = sha256sum ]; then
+        sha256sum < "$1"
+    else
+        shasum -a 256 < "$1"
+    fi
+}
+verify_digest() {
+    code=integrity
+    hash=$(sha256 "$1") || fail 'Cannot calculate SHA-256.'
+    hash=${hash%% *}
+    [ "$2" = - ] || [ "$hash" = "$2" ] || fail 'Release asset digest mismatch.'
+}
+fetch asset "$checks_url" "$work/checksums.txt" 16384
+verify_digest "$work/checksums.txt" "$checks_digest"
+fetch asset "$archive_url" "$work/$asset" 67108864
+verify_digest "$work/$asset" "$archive_digest"
+
+nul_free "$work/checksums.txt" || fail 'Invalid checksum file.'
 expected=$(awk -v name="$asset" '
     { filename = $2; sub(/^\*/, "", filename) }
     filename == name {
@@ -117,13 +421,7 @@ expected=$(awk -v name="$asset" '
     }
     END { if (count != 1 || invalid) exit 1; print hash }
 ' "$work/checksums.txt") || fail 'Missing, invalid or duplicate SHA-256 record.'
-if [ "$sha_tool" = sha256sum ]; then
-    actual=$(sha256sum "$work/$asset") || fail 'SHA-256 calculation failed.'
-else
-    actual=$(shasum -a 256 "$work/$asset") || fail 'SHA-256 calculation failed.'
-fi
-actual=${actual%% *}
-[ "$actual" = "$expected" ] || fail 'Release SHA-256 mismatch; existing binary preserved.'
+[ "$hash" = "$expected" ] || fail 'Release SHA-256 mismatch; existing binary preserved.'
 
 # Follow the existing package/upgrader layout. Listing all entries before
 # streaming just the binary avoids extracting paths or links onto the filesystem.
@@ -136,9 +434,26 @@ awk '
 tar -tvzf "$work/$asset" > "$work/types" || fail 'Corrupt release archive.'
 awk 'substr($0, 1, 1) != "-" { invalid = 1 } END { exit (NR == 0 || invalid) }' \
     "$work/types" || fail 'Release archive must contain only regular files.'
-tar -xOzf "$work/$asset" mobterm-cli > "$work/mobterm-cli" || fail 'Cannot read release executable.'
+(ulimit -f 131072 && exec tar -xOzf "$work/$asset" mobterm-cli) > "$work/mobterm-cli" || fail 'Cannot read release executable.'
 [ -s "$work/mobterm-cli" ] || fail 'Release executable is empty.'
 
+# Inspect the packaged executable without running it. Both supported 64-bit
+# architectures use little-endian ELF or Mach-O headers.
+od -A n -N 20 -t u1 "$work/mobterm-cli" > "$work/header" || fail 'Cannot read executable header.'
+LC_ALL=C awk -v os="$system" -v arch="$arch" '
+    { for (i=1; i<=NF; i++) h[++n]=$i }
+    END {
+        if (n!=20) exit 1
+        if (os=="linux") {
+            machine=(arch=="amd64" ? 62 : 183)
+            exit !(h[1]==127 && h[2]==69 && h[3]==76 && h[4]==70 && h[5]==2 && h[6]==1 && h[7]==1 &&
+                   (h[17]==2 || h[17]==3) && h[18]==0 && h[19]==machine && h[20]==0)
+        }
+        cpu=(arch=="amd64" ? 7 : 12)
+        exit !(h[1]==207 && h[2]==250 && h[3]==237 && h[4]==254 && h[5]==cpu && h[6]==0 && h[7]==0 && h[8]==1 &&
+               h[13]==2 && h[14]==0 && h[15]==0 && h[16]==0)
+    }' "$work/header" || fail 'Release executable platform mismatch.'
+code=storage
 destination=$install_dir/mobterm-cli
 check_directory() {
     [ ! -L "$1" ] || fail 'Refusing a symlink installation directory.'
@@ -187,6 +502,7 @@ chmod 0755 "$staged" || fail 'Cannot set executable permissions.'
 check_destination
 # Record a successful move before honoring a signal arriving during that move.
 defer_signals=1
+phase=unknown
 mv -f "$staged" "$destination" || fail 'Cannot atomically install executable.'
 committed=1
 staged=
