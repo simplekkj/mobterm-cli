@@ -146,7 +146,7 @@ must preserve the new run file: old CLIs cannot read a run file over 2 MiB.
 
 Fresh business intents receive the first transport phase, then due durable
 outbox records are retried fairly across Pairs, then coalesced state. Network
-commands follow the [current command budgets](../README.md#notification-api-request-deadlines),
+commands follow the [current command budgets](cli-reference.md#notification-api-request-deadlines),
 including capability negotiation before a reminder. Completion/test/explicit outbox flush
 commands may retry ordinary capability negotiation once on transient failures,
 with jittered backoff and Retry-After respected within that budget. The retry wait

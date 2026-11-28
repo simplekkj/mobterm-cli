@@ -19,7 +19,7 @@ cross-language fixture is [protocol-v1.json](../testdata/protocol-v1.json).
 The CLI emits unstyled results for explicit JSON modes and SSH frame commands.
 The App may merge stderr into stdout for a successful `capabilities --json`
 probe. Human display options and forced color never add decoration to that
-stream. See [Terminal output](../README.md#terminal-output) for interactive use.
+stream. See [Terminal output](cli-reference.md#terminal-output) for interactive use.
 
 ## Pair setup over SSH
 
@@ -185,6 +185,44 @@ they are never automatically moved. Journal recovery continues to use
 boolean retains its notify-ownership meaning and does not certify native loading.
 Successful native installs in either format return `activation: native_review_required`.
 No API, encrypted event, pairing or App schema change is required.
+
+## Integration reconciliation over SSH
+
+`capabilities --json` advertises top-level `"hooks_reconcile": 1`.
+For version 1, compare `hooks_reconcile_path` to the verified executable path before writing.
+No version-1 declaration means leave migration to Agent management.
+Existing `status --agents-json` values are unchanged.
+
+`hooks reconcile [--check] --json` returns at most 32 KiB. Version 1 includes
+`v`, `operation` (check or reconcile), `cli_version`, `cli_path`, `overall`,
+`requires_action`, and `agents`. Each Agent has an `agent`, a `status`, and
+`components` (Codex hooks, Claude hooks and adapter, OpenCode adapter, Pi
+adapter). Each component carries its `component`, `status`, `reason` and
+`activation`. Reasons are codes and contain no hook payloads.
+
+| Component status | Reason | Interpretation |
+| --- | --- | --- |
+| current | current | Owned configuration already matches |
+| available | template_changed | Check found a safe update or compatible unfinished transaction |
+| updated | updated | Reconciliation completed the on-disk change |
+| skipped | unmanaged / missing_agent / probe_failed / unsupported | No ownership evidence, or the Agent is unavailable or unsupported |
+| attention | ownership_conflict / disabled / unsupported / pending_conflict / write_failed | Review this component before continuing |
+
+An Agent can report `partial` when one component is verified and another
+requires attention. The `activation` code is `unknown`, `restart_required`
+or `native_review_required`. A check's activation describes what would follow
+the change. A current Codex native configuration retains the `/hooks` review
+indication on a fresh check because trust and loading are observed in the TUI.
+`requires_action` covers remaining configuration work, separately
+from activation. Exit 0 has a complete result, including a check with available
+updates. Exit 2 carries a full attention result. Exit 1 means the operation
+could not supply a migration receipt. Parse the bounded receipt even on exit 2.
+
+For a combined upgrade, JSON records binary replacement (`upgraded`), version
+readback (`verified`), `integration_state` and an optional `integrations`
+receipt. Exit 2 preserves the fact of replacement even if readback failed,
+migration is unsupported or the integration result is unconfirmed. Recheck
+the reported installation before continuing; do not automatically replay writes.
 
 ## Encrypted events
 
@@ -650,7 +688,7 @@ another child. See [the dispatcher contract](compatibility.md#codex-approval-and
 The separately enabled [interaction helpers](native-interactions.md) are also
 finite; this is not a blanket prohibition on every detached process.
 
-The [current command-budget reference](../README.md#notification-api-request-deadlines)
+The [current command-budget reference](cli-reference.md#notification-api-request-deadlines)
 separates CLI/API limits from shorter native Hook and App caller deadlines. API
 wire formats and credentials are unchanged by budget changes. Existing CLI
 processes retain their earlier budgets and leases; new processes honor persisted

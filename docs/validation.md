@@ -2,7 +2,8 @@
 
 Run these checks from the repository root. Install the Go toolchain pinned
 in [go.mod](../go.mod), tmux, Python 3.12 (as `python3`) and Node.js 22.
-The test fixtures provide their own
+The root [main.go](../main.go) starts the CLI. Command dispatch and Go tests live in
+[internal/cli](../internal/cli/). The test fixtures provide their own
 configuration, events and protocol peers.
 
 ```sh
@@ -35,14 +36,81 @@ asset responses. The synthetic [repository identity](../testdata/release-reposit
 and [stable release](../testdata/release-stable.json) cover a renamed project.
 The suite substitutes mismatched identities, malformed metadata, rejected redirects,
 incorrect digests and interrupted replacement while checking the previous installation. With `--dist` it checks the four Linux/macOS amd64/arm64 packages
-and executes the installed native binary. CI also runs the Go, tmux and
-installer checks natively on the eight [documented runners](../README.md#build-and-verify).
+and executes the installed native binary. The package script sets `CGO_ENABLED=0`,
+records the source revision, platform and version, normalizes tar/gzip metadata
+and produces the checksum manifest.
+
+### Native CI runners
+
+| Target | Native GitHub-hosted Runner |
+| --- | --- |
+| Linux amd64 | `ubuntu-22.04`, `ubuntu-24.04` |
+| Linux arm64 | `ubuntu-22.04-arm`, `ubuntu-24.04-arm` |
+| macOS amd64 | `macos-15-intel`, `macos-26-intel` |
+| macOS arm64 | `macos-15`, `macos-26` |
+
+On branch pushes and pull requests, the [CI workflow](../.github/workflows/ci.yml)
+checks the public boundary and builds one shared set of test archives on Ubuntu.
+Each native runner checks the kernel, CPU and Go host/target, rejects Rosetta,
+requires live tmux, runs uncached Go and race tests, builds the CLI, and exercises
+the offline installer against those same archives. These results apply to the
+listed systems.
+
+A stable tag in the official repository reruns CI at the tagged commit.
+After CI succeeds, the [release workflow](../.github/workflows/release.yml)
+builds and checks all four archives before its separately privileged job
+publishes them. It refuses to overwrite an existing release. Local packaging
+only writes artifacts. The offline checks do not exercise public downloads or
+macOS Gatekeeper for end users.
+
+## Agent lifecycle on Linux and macOS
+
+The eight native jobs select the historical Agent sample. Linux also tests
+the minimum and current samples, and the Intel macOS configuration job uses
+`macos-config`. Exact Agent versions are in the
+[sample manifest](../testdata/compatibility-samples.json). Go fixtures cover
+the Codex notification floor on both systems.
+
+To reproduce the minimum Linux lifecycle or macOS configuration load/unload
+check with isolated Agent installations:
+
+```sh
+(
+  set -eu
+  work=$(mktemp -d)
+  trap 'rm -rf "$work"' EXIT
+  mkdir -p "$work/home"
+  go build -trimpath -o "$work/mobterm-cli" .
+  case "$(uname -s)" in
+    Darwin) sample=macos-config; set -- --config-only --agent-prefix "$work/agents" ;;
+    Linux)  sample=minimum; set -- ;;
+    *) exit 1 ;;
+  esac
+  python3.12 tests/select_agent_samples.py "$sample" > "$work/versions.env"
+  . "$work/versions.env"
+  HOME="$work/home" npm install --global --prefix "$work/agents" --no-audit --no-fund \
+    "@openai/codex@$CODEX_TEST_VERSION" "@anthropic-ai/claude-code@$CLAUDE_TEST_VERSION"
+  PATH="$work/agents/bin:$PATH" python3.12 tests/linux_lifecycle_test.py \
+    --binary "$work/mobterm-cli" "$@" --expect-codex-version "$CODEX_TEST_VERSION" \
+    --expect-claude-version "$CLAUDE_TEST_VERSION" -v
+)
+```
+
+Use `sample=current` for the other Linux endpoint or `sample=historical` for
+the native jobs. On macOS the selector refuses Codex samples before 0.119.0.
+The harness checks the prefix, package, binary signature and execution policy
+before probing the version. If it reports a mismatched installation, repeat
+with a fresh prefix and the pinned macOS configuration sample. If system
+policy rejects that sample, record the diagnostic and use a host where the
+official sample passes with protections enabled.
+
+The harness uses disposable home/config directories, disables Claude updates
+and nonessential traffic, and uses loopback HTTPS on Linux. These checks use
+no Agent login credentials or real model/APNs requests.
 
 ## Agent compatibility
 
-Use the [platform-specific lifecycle commands](../README.md#build-and-verify)
-for pinned Agent installation, macOS signature and execution checks, and
-Linux loopback HTTPS. The [CI workflow](../.github/workflows/ci.yml) gives the
+The [CI workflow](../.github/workflows/ci.yml) gives the
 exact Linux asdf probe, minimum/current host samples, macOS configuration sample
 and official OpenCode/Pi host loading commands. To run the adapter contracts:
 

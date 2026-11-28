@@ -238,7 +238,7 @@ lists the tests for each layer. Codex 0.100.0 can be rejected by macOS before
 version or configuration loading. Use the Linux minimum sample for its real
 configuration path.
 
-For a new validation, use the [platform-specific real test command](../README.md#build-and-verify).
+For a new validation, use the [platform-specific real test command](validation.md#agent-lifecycle-on-linux-and-macos).
 The macOS configuration result covers the actual accepted package, with its
 version and digest recorded by the runner. The Go launcher and version
 fixtures retain controlled coverage for 0.100.0, below-floor versions and
@@ -430,8 +430,10 @@ Errors show at most one generic local diagnostic per extension lifetime, with
 stdout/stderr suppressed. New-source CLI failures return nonzero to this child
 bridge. Intentional route/session cancellation is silent and does not consume
 the diagnostic for a subsequent spawn, exit or timeout failure. The
-Codex/Claude notifier exit behavior is unchanged. No user model/API
-credentials, complete messages or original events enter the adapter payload.
+Codex/Claude notifier exit behavior is unchanged. The summary-only adapter
+payload excludes user model/API credentials, complete messages and original
+events. Newer adapters can also send attributed assistant text to a capable
+local CLI through the [full reply handshake](#full-reply-capture-and-mixed-versions).
 The optional `summary` is a plain-text excerpt limited to 120 Unicode scalars and
 512 UTF-8 bytes, with grapheme-safe clipping, control/ANSI/OSC removal and
 code/JSON-only fallback. It is produced in memory, sent over bounded stdin and
@@ -477,7 +479,7 @@ incarnation. Strong tmux validation needs App and CLI together.
 
 Pending work remains short-lived/conditionally triggered. The original v1 path
 used one immediate POST per hook delivery. Current completion/test/explicit flush
-may retry within the [current command budget](../README.md#notification-api-request-deadlines);
+may retry within the [current command budget](cli-reference.md#notification-api-request-deadlines);
 short observation paths retain their own limits. Future flushes use persisted,
 bounded attempts and exact envelopes. An idle host without another event/user retry will not wake itself.
 Once service handoff is known, only bounded GET refreshes are allowed locally.

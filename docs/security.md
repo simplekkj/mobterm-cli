@@ -15,14 +15,16 @@ The optional encrypted completion notification carries a bounded display name.
 The App authenticates the event against its original Pair and job binding,
 including when multiple configurations have the same display name.
 
-Only routing metadata (opaque IDs, event kind, expiry, ciphertext length) reaches
-the API/APNs. Encryption does not hide timing, kind, or traffic volume. Server,
+Notification envelopes expose routing metadata (opaque IDs, event kind, expiry
+and ciphertext length) to the API and APNs. The encrypted payload travels with
+that metadata. Encryption does not hide timing, kind, or traffic volume. Server,
 username and terminal coordinates remain in the encrypted/local parts. Native
 Agent payloads may include responses, prompts, tool arguments and transcript
 paths; ordinary observations decode explicit lifecycle fields. Completion extracts
 only the current attributed assistant text, cleans it to at most 120 Unicode
-scalars / 512 UTF-8 bytes, and encrypts that bounded excerpt end to end. It does
-not collect full conversations, user prompts, reasoning, raw tool output or
+scalars / 512 UTF-8 bytes, and encrypts that bounded excerpt end to end. The
+[original reply](#local-historical-message-bodies) can be retained locally for
+a separate authenticated SSH read. Completion does not collect full conversations, user prompts, reasoning, raw tool output or
 terminal screens. Codex attribution may read only the canonical first session
 metadata record under the resolved Codex home; it never reads subsequent
 conversation records or opens an arbitrary hook transcript path. This bounded
@@ -62,7 +64,7 @@ The phone rechecks its local pair and connection binding before opening a target
 
 Hook errors are quiet on stdout, sanitized on stderr, and return zero. An existing
 Codex notifier is invoked with its original argv/input and its own output/exit
-status preserved. The [current command-budget reference](../README.md#notification-api-request-deadlines)
+status preserved. The [current command-budget reference](cli-reference.md#notification-api-request-deadlines)
 covers network, local discovery, observation, approval, interaction and upgrade
 commands; local-only commands do not all share a ten-second limit. Shorter parent
 deadlines and cancellation win. A disabled permission Hook durably records its
@@ -205,11 +207,19 @@ Managed adapter revision 6 installs a private per-Agent random credential in its
 
 ## Release source verification
 
-The installer and `upgrade` resolve the repository name over the GitHub REST
-API and check repository ID `1416491919`. A transfer or rename can resolve
+The installer on `main` installs a stable release binary. Its own verification
+logic and the logic compiled into that binary can differ. For example,
+[v0.1.22](https://github.com/mobterm/mobterm-cli/releases/tag/v0.1.22)
+checks the release tag, repository download URLs, archive checksum and
+executable platform during upgrade. Repository-ID lookup and asset-ID
+downloads were added after that tag.
+
+In the current source tree, the installer and `upgrade` resolve the repository
+name over the GitHub REST API and check repository ID `1416491919`. A transfer or rename can resolve
 through an HTTPS redirect on `api.github.com`. If the old name belongs to a
 different repository, verification fails. The clients check the current name
-again after reading the Release. Each selected asset must have its own ID and
+again after reading the Release. The upgrade command requires a manifest with
+all four platform archives and `checksums.txt`. Each selected asset must have its own ID and
 an API URL belonging to that repository. Binary redirects are limited to five
 hops among `api.github.com`, `github.com`, `release-assets.githubusercontent.com`
 and `objects.githubusercontent.com` over HTTPS.
@@ -219,6 +229,19 @@ GitHub supplies SHA-256 digests, the clients also verify the downloaded archive
 and checksum file against them. These checks trust the GitHub repository and
 its authorized publishers. A mutable Release can retain its ID while its tag
 or assets change. There is no independent package signature.
+
+The installer checks archive entries and the executable platform before staging
+the binary. It rejects symlink or non-directory installation directories and
+symlink or non-regular destination files. A failure before atomic replacement
+preserves the existing file and mode. Once replacement succeeds, cleanup or
+output failure cannot roll it back.
+
+On failure or a caught HUP, INT or TERM, the installer attempts to clean up
+its downloads and staged file. It removes only newly created installation
+directories that remain empty, preserving existing directories and modes.
+Check cleanup warnings after interruption. SIGKILL, power loss and concurrent
+changes to installation paths can leave files requiring manual inspection.
+Read back the installed version before retrying and leave unfamiliar files alone.
 
 A caller can pass the installer `--version vX.Y.Z --expected-release-id ID`
 to bind installation to a previously selected tag and Release. An optional

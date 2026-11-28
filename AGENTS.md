@@ -19,14 +19,20 @@
   ```
 
 - CI runs native Linux and macOS jobs. For tmux interoperability, use a real tmux fixture. CI sets `MOBTERM_REQUIRE_TMUX=1` so a missing dependency fails the check. Record any skipped live checks in the verification result.
-- For packaging or upgrade changes, run `python3 scripts/package.py --version v0.0.0 --commit "$(git rev-parse HEAD)"`. Verify the Linux/macOS archives for both amd64 and arm64 in `dist/`. The [build and verification guide](README.md#build-and-verify) includes the offline installer test. Publishing a stable version tag triggers the release workflow and requires separate release authorization.
+- For packaging or upgrade changes, run `python3 scripts/package.py --version v0.0.0 --commit "$(git rev-parse HEAD)"`. Verify the Linux/macOS archives for both amd64 and arm64 in `dist/`. The [build and verification guide](docs/validation.md#release-packages-and-installer) includes the offline installer test. Publishing a stable version tag triggers the release workflow and requires separate release authorization.
 - Update affected docs. For documentation-only edits verify facts, links and anchors, and run `git diff --check`. Use the [verification guide](docs/validation.md) for independent test commands.
 
 ## Public protocols and compatibility
 
-This repository owns [v1 pairing and targets](docs/protocol-v1.md), [v2 state/inbox/badge and legacy approval](docs/protocol-v2.md), and [interaction wire v1](docs/interaction-v1.md). Use [native interactions](docs/native-interactions.md) for action support, [compatibility](docs/compatibility.md) for notification samples, [security](docs/security.md) for trust boundaries, and the [README](README.md#notification-api-request-deadlines) for command deadlines.
+This repository owns [v1 pairing and targets](docs/protocol-v1.md), [v2 state/inbox/badge and legacy approval](docs/protocol-v2.md), and [interaction wire v1](docs/interaction-v1.md). Use [native interactions](docs/native-interactions.md) for action support, [compatibility](docs/compatibility.md) for notification samples, [security](docs/security.md) for trust boundaries, and the [CLI reference](docs/cli-reference.md#notification-api-request-deadlines) for command deadlines.
 
 - For changes to SSH stdin frames, CLI JSON, REST authorization or state (including `token_generation`), envelopes/AAD, target identities, or APNs fields, trace the affected writer and reader against the published contracts. Check old/new combinations. Document the supported versions and upgrade order for breaking changes.
 - Keep pairing, notifications, revocation and navigation working. Update affected code, docs and regression tests together. For encryption changes check the [public protocol vectors](testdata/) and exercise the notification and target-verification paths.
 - Report which delivery stages you observed. Distinguish API acceptance, APNs acceptance, phone display, and navigation. Identify any unavailable client or environment when reporting compatibility or delivery.
 - Keep per-Agent/kind grants disabled by default. Bind cancellation and late results to the original request, target, and owner. Notification envelope versions, approval command wire v3, and interaction wire v1 evolve independently. Preserve HMAC purposes and fixture names, including `mobterm/approval/2` and `approval-v2.json`.
+
+## Documentation maintenance
+
+- Keep the [README](README.md) focused on what a visitor needs to install and get started. Put changed user workflows in [usage](docs/usage.md) and installation procedures in the [installation guide](docs/install.md). Keep the [documentation index](docs/README.md) navigable from the homepage.
+- Maintain options in command help, output and budgets in the CLI reference, trust boundaries in security, Agent support in compatibility and the relevant action guide, wire changes in their protocol, and test procedures in validation. Describe version-specific changes in the published release notes.
+- Check changed claims against source and release scope, follow local links and old anchors, and link to the authoritative section for details. Keep private material and implementation or test histories out of the homepage.
